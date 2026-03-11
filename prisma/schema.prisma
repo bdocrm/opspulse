@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CEO
+  COLLECTOR
+  OM
+  AGENT
+}
+
+model User {
+  id           String        @id @default(uuid())
+  name         String
+  email        String        @unique
+  password     String
+  role         Role
+  campaignId   String?
+  campaign     Campaign?     @relation(fields: [campaignId], references: [id])
+  seatNumber   Int?
+  monthlyTarget Float?       // Current target for this agent
+  dailySales   DailySales[]
+  targetHistory AgentTarget[]
+  productionDetails ProductionDetail[]  // AGENT produces production details
+  createdAt    DateTime      @default(now())
+
+  @@index([campaignId])
+}
+
+model Campaign {
+  id           String       @id @default(uuid())
+  campaignName String
+  goalType     String
+  monthlyGoal  Float        // Legacy field, kept for backwards compatibility
+  kpiMetric    String       // Legacy field, kept for backwards compatibility
+  metrics      CampaignMetric[]  // New: Multiple KPI metrics per campaign
+  users        User[]
+  dailySales   DailySales[]
+  productionDetails ProductionDetail[]  // Production details for this campaign
+  createdAt    DateTime     @default(now())
+}
+
+model CampaignMetric {
+  id           String   @id @default(uuid())
+  campaignId   String
+  campaign     Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  metricName   String   // e.g., "transmittals", "approvals", "activations", "booked"
+  monthlyGoal  Float    // Goal for this specific metric
+  createdAt    DateTime @default(now())
+
+  @@unique([campaignId, metricName])  // One metric type per campaign
+  @@index([campaignId])
+}
+
+model DailySales {
+  id             String   @id @default(uuid())
+  userId         String
+  campaignId     String
+  date           DateTime
+  transmittals   BigInt   @default(0)
+  activations    BigInt   @default(0)
+  approvals      BigInt   @default(0)
+  booked         BigInt   @default(0)
+  qualityRate    Float?
+  conversionRate Float?
+  present        Boolean  @default(true)
+  absent         Boolean  @default(false)
+  user           User     @relation(fields: [userId], references: [id])
+  campaign       Campaign @relation(fields: [campaignId], references: [id])
+  createdAt      DateTime @default(now())
+
+  @@index([userId])
+  @@index([campaignId])
+  @@index([date])
+}
+
+model ProductionEntry {
+  id           String              @id @default(uuid())
+  campaignId   String
+  date         DateTime            // Date of entry (e.g., 2026-03-05)
+  time         String              // Time string (e.g., "2:36 PM")
+  createdBy    String              // Collector ID
+  details      ProductionDetail[]
+  createdAt    DateTime            @default(now())
+
+  @@index([campaignId])
+  @@index([date])
+}
+
+model ProductionDetail {
+  id               String           @id @default(uuid())
+  productionEntryId String
+  productionEntry  ProductionEntry  @relation(fields: [productionEntryId], references: [id], onDelete: Cascade)
+  agentId          String
+  agent            User             @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  campaignId       String           // Direct reference to campaign for easier filtering
+  campaign         Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  transmittals     BigInt           @default(0)
+  activations      BigInt           @default(0)
+  approvals        BigInt           @default(0)
+  booked           BigInt           @default(0)
+  qualityRate      Float?
+  conversionRate   Float?
+  createdAt        DateTime         @default(now())
+
+  @@index([productionEntryId])
+  @@index([agentId])
+  @@index([campaignId])
+  @@unique([productionEntryId, agentId])
+}
+
+model AgentTarget {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  target    Float    // Target value for the period
+  startDate DateTime // When this target became effective
+  endDate   DateTime? // When this target ended (null = current)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([startDate])
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LEAVE
+  HALFDAY
+}
+
+model Attendance {
+  id         String           @id @default(uuid())
+  agentId    String           // User ID of the agent
+  campaignId String           // Campaign the agent belongs to
+  date       DateTime         // Date of attendance
+  status     AttendanceStatus @default(PRESENT)
+  remarks    String?          // Optional notes (e.g., "sick leave", "vacation")
+  createdBy  String           // Collector who recorded this
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@unique([agentId, date])   // One attendance record per agent per day
+  @@index([agentId])
+  @@index([campaignId])
+  @@index([date])
+  @@index([status])
+}
