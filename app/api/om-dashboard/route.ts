@@ -60,7 +60,17 @@ export async function GET(req: NextRequest) {
           date: { gte: startDate, lte: endDate },
         },
       },
-      include: {
+      select: {
+        id: true,
+        agentId: true,
+        transmittals: true,
+        activations: true,
+        approvals: true,
+        booked: true,
+        qualityRate: true,
+        conversionRate: true,
+        volume: true,
+        transaction: true,
         agent: {
           select: { id: true, name: true, seatNumber: true },
         },
@@ -83,6 +93,8 @@ export async function GET(req: NextRequest) {
         booked: number;
         qualityRate: number | null;
         conversionRate: number | null;
+        volume: number;
+        transaction: number;
       }>
     >();
 
@@ -98,6 +110,8 @@ export async function GET(req: NextRequest) {
         booked: Number(pd.booked),
         qualityRate: pd.qualityRate,
         conversionRate: pd.conversionRate,
+        volume: Number(pd.volume),
+        transaction: Number(pd.transaction),
       });
     });
 
