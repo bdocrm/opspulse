@@ -273,6 +273,8 @@ export default function ManageCampaignsPage() {
                     <SelectItem value="conversionRate">Conversion Rate (%)</SelectItem>
                     <SelectItem value="booked">Booked</SelectItem>
                     <SelectItem value="tapRate">Tap Rate (%)</SelectItem>
+                    <SelectItem value="volume">Volume</SelectItem>
+                    <SelectItem value="transaction">Transaction</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

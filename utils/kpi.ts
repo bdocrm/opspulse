@@ -6,7 +6,9 @@ export type KpiMetricKey =
   | "approvals"
   | "booked"
   | "qualityRate"
-  | "conversionRate";
+  | "conversionRate"
+  | "volume"
+  | "transaction";
 
 export const WORKING_DAYS_DEFAULT = 22;
 

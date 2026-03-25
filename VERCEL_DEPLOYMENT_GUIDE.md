@@ -1,52 +1,137 @@
-# Vercel Deployment Guide - 500 Error Fix
+# Vercel Deployment Fix Guide
 
 ## Problem
-The `/api/users` and `/api/campaigns` endpoints were returning 500 errors on the production deployment (opspulse-lac.vercel.app).
+The `/api/users` and `/api/campaigns` endpoints return 500 errors on production because:
+1. Database tables don't exist (migrations haven't been applied)
+2. Environment variables aren't configured on Vercel
 
-## Root Cause
-The build process wasn't running database migrations (`prisma db push`), so the database tables didn't exist in the production environment.
+## Build Process Fix
+- **Removed** `prisma db push` from build script (causes failures if DATABASE_URL not set)
+- **Build now only**: Generates Prisma client + builds Next.js
+- **Migrations must be**: Run separately with proper credentials
 
-## Solution Applied
+## Required Action: Set Environment Variables on Vercel
 
-### 1. Updated Build Process
-Changed `package.json` build script to include Prisma migration:
-```json
-"build": "prisma generate && prisma db push --skip-generate && next build"
-```
+**CRITICAL**: Deploy will fail without these. Go to Vercel Dashboard:
 
-### 2. Enhanced Error Logging
-- Improved Prisma client initialization with connection logging
-- Added detailed error messages to API route handlers
-- Error logs now include error codes, messages, and timestamps
-
-### 3. Required Environment Variables
-
-Set these in Vercel Project Settings > Environment Variables:
+1. Click your project: **opspulse-lac**
+2. Go to **Settings** → **Environment Variables**
+3. Add these three variables:
 
 ```
-DATABASE_URL=postgresql://user:password@host:port/database?pgbouncer=true
+DATABASE_URL=postgresql://postgres.cfnmnptftnnnupxgobkk:Igdbe1xDqx64orBv@aws-1-ap-northeast-2.pooler.supabase.com:6543/postgres?pgbouncer=true
+
 NEXTAUTH_URL=https://opspulse-lac.vercel.app
-NEXTAUTH_SECRET=your-secure-secret-key
+
+NEXTAUTH_SECRET=opspulse360-secret-key-9f8a7b6c5d4e3f2a
 ```
 
-**Important**: 
-- Use Supabase connection pooler URL (port 6543, not 5432)
-- Ensure `NEXTAUTH_URL` matches your Vercel domain
-- Generate a secure `NEXTAUTH_SECRET` (min 32 characters recommended)
+**Important Notes**:
+- Copy exact values from your `.env` file
+- `DATABASE_URL` must use pooler (port 6543, not 5432)
+- Apply these to all environments (Production, Preview, Development)
 
 ## Deployment Steps
 
-1. **Commit changes**:
-   ```bash
-   git add package.json app/api/users/route.ts app/api/campaigns/route.ts lib/prisma.ts
-   git commit -m "fix: improve error handling and add DB migrations to build"
-   git push
-   ```
+### 1. Commit and Push
+```bash
+git add package.json
+git commit -m "fix: remove DB migration from build, set manual migration workflow"
+git push
+```
+Vercel will auto-deploy. This should succeed now.
 
-2. **Verify Environment Variables**:
-   - Go to Vercel Dashboard > Your Project > Settings > Environment Variables
-   - Ensure `DATABASE_URL` is set to production database
-   - Ensure `NEXTAUTH_URL` is set to production domain
+### 2. Run Database Migrations (After Environment Variables are set)
+Once the deployment succeeds, apply migrations:
+
+#### Option A: From Your Local Machine
+```bash
+# Make sure you have the same DATABASE_URL set locally
+npm run prisma:push
+npm run prisma:seed  # Optional: populate test data
+```
+
+#### Option B: Using Vercel CLI
+```bash
+# Install Vercel CLI if you don't have it
+npm i -g vercel
+
+# Pull environment variables from Vercel
+vercel env pull
+
+# Run migrations with those variables
+npm run prisma:push
+npm run prisma:seed
+```
+
+## Verify Deployment Success
+
+1. **Build succeeds**: Check Vercel Deployments tab - no errors
+2. **Database tables created**: Run locally:
+   ```bash
+   npm run prisma:Studio
+   ```
+   Should show User, Campaign, and other tables
+3. **API endpoints work**: Visit:
+   - `https://opspulse-lac.vercel.app/api/users` → Returns 200 with users array
+   - `https://opspulse-lac.vercel.app/api/campaigns` → Returns 200 with campaigns array
+
+## Troubleshooting
+
+### Build Still Fails: "Tenant or user not found"
+**Cause**: DATABASE_URL not set or incorrect on Vercel
+
+**Fix**:
+1. Double-check the DATABASE_URL value matches exactly
+2. Vercel → Settings → Environment Variables
+3. Redeploy after saving
+
+### API Returns 500 Error
+**Cause**: Database tables don't exist yet
+
+**Fix**: Run migrations:
+```bash
+## Get credentials from Vercel
+vercel env pull
+
+## Apply migrations to production DB
+npm run prisma:push
+```
+
+### Authentication Fails: "FATAL: Tenant or user not found"
+**Cause**: Supabase credentials are wrong or user doesn't exist
+
+**Fix**:
+1. Log into Supabase dashboard
+2. Project Settings → Database → Connection string
+3. Copy the connection pooler URL (URI format)
+4. Update DATABASE_URL on Vercel with exact string
+
+### Tables Exist but API Still Errors
+Check Vercel Function Logs:
+1. Go to Vercel Dashboard → Your Deployment
+2. Click **Functions** tab
+3. Look for `/api/users` or `/api/campaigns`
+4. View logs for specific error messages
+
+## Files Modified
+- `package.json` - Removed `prisma db push` from build, added `vercel-env` script
+
+## Quick Reference
+
+```bash
+# Check environment variables are set
+npm run vercel-env
+
+# Manual migration commands
+npm run prisma:push    # Apply schema migrations
+npm run prisma:seed    # Populate test data
+npm run prisma:studio  # Browse database
+
+# Verify locally before deployment
+npm run dev            # Start dev server
+# Visit http://localhost:3000/api/users
+```
 
 3. **Redeploy**:
    - Vercel will automatically redeploy on git push

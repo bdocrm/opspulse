@@ -68,6 +68,8 @@ model DailySales {
   booked         BigInt   @default(0)
   qualityRate    Float?
   conversionRate Float?
+  volume         BigInt   @default(0)
+  transaction    BigInt   @default(0)
   present        Boolean  @default(true)
   absent         Boolean  @default(false)
   user           User     @relation(fields: [userId], references: [id])
