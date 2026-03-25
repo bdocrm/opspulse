@@ -30,8 +30,20 @@ export async function GET(req: NextRequest) {
     });
     return NextResponse.json(users);
   } catch (error) {
-    console.error("Users API error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    const err = error as any;
+    console.error("Users API error:", {
+      message: err?.message,
+      code: err?.code,
+      stack: err?.stack,
+      timestamp: new Date().toISOString(),
+    });
+    return NextResponse.json(
+      { 
+        error: "Internal server error",
+        details: process.env.NODE_ENV === "development" ? err?.message : undefined,
+      }, 
+      { status: 500 }
+    );
   }
 }
 

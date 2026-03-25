@@ -8,8 +8,20 @@ export async function GET() {
     });
     return NextResponse.json(campaigns);
   } catch (error) {
-    console.error("Campaigns API error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    const err = error as any;
+    console.error("Campaigns API error:", {
+      message: err?.message,
+      code: err?.code,
+      stack: err?.stack,
+      timestamp: new Date().toISOString(),
+    });
+    return NextResponse.json(
+      { 
+        error: "Internal server error",
+        details: process.env.NODE_ENV === "development" ? err?.message : undefined,
+      }, 
+      { status: 500 }
+    );
   }
 }
 
@@ -26,7 +38,12 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ campaign }, { status: 201 });
   } catch (error) {
-    console.error("Create campaign error:", error);
+    const err = error as any;
+    console.error("Create campaign error:", {
+      message: err?.message,
+      code: err?.code,
+      stack: err?.stack,
+    });
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
