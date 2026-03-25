@@ -14,6 +14,8 @@ interface DailySalesData {
     booked?: number;
     qualityRate?: number;
     conversionRate?: number;
+    volume?: number;
+    transaction?: number;
     present: boolean;
     absent: boolean;
   }>;
@@ -88,6 +90,8 @@ export async function POST(request: NextRequest) {
           booked: entry.booked || 0,
           qualityRate: entry.qualityRate || null,
           conversionRate: entry.conversionRate || null,
+          volume: entry.volume || 0,
+          transaction: entry.transaction || 0,
           present: entry.present,
           absent: entry.absent,
         },

@@ -20,6 +20,8 @@ export interface DailySalesRow {
   booked: number;
   qualityRate: number | null;
   conversionRate: number | null;
+  volume: number;
+  transaction: number;
 }
 
 /**

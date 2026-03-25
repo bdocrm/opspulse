@@ -48,6 +48,8 @@ export async function GET(
       booked: Number(s.booked),
       qualityRate: s.qualityRate,
       conversionRate: s.conversionRate,
+      volume: Number(s.volume),
+      transaction: Number(s.transaction),
     }));
 
     const mtd = computeMTD(rows, metric);

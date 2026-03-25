@@ -49,6 +49,8 @@ export async function POST(req: Request) {
                 booked: values.booked || 0,
                 qualityRate: values.qualityRate,
                 conversionRate: values.conversionRate,
+                volume: values.volume || 0,
+                transaction: values.transaction || 0,
               })),
             },
           },

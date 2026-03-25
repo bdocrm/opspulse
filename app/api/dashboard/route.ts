@@ -42,6 +42,8 @@ export async function GET(req: NextRequest) {
         booked: Number(s.booked),
         qualityRate: s.qualityRate,
         conversionRate: s.conversionRate,
+        volume: Number(s.volume),
+        transaction: Number(s.transaction),
       }));
       const mtd = computeMTD(rows, metric);
       const elapsed = daysLapsed(rows);
