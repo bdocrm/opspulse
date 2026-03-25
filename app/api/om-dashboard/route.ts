@@ -124,6 +124,8 @@ export async function GET(req: NextRequest) {
           booked: d.booked,
           qualityRate: 0,
           conversionRate: 0,
+          volume: d.volume || 0,
+          transaction: d.transaction || 0,
         })),
         metric
       );
