@@ -108,6 +108,8 @@ model ProductionDetail {
   booked           BigInt           @default(0)
   qualityRate      Float?
   conversionRate   Float?
+  volume           BigInt           @default(0)
+  transaction      BigInt           @default(0)
   createdAt        DateTime         @default(now())
 
   @@index([productionEntryId])

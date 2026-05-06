@@ -17,6 +17,7 @@ import {
   Activity,
   Zap,
   Gauge,
+  Projector,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
@@ -30,6 +31,7 @@ const defaultLinks = [
   { href: "/reports/campaigns", label: "Campaign Reports", icon: BarChart3, roles: ['CEO', 'OM'] },
   { href: "/reports/campaign-performance", label: "Agent Performance", icon: Zap, roles: ['CEO', 'OM'] },
   { href: "/om-dashboard", label: "OM Dashboard", icon: Gauge, roles: ['OM'] },
+  { href: "/presentation", label: "OpsPulse Deck", icon: Projector, roles: ['CEO', 'OM'] },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

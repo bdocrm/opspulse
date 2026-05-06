@@ -106,6 +106,7 @@ export default function CollectorDashboard() {
   const [nextSeat, setNextSeat] = useState(1);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [createdAgent, setCreatedAgent] = useState<{ name: string; email: string; password: string; seatNumber: number } | null>(null);
   const [targetModal, setTargetModal] = useState<{ agentId: string; agentName: string; currentTarget?: number } | null>(null);
   const [savingTarget, setSavingTarget] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
@@ -289,6 +290,7 @@ export default function CollectorDashboard() {
 
     setLoading(true);
     setMessage('');
+    setCreatedAgent(null);
 
     try {
       const res = await fetch('/api/collectors/agents', {
@@ -308,8 +310,24 @@ export default function CollectorDashboard() {
         return;
       }
 
-      setMessage('✅ Agent added successfully!');
+      const createdAgentData = await res.json();
+      
+      // Store created agent credentials
+      setCreatedAgent({
+        name: createdAgentData.name,
+        email: createdAgentData.email,
+        password: 'system-agent', // System agents don't use password login
+        seatNumber: createdAgentData.seatNumber,
+      });
+      
+      // Show detailed success message
+      setMessage(
+        `✅ Agent "${createdAgentData.name}" (Seat ${createdAgentData.seatNumber}) added successfully to ${campaignName}!`
+      );
+      
       setAgentName('');
+      setNextSeat(nextSeat + 1);
+      setShowAddAgent(false);
       mutateAgents();
     } catch (error) {
       setMessage(`Error: ${(error as Error).message}`);
@@ -556,19 +574,69 @@ export default function CollectorDashboard() {
       {/* Message Display */}
       {message && (
         <div
-          className={`p-3 rounded-lg text-sm flex items-center gap-2 ${
+          className={`p-4 rounded-lg text-sm flex items-start gap-3 border ${
             message.startsWith('Error') || message.startsWith('❌') 
-              ? 'bg-red-900/20 text-red-400 border border-red-800' 
-              : 'bg-green-900/20 text-green-400 border border-green-800'
+              ? 'bg-red-50 text-red-900 border-red-200' 
+              : 'bg-green-50 text-green-900 border-green-200'
           }`}
         >
           {message.startsWith('Error') || message.startsWith('❌') ? (
-            <AlertCircle className="w-4 h-4" />
+            <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
           ) : (
-            <CheckCircle2 className="w-4 h-4" />
+            <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
           )}
-          {message}
+          <div className="flex-1">
+            <p className="font-semibold">
+              {message.startsWith('Error') ? 'Error' : 'Success'}
+            </p>
+            <p className="text-sm mt-1">{message.replace('Error: ', '').replace('✅ ', '')}</p>
+          </div>
         </div>
+      )}
+
+      {/* Created Agent Credentials Card */}
+      {createdAgent && (
+        <Card className="border-green-200 bg-gradient-to-r from-green-50 to-emerald-50">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-green-900">
+              <UserCheck className="w-5 h-5 text-green-600" />
+              Agent Account Created
+            </CardTitle>
+            <CardDescription className="text-green-700">
+              New agent has been successfully registered
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-3 bg-white/80 rounded border border-green-200">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">Agent Name</p>
+                <p className="font-semibold text-green-900 mt-1">{createdAgent.name}</p>
+              </div>
+              <div className="p-3 bg-white/80 rounded border border-green-200">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">Seat Number</p>
+                <p className="font-semibold text-green-900 mt-1">Seat {createdAgent.seatNumber}</p>
+              </div>
+              <div className="p-3 bg-white/80 rounded border border-green-200 md:col-span-2">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">System Email</p>
+                <p className="font-mono text-sm text-green-900 mt-1 break-all">{createdAgent.email}</p>
+              </div>
+            </div>
+            <div className="p-3 bg-blue-50 rounded border border-blue-200">
+              <p className="text-xs text-blue-700 font-semibold">💡 Info:</p>
+              <p className="text-xs text-blue-700 mt-1">
+                This agent is automatically assigned to <span className="font-semibold">{campaignName}</span>. 
+                They will access the system through the data entry interface.
+              </p>
+            </div>
+            <Button 
+              onClick={() => setCreatedAgent(null)}
+              variant="outline"
+              className="w-full border-green-200"
+            >
+              Close
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {/* KPI Cards */}
@@ -725,22 +793,41 @@ export default function CollectorDashboard() {
 
       {/* Add Agent Form (Collapsible) */}
       {showAddAgent && (
-        <Card>
+        <Card className="border-blue-200 bg-blue-50/30">
           <CardHeader className="pb-3">
-            <CardTitle className="text-lg">Add New Agent</CardTitle>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Plus className="w-5 h-5 text-blue-600" />
+              Add New Agent
+            </CardTitle>
             <CardDescription>Register a new agent for your campaign</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleAddAgent} className="space-y-4">
+              {/* Campaign Info Box */}
+              <div className="p-4 bg-white border border-blue-200 rounded-lg mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                    <Users className="w-5 h-5 text-blue-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Assigning to Campaign</p>
+                    <p className="font-semibold text-lg">{campaignName || 'Loading...'}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Form Fields */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="agentName">Agent Name</Label>
+                  <Label htmlFor="agentName">Agent Name *</Label>
                   <Input
                     id="agentName"
-                    placeholder="Enter agent name"
+                    placeholder="e.g., John Smith"
                     value={agentName}
                     onChange={(e) => setAgentName(e.target.value)}
                     disabled={loading}
+                    className="border-blue-200 focus:border-blue-500"
+                    required
                   />
                 </div>
                 <div className="space-y-2">
@@ -750,16 +837,30 @@ export default function CollectorDashboard() {
                     type="number"
                     value={nextSeat}
                     disabled
-                    className="bg-muted"
+                    className="bg-muted text-muted-foreground"
                   />
                 </div>
               </div>
-              <div className="flex gap-2">
-                <Button type="submit" disabled={loading}>
+
+              {/* Auto-Generated Credentials Info */}
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <p className="text-sm text-amber-900">
+                  <span className="font-semibold">ℹ️ Auto-Generated:</span> A unique system email and credentials will be created for this agent upon submission.
+                </p>
+              </div>
+
+              {/* Buttons */}
+              <div className="flex gap-2 pt-2">
+                <Button type="submit" disabled={loading} className="bg-blue-600 hover:bg-blue-700">
                   <Plus className="h-4 w-4 mr-2" />
-                  {loading ? 'Adding...' : 'Add Agent'}
+                  {loading ? 'Adding Agent...' : 'Add Agent'}
                 </Button>
-                <Button type="button" variant="outline" onClick={() => setShowAddAgent(false)}>
+                <Button 
+                  type="button" 
+                  variant="outline" 
+                  onClick={() => setShowAddAgent(false)}
+                  disabled={loading}
+                >
                   Cancel
                 </Button>
               </div>
