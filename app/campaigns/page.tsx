@@ -52,7 +52,9 @@ export default function CampaignsPage() {
   const { data: campaignsData } = useCampaigns();
   const { data: detail, isLoading } = useCampaignDetail(selectedId, period);
 
-  const campaigns: any[] = campaignsData?.campaigns ?? [];
+  const campaigns: any[] = Array.isArray(campaignsData)
+    ? campaignsData
+    : campaignsData?.campaigns ?? [];
   const kpis = detail?.kpis ?? { mtd: 0, achievement: 0, runRate: 0, rrAchievement: 0, goal: 0 };
   const weeklyData = detail?.weeklyData ?? [];
   const dailyTrend = detail?.dailyTrend ?? [];

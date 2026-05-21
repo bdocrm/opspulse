@@ -41,7 +41,7 @@ export default function PerformanceTrendsPage() {
 
   const { data, isLoading } = useSWR(
     session?.user ? `/api/analytics/trends?year=${year}&month=${month}` : null,
-    (url: string) => fetch(url).then(res => res.json())
+    (url: string) => fetch(url, { credentials: 'include' }).then(res => res.json())
   );
 
   const trends = data?.trends || [];

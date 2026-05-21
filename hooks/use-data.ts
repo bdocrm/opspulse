@@ -2,7 +2,7 @@
 
 import useSWR from "swr";
 
-const fetcher = (url: string) => fetch(url).then((res) => res.json());
+const fetcher = (url: string) => fetch(url, { credentials: 'include' }).then((res) => res.json());
 
 export function useDashboardData(period: string, month?: string, year?: string) {
   const params = new URLSearchParams({ period });
