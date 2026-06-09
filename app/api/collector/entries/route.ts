@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    
+
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -31,7 +31,21 @@ export async function GET(req: NextRequest) {
       take: 50,
     });
 
-    return NextResponse.json(entries);
+    // Convert BigInt fields to numbers for JSON serialization
+    const serializedEntries = entries.map(entry => ({
+      ...entry,
+      details: entry.details.map(detail => ({
+        ...detail,
+        transmittals: Number(detail.transmittals),
+        activations: Number(detail.activations),
+        approvals: Number(detail.approvals),
+        booked: Number(detail.booked),
+        volume: Number(detail.volume),
+        transaction: Number(detail.transaction),
+      })),
+    }));
+
+    return NextResponse.json(serializedEntries);
   } catch (error) {
     console.error("Collector data entries API error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
@@ -41,7 +55,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    
+
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

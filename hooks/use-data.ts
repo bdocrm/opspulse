@@ -4,10 +4,11 @@ import useSWR from "swr";
 
 const fetcher = (url: string) => fetch(url, { credentials: 'include' }).then((res) => res.json());
 
-export function useDashboardData(period: string, month?: string, year?: string) {
+export function useDashboardData(period: string, month?: string, year?: string, campaignId?: string | null) {
   const params = new URLSearchParams({ period });
   if (month) params.set("month", month);
   if (year) params.set("year", year);
+  if (campaignId) params.set("campaignId", campaignId);
   return useSWR(`/api/dashboard?${params.toString()}`, fetcher);
 }
 

@@ -1,137 +1,142 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import {
-  computeMTD,
-  achievementPct,
-  daysLapsed,
-  runRate,
-  rrAchievementPct,
-  WORKING_DAYS_DEFAULT,
-  type KpiMetricKey,
-} from "@/utils/kpi";
+
+// ─── KPI helpers ──────────────────────────────────────────────────────────────
+
+function calcAchievement(mtd: number, goal: number) {
+  return goal > 0 ? (mtd / goal) * 100 : 0;
+}
+function calcRunRate(mtd: number, daysLapsed: number, workingDays: number) {
+  return daysLapsed > 0 ? (mtd / daysLapsed) * workingDays : 0;
+}
+function calcRRAch(rr: number, goal: number) {
+  return goal > 0 ? (rr / goal) * 100 : 0;
+}
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const period = searchParams.get("period") ?? "monthly";
+    const now        = new Date();
+    const year       = parseInt(searchParams.get("year")       ?? String(now.getFullYear()));
+    const month      = parseInt(searchParams.get("month")      ?? String(now.getMonth() + 1));
+    const campaignId = searchParams.get("campaignId") ?? null;
 
-    const now = new Date();
-    const year = parseInt(searchParams.get("year") ?? String(now.getFullYear()));
-    const month = parseInt(searchParams.get("month") ?? String(now.getMonth() + 1));
-
-    // Date range for the selected month
     const startDate = new Date(year, month - 1, 1);
-    const endDate = new Date(year, month, 0, 23, 59, 59);
+    const endDate   = new Date(year, month,     0, 23, 59, 59);
 
+    // 1. Campaigns
     const campaigns = await prisma.campaign.findMany({
+      where: campaignId ? { id: campaignId } : undefined,
+      select: { id: true, campaignName: true, kpiMetric: true, monthlyGoal: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    // 2. workingDays / daysLapsed via raw SQL
+    const cIds = campaigns.map((c) => c.id);
+    let extras: { id: string; workingDays: number; daysLapsed: number }[] = [];
+    if (cIds.length > 0) {
+      extras = await prisma.$queryRaw<any[]>`
+        SELECT id, "workingDays", "daysLapsed"
+        FROM "Campaign"
+        WHERE id = ANY(${cIds}::text[])
+      `;
+    }
+    const extrasById = Object.fromEntries(extras.map((e) => [e.id, e]));
+
+    // 3. All ProductionDetail rows for the period
+    const allDetails = await prisma.productionDetail.findMany({
+      where: {
+        ...(campaignId ? { campaignId } : {}),
+        productionEntry: { date: { gte: startDate, lte: endDate } },
+      },
       include: {
-        dailySales: {
-          where: { date: { gte: startDate, lte: endDate } },
-        },
+        agent: { select: { id: true, name: true } },
+        productionEntry: { select: { date: true } },
       },
     });
 
-    // Campaign-level KPIs
+    // 4. Group by campaign
+    const detailsByCampaign = new Map<string, typeof allDetails>();
+    for (const d of allDetails) {
+      if (!detailsByCampaign.has(d.campaignId)) detailsByCampaign.set(d.campaignId, []);
+      detailsByCampaign.get(d.campaignId)!.push(d);
+    }
+
+    // 5. Campaign-level KPIs
     const campaignTable = campaigns.map((c) => {
-      const metric = c.kpiMetric as KpiMetricKey;
-      const rows = c.dailySales.map((s) => ({
-        date: s.date.toISOString(),
-        transmittals: Number(s.transmittals),
-        activations: Number(s.activations),
-        approvals: Number(s.approvals),
-        booked: Number(s.booked),
-        qualityRate: s.qualityRate,
-        conversionRate: s.conversionRate,
-        volume: Number(s.volume),
-        transaction: Number(s.transaction),
-      }));
-      const mtd = computeMTD(rows, metric);
-      const elapsed = daysLapsed(rows);
-      const rr = runRate(mtd, elapsed, WORKING_DAYS_DEFAULT);
-      const ach = achievementPct(mtd, c.monthlyGoal);
-      const rrAch = rrAchievementPct(rr, c.monthlyGoal);
+      const details = detailsByCampaign.get(c.id) ?? [];
+      const wDays   = Number(extrasById[c.id]?.workingDays ?? 22);
+      const dLapsed = Number(extrasById[c.id]?.daysLapsed  ?? 0);
+      // MTD = sum of volume (peso amounts), matching the OM Dashboard Excel
+      const mtd     = details.reduce((sum, d) => sum + Number(d.volume), 0);
+      const rr      = calcRunRate(mtd, dLapsed, wDays);
+      const ach     = calcAchievement(mtd, c.monthlyGoal);
+      const rrAch   = calcRRAch(rr, c.monthlyGoal);
 
       return {
         id: c.id,
         campaignName: c.campaignName,
         kpiMetric: c.kpiMetric,
         goal: c.monthlyGoal,
-        mtd: Math.round(mtd),
-        achievement: ach,
-        runRate: Math.round(rr),
+        mtd:          Math.round(mtd),
+        achievement:  ach,
+        runRate:      Math.round(rr),
         rrAchievement: rrAch,
+        workingDays:  wDays,
+        daysLapsed:   dLapsed,
       };
     });
 
-    // Aggregated KPIs
-    const totalMTD = campaignTable.reduce((a, c) => a + c.mtd, 0);
-    const avgAchievement =
-      campaignTable.length > 0
-        ? campaignTable.reduce((a, c) => a + c.achievement, 0) / campaignTable.length
-        : 0;
-    const avgRunRate =
-      campaignTable.length > 0
-        ? campaignTable.reduce((a, c) => a + c.runRate, 0) / campaignTable.length
-        : 0;
-    const avgRRAchievement =
-      campaignTable.length > 0
-        ? campaignTable.reduce((a, c) => a + c.rrAchievement, 0) / campaignTable.length
-        : 0;
+    // 6. Aggregated KPI cards
+    const n = campaignTable.length || 1;
+    const totalMTD         = campaignTable.reduce((a, c) => a + c.mtd, 0);
+    const avgAchievement   = campaignTable.reduce((a, c) => a + c.achievement, 0)   / n;
+    const avgRunRate       = campaignTable.reduce((a, c) => a + c.runRate, 0)       / n;
+    const avgRRAchievement = campaignTable.reduce((a, c) => a + c.rrAchievement, 0) / n;
 
-    // Bar chart data
+    // 7. Campaign achievement chart
     const campaignsChart = campaignTable.map((c) => ({
       name: c.campaignName,
       achievement: c.achievement,
     }));
 
-    // Daily trend (aggregate all campaigns per date)
-    const allSales = await prisma.dailySales.findMany({
-      where: { date: { gte: startDate, lte: endDate } },
-      orderBy: { date: "asc" },
-    });
-
+    // 8. Daily trend (aggregate volume per date)
     const dailyMap = new Map<string, number>();
-    allSales.forEach((s) => {
-      const key = s.date.toISOString().slice(0, 10);
-      const sum = Number(s.transmittals) + Number(s.activations) + Number(s.approvals) + Number(s.booked);
-      dailyMap.set(key, (dailyMap.get(key) ?? 0) + sum);
-    });
-    const dailyTrend = Array.from(dailyMap.entries()).map(([date, value]) => ({ date, value }));
+    for (const d of allDetails) {
+      const key = new Date(d.productionEntry.date).toISOString().slice(0, 10);
+      dailyMap.set(key, (dailyMap.get(key) ?? 0) + Number(d.volume));
+    }
+    const dailyTrend = Array.from(dailyMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, value]) => ({ date, value }));
 
-    // Distribution (pie)
-    const distribution = campaignTable.map((c) => ({
-      name: c.campaignName,
-      value: c.mtd,
-    }));
+    // 9. Distribution (each campaign's share of total MTD)
+    const distribution = campaignTable
+      .filter((c) => c.mtd > 0)
+      .map((c) => ({ name: c.campaignName, value: c.mtd }));
 
-    // Leaderboard (top agents)
-    const agentSales = await prisma.dailySales.groupBy({
-      by: ["userId"],
-      where: { date: { gte: startDate, lte: endDate } },
-      _sum: { transmittals: true, activations: true, approvals: true, booked: true },
-    });
-
-    const users = await prisma.user.findMany({
-      where: { role: "AGENT" },
-      select: { id: true, name: true },
-    });
-    const userMap = new Map(users.map((u) => [u.id, u.name]));
-
-    const leaderboard = agentSales
-      .map((a) => ({
-        name: userMap.get(a.userId) ?? "Unknown",
-        value:
-          Number(a._sum.transmittals ?? 0) +
-          Number(a._sum.activations ?? 0) +
-          Number(a._sum.approvals ?? 0) +
-          Number(a._sum.booked ?? 0),
-      }))
+    // 10. Agent leaderboard (top 10 by volume)
+    const agentMap = new Map<string, { name: string; value: number }>();
+    for (const d of allDetails) {
+      const val = Number(d.volume);
+      const aid = d.agent.id;
+      if (!agentMap.has(aid)) agentMap.set(aid, { name: d.agent.name, value: 0 });
+      agentMap.get(aid)!.value += val;
+    }
+    const leaderboard = Array.from(agentMap.values())
+      .filter((a) => a.value > 0)
       .sort((a, b) => b.value - a.value)
-      .slice(0, 10);
+      .slice(0, 10)
+      .map((a) => ({ name: a.name, value: Math.round(a.value) }));
 
     return NextResponse.json({
-      kpis: { totalMTD, avgAchievement, avgRunRate, avgRRAchievement },
-      campaigns: campaignsChart,
+      kpis: {
+        totalMTD:       Math.round(totalMTD),
+        avgAchievement,
+        avgRunRate:     Math.round(avgRunRate),
+        avgRRAchievement,
+      },
+      campaigns:    campaignsChart,
       campaignTable,
       dailyTrend,
       distribution,

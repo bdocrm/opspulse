@@ -22,7 +22,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useDashboardData } from "@/hooks/use-data";
 import { kpiColorClass } from "@/utils/kpi";
 import { cn } from "@/lib/utils";
 import type { FilterPeriod } from "@/utils/kpi";
@@ -33,7 +32,7 @@ interface Campaign {
   campaignName: string;
 }
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = (url: string) => fetch(url, { credentials: "include" }).then((r) => r.json());
 
 export default function DashboardPage() {
   const { data: session, status } = useSession();
@@ -41,31 +40,32 @@ export default function DashboardPage() {
   const [period, setPeriod] = useState<FilterPeriod>("monthly");
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
 
-  // Fetch campaigns
-  const { data: campaignsData } = useSWR("/api/campaigns", fetcher);
+  // Determine month/year from current date for the API
+  const now = new Date();
+  const year  = now.getFullYear();
+  const month = now.getMonth() + 1;
+
+  // Fetch campaigns for the selector
+  const { data: campaignsData } = useSWR<Campaign[]>("/api/campaigns", fetcher);
   const campaigns: Campaign[] = Array.isArray(campaignsData) ? campaignsData : [];
 
-  // Set default campaign if none selected and campaigns available
+  // Set default campaign on first load
   useEffect(() => {
     if (campaigns.length > 0 && !selectedCampaignId) {
       setSelectedCampaignId(campaigns[0].id);
     }
   }, [campaigns, selectedCampaignId]);
 
+  // Auth guard
   useEffect(() => {
-    if (status === 'loading') return;
-    if (!session?.user) {
-      router.push('/login');
-      return;
-    }
-    // Restrict AGENT from accessing dashboard
-    if ((session.user as any).role === 'AGENT') {
-      router.push('/collector');
-      return;
-    }
+    if (status === "loading") return;
+    if (!session?.user) { router.push("/login"); return; }
+    if ((session.user as any).role === "AGENT") { router.push("/collector"); return; }
   }, [session, status, router]);
 
-  const { data, isLoading } = useDashboardData(period);
+  // Build API URL — always pass current month/year so KPIs use current period
+  const apiUrl = `/api/dashboard?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}`;
+  const { data, isLoading } = useSWR(apiUrl, fetcher);
 
   const kpis = data?.kpis ?? {
     totalMTD: 0,
@@ -73,10 +73,12 @@ export default function DashboardPage() {
     avgRunRate: 0,
     avgRRAchievement: 0,
   };
-  const campaignsList = data?.campaigns ?? [];
-  const dailyTrend = data?.dailyTrend ?? [];
-  const distribution = data?.distribution ?? [];
-  const leaderboard = data?.leaderboard ?? [];
+  const campaignsList = data?.campaigns   ?? [];
+  const dailyTrend    = data?.dailyTrend  ?? [];
+  const distribution  = data?.distribution ?? [];
+  const leaderboard   = data?.leaderboard  ?? [];
+
+  if (status === "loading") return <div className="p-6 text-slate-500">Loading...</div>;
 
   return (
     <>
@@ -93,7 +95,9 @@ export default function DashboardPage() {
             />
           )}
           <PeriodFilter value={period} onChange={setPeriod} />
-          <ExportButton endpoint={`/api/export/dashboard?period=${period}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`} />
+          <ExportButton
+            endpoint={`/api/export/dashboard?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}`}
+          />
         </div>
       </div>
 
@@ -208,10 +212,10 @@ export default function DashboardPage() {
                       Loading...
                     </TableCell>
                   </TableRow>
-                ) : campaigns.length === 0 ? (
+                ) : (data?.campaignTable ?? []).length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                      No campaigns found
+                      No data for this period
                     </TableCell>
                   </TableRow>
                 ) : (

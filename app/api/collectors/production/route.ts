@@ -71,6 +71,8 @@ export async function POST(req: Request) {
           activations: Number(detail.activations),
           approvals: Number(detail.approvals),
           booked: Number(detail.booked),
+          volume: Number(detail.volume),
+          transaction: Number(detail.transaction),
         })),
       })),
       message: `${savedEntries.length} time entries saved successfully!`,
@@ -139,6 +141,8 @@ export async function GET(req: Request) {
         activations: Number(detail.activations),
         approvals: Number(detail.approvals),
         booked: Number(detail.booked),
+        volume: Number(detail.volume),
+        transaction: Number(detail.transaction),
       })),
     }));
 

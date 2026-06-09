@@ -17,7 +17,17 @@ export async function POST(req: Request) {
         conversionRate: body.conversionRate ?? null,
       },
     });
-    return NextResponse.json({ sale }, { status: 201 });
+    return NextResponse.json({
+      sale: {
+        ...sale,
+        transmittals: Number(sale.transmittals),
+        activations: Number(sale.activations),
+        approvals: Number(sale.approvals),
+        booked: Number(sale.booked),
+        volume: Number(sale.volume),
+        transaction: Number(sale.transaction),
+      },
+    }, { status: 201 });
   } catch (error) {
     console.error("Create sale error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

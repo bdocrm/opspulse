@@ -40,7 +40,18 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: "desc" },
     });
 
-    return NextResponse.json(details);
+    // Convert BigInt fields to numbers for JSON serialization
+    const serializedDetails = details.map(detail => ({
+      ...detail,
+      transmittals: Number(detail.transmittals),
+      activations: Number(detail.activations),
+      approvals: Number(detail.approvals),
+      booked: Number(detail.booked),
+      volume: Number(detail.volume),
+      transaction: Number(detail.transaction),
+    }));
+
+    return NextResponse.json(serializedDetails);
   } catch (error) {
     console.error("Production details GET error:", error);
     return NextResponse.json(

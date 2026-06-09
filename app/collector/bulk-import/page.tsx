@@ -6,16 +6,50 @@ import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { PageTitle } from '@/components/layout/page-title';
-import { Upload, AlertCircle, CheckCircle, Download } from 'lucide-react';
+import { Upload, AlertCircle, CheckCircle, Download, UserPlus, Users, ArrowLeft } from 'lucide-react';
+
+type Step = 'configure' | 'previewing' | 'confirm' | 'importing' | 'done';
+
+interface MatchedAgent {
+  name: string;
+  count: number;
+  volume: number;
+  agentId: string;
+  agentName: string;
+}
+
+interface NewAgent {
+  name: string;
+  count: number;
+  volume: number;
+  approved: boolean;
+}
+
+const METRIC_LABELS: Record<string, string> = {
+  transmittals: 'Transmittals',
+  approvals: 'Approvals',
+  booked: 'Booked',
+};
 
 export default function BulkImportPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
-  const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [result, setResult] = useState<any>(null);
 
-  // Check authorization
+  // Settings
+  const [file, setFile] = useState<File | null>(null);
+  const [metricType, setMetricType] = useState('transmittals');
+  const [reportDate, setReportDate] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
+
+  // Flow state
+  const [step, setStep] = useState<Step>('configure');
+  const [matched, setMatched] = useState<MatchedAgent[]>([]);
+  const [newAgents, setNewAgents] = useState<NewAgent[]>([]);
+  const [importResult, setImportResult] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+
   if (status === 'unauthenticated') {
     router.push('/login');
     return null;
@@ -29,258 +63,437 @@ export default function BulkImportPage() {
     }
   }
 
+  if (status === 'loading') return <div className="p-6">Loading...</div>;
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      const isCSV = selectedFile.name.endsWith('.csv');
-      const isExcel = selectedFile.name.endsWith('.xlsx');
-      
-      if (!isCSV && !isExcel) {
-        alert('Please select a CSV or Excel file (.csv or .xlsx)');
+    const selected = e.target.files?.[0];
+    if (!selected) return;
+    if (!selected.name.endsWith('.csv') && !selected.name.endsWith('.xlsx')) {
+      alert('Please select a CSV or Excel file (.csv or .xlsx)');
+      return;
+    }
+    setFile(selected);
+    setError(null);
+  };
+
+  const handlePreview = async () => {
+    if (!file) { alert('Please select a file'); return; }
+    setStep('previewing');
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('mode', 'preview');
+      fd.append('metricType', metricType);
+      fd.append('reportDate', reportDate);
+
+      const res = await fetch('/api/collectors/bulk-import', { method: 'POST', body: fd });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.error || 'Preview failed');
+        setStep('configure');
         return;
       }
-      setFile(selectedFile);
-      setResult(null);
+
+      setMatched(data.matched || []);
+      setNewAgents((data.notFound || []).map((a: any) => ({ ...a, volume: a.volume ?? 0, approved: true })));
+      setStep('confirm');
+    } catch (err) {
+      setError(String(err));
+      setStep('configure');
     }
   };
 
-  const handleUpload = async () => {
-    if (!file) {
-      alert('Please select a file');
-      return;
-    }
+  const toggleAgentApproval = (index: number) => {
+    setNewAgents(prev => prev.map((a, i) => i === index ? { ...a, approved: !a.approved } : a));
+  };
 
-    setUploading(true);
+  const approvedNew = newAgents.filter(a => a.approved);
+  const skippedNew = newAgents.filter(a => !a.approved);
+
+  const handleConfirmImport = async () => {
+    if (!file) return;
+    setStep('importing');
+    setError(null);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('mode', 'import');
+      fd.append('metricType', metricType);
+      fd.append('reportDate', reportDate);
+      fd.append('confirmedNewAgents', JSON.stringify(approvedNew.map(a => a.name)));
 
-      const response = await fetch('/api/collectors/bulk-import', {
-        method: 'POST',
-        body: formData,
-      });
+      const res = await fetch('/api/collectors/bulk-import', { method: 'POST', body: fd });
+      const data = await res.json();
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        setResult({ error: data.error || 'Upload failed' });
-      } else {
-        setResult(data);
-        setFile(null);
+      if (!res.ok) {
+        setError(data.error || 'Import failed');
+        setStep('confirm');
+        return;
       }
+
+      setImportResult(data);
+      setStep('done');
     } catch (err) {
-      setResult({ error: String(err) });
-    } finally {
-      setUploading(false);
+      setError(String(err));
+      setStep('confirm');
     }
+  };
+
+  const handleReset = () => {
+    setFile(null);
+    setMatched([]);
+    setNewAgents([]);
+    setImportResult(null);
+    setError(null);
+    setStep('configure');
   };
 
   const downloadTemplate = () => {
-    const template = `AgentEmail,Date,Transmittals,Activations,Approvals,Booked
-john.smith@opspulse.com,2026-03-11,50,10,8,5
-jane.doe@opspulse.com,2026-03-11,45,12,9,6
-john.smith@opspulse.com,2026-03-12,55,11,9,6
-jane.doe@opspulse.com,2026-03-12,48,13,10,7`;
-
-    const blob = new Blob([template], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
+    // Matches BPI PA Raw format: No. | Full Name | Level | Count | Volume
+    const csv = [
+      `,BPI,LEVEL,COUNT,VOLUME`,
+      `,FULL NAME`,
+      `1,DELA CRUZ JUAN SANTOS,CORE,50,1234567.00`,
+      `2,REYES MARIA GRACE SANTOS,CORE,35,987654.00`,
+      `3,CABALLERO PEDRO JOSE III,ROOKIE I,20,543210.00`,
+      `4,MENDOZA ANA PATRICIA,ROOKIE I,15,321000.00`,
+    ].join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     const a = document.createElement('a');
-    a.href = url;
-    a.download = 'bulk-import-template.csv';
-    a.click();
-    window.URL.revokeObjectURL(url);
+    a.href = url; a.download = 'bpi-pa-import-template.csv'; a.click();
+    URL.revokeObjectURL(url);
   };
 
-  if (status === 'loading') {
-    return <div className="p-6">Loading...</div>;
-  }
+  // ─── STEP: CONFIGURE ────────────────────────────────────────────────────────
+  if (step === 'configure') {
+    return (
+      <div className="space-y-6 p-6">
+        <PageTitle title="Bulk Data Import" subtitle="Upload BPI PA Excel or CSV production data" />
 
-  return (
-    <div className="space-y-6 p-6">
-      <PageTitle
-        title="Bulk Data Import"
-        subtitle="Upload multiple production entries via CSV"
-      />
-
-      {/* Template Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Upload Format</CardTitle>
-          <CardDescription>
-            Supports both CSV and Excel (BPI.xlsx) formats
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-3">
-            <div>
-              <p className="font-medium text-sm mb-2">CSV Format (Legacy):</p>
-              <p className="text-sm text-slate-600">Required columns: AgentEmail, Date, Transmittals, Activations, Approvals, Booked</p>
-            </div>
-            <div>
-              <p className="font-medium text-sm mb-2">Excel Format (BPI.xlsx):</p>
-              <p className="text-sm text-slate-600">Column A: Agent name | Monthly sections with Goal and Actual values</p>
-            </div>
-            <Button onClick={downloadTemplate} variant="outline" className="gap-2">
-              <Download className="h-4 w-4" />
-              Download CSV Template
-            </Button>
+        {error && (
+          <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            {error}
           </div>
-        </CardContent>
-      </Card>
+        )}
 
-      {/* Upload Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Upload File</CardTitle>
-          <CardDescription>
-            Upload CSV or Excel file with production data
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center hover:border-blue-500 transition">
-            <input
-              type="file"
-              accept=".csv,.xlsx"
-              onChange={handleFileChange}
-              className="hidden"
-              id="file-input"
-            />
-            <label htmlFor="file-input" className="cursor-pointer block">
-              <Upload className="h-8 w-8 mx-auto text-slate-400 mb-2" />
-              <p className="text-sm font-medium text-slate-700">
-                {file ? file.name : 'Click to select or drag & drop CSV or Excel file'}
-              </p>
-              <p className="text-xs text-slate-500 mt-1">Supported: .csv, .xlsx (Maximum 10MB)</p>
-            </label>
-          </div>
-
-          <Button
-            onClick={handleUpload}
-            disabled={!file || uploading}
-            className="w-full gap-2"
-          >
-            <Upload className="h-4 w-4" />
-            {uploading ? 'Uploading...' : 'Upload & Import'}
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* Results */}
-      {result && (
-        <Card className={result.error ? 'border-red-200' : 'border-green-200'}>
+        {/* Format info */}
+        <Card>
           <CardHeader>
-            <div className="flex items-center gap-2">
-              {result.error ? (
-                <>
-                  <AlertCircle className="h-5 w-5 text-red-600" />
-                  <CardTitle className="text-red-600">Import Failed</CardTitle>
-                </>
-              ) : (
-                <>
-                  <CheckCircle className="h-5 w-5 text-green-600" />
-                  <CardTitle className="text-green-600">Import Successful</CardTitle>
-                </>
-              )}
+            <CardTitle className="text-lg">Supported Formats</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-slate-600 space-y-2">
+            <p><span className="font-medium text-slate-800">BPI PA Raw Excel (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/COUNT/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Count | Volume</p>
+            <p className="text-xs text-slate-400">The COUNT column is stored as the selected Metric Type. Use the Report Month picker to set the period.</p>
+            <Button onClick={downloadTemplate} variant="outline" size="sm" className="gap-2 mt-1">
+              <Download className="h-4 w-4" /> Download CSV Template
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Settings */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Import Settings</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Metric Type (COUNT column)</label>
+              <select
+                value={metricType}
+                onChange={e => setMetricType(e.target.value)}
+                className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="transmittals">Transmittals</option>
+                <option value="approvals">Approvals</option>
+                <option value="booked">Booked</option>
+              </select>
+              <p className="text-xs text-slate-500">The COUNT column will be stored as {METRIC_LABELS[metricType]}</p>
             </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Report Month</label>
+              <input
+                type="month"
+                value={reportDate}
+                onChange={e => setReportDate(e.target.value)}
+                className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="text-xs text-slate-500">Month this data belongs to</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* File upload */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Select File</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {result.error && <p className="text-red-600 font-medium">{result.error}</p>}
-
-            {result.message && <p className="text-slate-700">{result.message}</p>}
-
-            {result.success > 0 && (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                <p className="text-sm font-medium text-green-900">
-                  ✓ Successfully imported {result.success} records
+            <div className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center hover:border-blue-500 transition">
+              <input type="file" accept=".csv,.xlsx" onChange={handleFileChange} className="hidden" id="file-input" />
+              <label htmlFor="file-input" className="cursor-pointer block">
+                <Upload className="h-8 w-8 mx-auto text-slate-400 mb-2" />
+                <p className="text-sm font-medium text-slate-700">
+                  {file ? file.name : 'Click to select or drag & drop'}
                 </p>
-              </div>
-            )}
+                <p className="text-xs text-slate-500 mt-1">.csv or .xlsx · max 10 MB</p>
+              </label>
+            </div>
+            <Button onClick={handlePreview} disabled={!file} className="w-full gap-2">
+              <Upload className="h-4 w-4" />
+              Preview Import
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
-            {result.errors && result.errors.length > 0 && (
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-                <p className="text-sm font-medium text-yellow-900 mb-2">
-                  Errors ({result.errors.length}):
+  // ─── STEP: PREVIEWING ───────────────────────────────────────────────────────
+  if (step === 'previewing') {
+    return (
+      <div className="p-6 flex items-center justify-center min-h-64">
+        <div className="text-center space-y-3 text-slate-600">
+          <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto" />
+          <p className="text-sm">Scanning file and checking agents...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── STEP: CONFIRM ──────────────────────────────────────────────────────────
+  if (step === 'confirm') {
+    return (
+      <div className="space-y-6 p-6">
+        <PageTitle title="Review Before Import" subtitle="Confirm the agents and data before saving" />
+
+        {error && (
+          <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            {error}
+          </div>
+        )}
+
+        {/* Summary banner */}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
+            <p className="text-2xl font-bold text-green-700">{matched.length}</p>
+            <p className="text-xs text-green-600 mt-1">Existing Agents</p>
+          </div>
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-center">
+            <p className="text-2xl font-bold text-amber-700">{newAgents.length}</p>
+            <p className="text-xs text-amber-600 mt-1">New Agents Found</p>
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
+            <p className="text-2xl font-bold text-blue-700">{matched.length + approvedNew.length}</p>
+            <p className="text-xs text-blue-600 mt-1">Will Be Imported</p>
+          </div>
+        </div>
+
+        {/* New agents confirmation */}
+        {newAgents.length > 0 && (
+          <Card className="border-amber-200">
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <UserPlus className="h-5 w-5 text-amber-600" />
+                <CardTitle className="text-amber-800">New Agents — Approve to Create</CardTitle>
+              </div>
+              <CardDescription>
+                These agents were not found in the campaign. Check the ones you want to create in the database. Unchecked agents will be skipped.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {newAgents.map((agent, i) => (
+                  <label
+                    key={i}
+                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition ${
+                      agent.approved
+                        ? 'bg-amber-50 border-amber-300'
+                        : 'bg-slate-50 border-slate-200 opacity-60'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={agent.approved}
+                      onChange={() => toggleAgentApproval(i)}
+                      className="h-4 w-4 accent-amber-500"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-slate-800 truncate">{agent.name}</p>
+                      <p className="text-xs text-slate-500">Will be created as Agent in this campaign</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
+                      {agent.volume > 0 && (
+                        <p className="text-xs text-slate-500">₱{agent.volume.toLocaleString()}</p>
+                      )}
+                    </div>
+                  </label>
+                ))}
+              </div>
+              {skippedNew.length > 0 && (
+                <p className="text-xs text-slate-500 mt-3">
+                  {skippedNew.length} agent(s) unchecked will be skipped and not imported.
                 </p>
-                <ul className="text-sm text-yellow-800 space-y-1 max-h-48 overflow-y-auto">
-                  {result.errors.map((err: string, i: number) => (
-                    <li key={i}>• {err}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+              )}
+            </CardContent>
+          </Card>
+        )}
 
-            {result.details && result.details.length > 0 && (
-              <div className="overflow-x-auto">
-                <table className="text-sm w-full">
-                  <thead className="bg-slate-100">
-                    <tr>
-                      <th className="text-left p-2">Agent</th>
-                      {result.details[0].month && (
-                        <>
-                          <th className="text-left p-2">Month</th>
-                          <th className="text-left p-2">Level</th>
-                          <th className="text-right p-2">Goal</th>
-                          <th className="text-right p-2">Actual</th>
-                        </>
+        {/* Matched agents */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Users className="h-5 w-5 text-green-600" />
+              <CardTitle className="text-green-800">Matched Agents ({matched.length})</CardTitle>
+            </div>
+            <CardDescription>These agents were found in the campaign and will be imported.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {matched.length === 0 ? (
+              <p className="text-sm text-slate-500">No existing agents matched.</p>
+            ) : (
+              <div className="max-h-64 overflow-y-auto space-y-1">
+                {matched.map((agent, i) => (
+                  <div key={i} className="flex items-center justify-between px-3 py-2 rounded-lg bg-green-50 border border-green-100">
+                    <div>
+                      <p className="text-sm font-medium text-slate-800">{agent.agentName}</p>
+                      {agent.name !== agent.agentName && (
+                        <p className="text-xs text-slate-400">from file: {agent.name}</p>
                       )}
-                      {result.details[0].date && (
-                        <>
-                          <th className="text-left p-2">Date</th>
-                          <th className="text-right p-2">Trans</th>
-                          <th className="text-right p-2">Act</th>
-                          <th className="text-right p-2">App</th>
-                          <th className="text-right p-2">Booked</th>
-                        </>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
+                      {agent.volume > 0 && (
+                        <p className="text-xs text-slate-500">₱{agent.volume.toLocaleString()}</p>
                       )}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.details.slice(0, 10).map((detail: any, i: number) => (
-                      <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
-                        <td className="p-2">{detail.agent}</td>
-                        {detail.month && (
-                          <>
-                            <td className="p-2">{detail.month}</td>
-                            <td className="p-2">{detail.level}</td>
-                            <td className="text-right p-2">{detail.goal?.toLocaleString()}</td>
-                            <td className="text-right p-2">{detail.actual?.toLocaleString()}</td>
-                          </>
-                        )}
-                        {detail.date && (
-                          <>
-                            <td className="p-2">{detail.date}</td>
-                            <td className="text-right p-2">{detail.transmittals}</td>
-                            <td className="text-right p-2">{detail.activations}</td>
-                            <td className="text-right p-2">{detail.approvals}</td>
-                            <td className="text-right p-2">{detail.booked}</td>
-                          </>
-                        )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {result.details.length > 10 && (
-                  <p className="text-xs text-slate-500 mt-2">
-                    ... and {result.details.length - 10} more records
-                  </p>
-                )}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </CardContent>
         </Card>
-      )}
 
-      {/* Instructions */}
-      <Card className="bg-blue-50 border-blue-200">
+        {/* Action buttons */}
+        <div className="flex flex-col sm:flex-row gap-3">
+          <Button variant="outline" onClick={handleReset} className="gap-2 sm:w-auto">
+            <ArrowLeft className="h-4 w-4" />
+            Start Over
+          </Button>
+          <Button
+            onClick={handleConfirmImport}
+            disabled={matched.length === 0 && approvedNew.length === 0}
+            className="flex-1 gap-2 bg-green-600 hover:bg-green-700"
+          >
+            <CheckCircle className="h-4 w-4" />
+            Confirm &amp; Import{approvedNew.length > 0 ? ` (+ Create ${approvedNew.length} New Agent${approvedNew.length > 1 ? 's' : ''})` : ''}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── STEP: IMPORTING ────────────────────────────────────────────────────────
+  if (step === 'importing') {
+    return (
+      <div className="p-6 flex items-center justify-center min-h-64">
+        <div className="text-center space-y-3 text-slate-600">
+          <div className="animate-spin h-8 w-8 border-4 border-green-500 border-t-transparent rounded-full mx-auto" />
+          <p className="text-sm">Creating agents and importing records...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── STEP: DONE ─────────────────────────────────────────────────────────────
+  return (
+    <div className="space-y-6 p-6">
+      <PageTitle title="Import Complete" subtitle="Production data has been saved" />
+
+      <Card className="border-green-200">
         <CardHeader>
-          <CardTitle className="text-base text-blue-900">Instructions</CardTitle>
+          <div className="flex items-center gap-2">
+            <CheckCircle className="h-5 w-5 text-green-600" />
+            <CardTitle className="text-green-700">Import Successful</CardTitle>
+          </div>
         </CardHeader>
-        <CardContent className="text-sm text-blue-800 space-y-2">
-          <p>1. Download the CSV template above</p>
-          <p>2. Fill in your production data with agent emails, dates, and metrics</p>
-          <p>3. Save as CSV format (.csv)</p>
-          <p>4. Upload the file using the form above</p>
-          <p>5. Review the import results</p>
+        <CardContent className="space-y-4">
+          {importResult?.message && (
+            <p className="text-slate-700 font-medium">{importResult.message}</p>
+          )}
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
+              <p className="text-xl font-bold text-green-700">{importResult?.success ?? 0}</p>
+              <p className="text-xs text-green-600">Records Imported</p>
+            </div>
+            {importResult?.created > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-center">
+                <p className="text-xl font-bold text-amber-700">{importResult.created}</p>
+                <p className="text-xs text-amber-600">New Agents Created</p>
+              </div>
+            )}
+            {importResult?.errors?.length > 0 && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
+                <p className="text-xl font-bold text-red-700">{importResult.errors.length}</p>
+                <p className="text-xs text-red-600">Errors</p>
+              </div>
+            )}
+          </div>
+
+          {importResult?.errors?.length > 0 && (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+              <p className="text-sm font-medium text-yellow-900 mb-2">Errors:</p>
+              <ul className="text-sm text-yellow-800 space-y-1 max-h-40 overflow-y-auto">
+                {importResult.errors.map((err: string, i: number) => (
+                  <li key={i}>• {err}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {importResult?.details?.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="text-sm w-full">
+                <thead className="bg-slate-100">
+                  <tr>
+                    <th className="text-left p-2">Agent</th>
+                    <th className="text-left p-2">Date</th>
+                    <th className="text-right p-2">{METRIC_LABELS[metricType]}</th>
+                    <th className="text-right p-2">Volume</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importResult.details.slice(0, 15).map((d: any, i: number) => (
+                    <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
+                      <td className="p-2">{d.agent}</td>
+                      <td className="p-2">{d.date}</td>
+                      <td className="text-right p-2">
+                        {(d.transmittals ?? d.approvals ?? d.booked ?? 0).toLocaleString()}
+                      </td>
+                      <td className="text-right p-2">
+                        {d.volume > 0 ? `₱${Number(d.volume).toLocaleString()}` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {importResult.details.length > 15 && (
+                <p className="text-xs text-slate-500 mt-2">
+                  ... and {importResult.details.length - 15} more records
+                </p>
+              )}
+            </div>
+          )}
+
+          <Button onClick={handleReset} variant="outline" className="w-full gap-2">
+            <Upload className="h-4 w-4" />
+            Import Another File
+          </Button>
         </CardContent>
       </Card>
     </div>
