@@ -1,4 +1,4 @@
-# ✅ OpsPulse System - Complete Testing Guide
+# ✅ OpsView System - Complete Testing Guide
 
 ## System Status
 - **Dev Server**: Running on http://127.0.0.1:3001
@@ -13,7 +13,7 @@
 **Steps**:
 1. Open browser: http://127.0.0.1:3001/login
 2. Enter credentials:
-   - Email: `admin@opspulse.com`
+   - Email: `admin@opsview.com`
    - Password: `password123`
 3. Click "Sign In"
 
@@ -31,7 +31,7 @@
 **Steps**:
 1. Open browser: http://127.0.0.1:3001/login
 2. Enter credentials:
-   - Email: `manager@opspulse.com`
+   - Email: `manager@opsview.com`
    - Password: `password123`
 3. Click "Sign In"
 
@@ -49,7 +49,7 @@
 **Steps**:
 1. Open browser: http://127.0.0.1:3001/login
 2. Enter credentials:
-   - Email: `collector.1@opspulse.com`
+   - Email: `collector.1@opsview.com`
    - Password: `password123`
 3. Click "Sign In"
 4. Click "My Campaign" in sidebar
@@ -65,7 +65,7 @@
 **Steps**:
 1. Open browser: http://127.0.0.1:3001/login
 2. Enter credentials:
-   - Email: `collector.2@opspulse.com`
+   - Email: `collector.2@opsview.com`
    - Password: `password123`
 3. Click "Sign In"
 4. Click "My Campaign" in sidebar
@@ -77,7 +77,7 @@
 
 ### Test 3C: Try Cross-Campaign Access (Should Fail)
 **Steps**:
-1. Logged in as `collector.1@opspulse.com`
+1. Logged in as `collector.1@opsview.com`
 2. Try to manually navigate to: `http://127.0.0.1:3001/collector/campaign?id=2`
 3. Or try API: `http://127.0.0.1:3001/api/collector/agents?campaignId=2`
 
@@ -91,7 +91,7 @@
 **Objective**: Verify COLLECTOR can only create data for their campaign
 
 **Steps**:
-1. Login as `collector.1@opspulse.com`
+1. Login as `collector.1@opsview.com`
 2. Click "Data Entry" in sidebar
 3. Select agent from dropdown
 4. Enter daily sales data:
@@ -114,7 +114,7 @@
 **Steps**:
 1. Open browser: http://127.0.0.1:3001/login
 2. Enter credentials:
-   - Email: `john.smith@opspulse.com`
+   - Email: `john.smith@opsview.com`
    - Password: `password123`
 3. Click "Sign In"
 
@@ -175,38 +175,38 @@
 
 ### All 18 Collectors (One per Campaign)
 ```
-collector.1@opspulse.com  → BPI PA OUTBOUND
-collector.2@opspulse.com  → BPI PA INBOUND
-collector.3@opspulse.com  → BPI PL
-collector.4@opspulse.com  → BPI BL
-collector.5@opspulse.com  → BPI FF
-collector.6@opspulse.com  → MB ACQ
-collector.7@opspulse.com  → MB PL
-collector.8@opspulse.com  → MB PA
-collector.9@opspulse.com  → BDO SGM
-collector.10@opspulse.com → BDO CIE
-collector.11@opspulse.com → BDO SUPPLE
-collector.12@opspulse.com → BDO VC
-collector.13@opspulse.com → BDO NTH CARD
-collector.14@opspulse.com → AXA
-collector.15@opspulse.com → AXA CLP
-collector.16@opspulse.com → CBC
-collector.17@opspulse.com → CBC HPL
-collector.18@opspulse.com → MEDICARD
+collector.1@opsview.com  → BPI PA OUTBOUND
+collector.2@opsview.com  → BPI PA INBOUND
+collector.3@opsview.com  → BPI PL
+collector.4@opsview.com  → BPI BL
+collector.5@opsview.com  → BPI FF
+collector.6@opsview.com  → MB ACQ
+collector.7@opsview.com  → MB PL
+collector.8@opsview.com  → MB PA
+collector.9@opsview.com  → BDO SGM
+collector.10@opsview.com → BDO CIE
+collector.11@opsview.com → BDO SUPPLE
+collector.12@opsview.com → BDO VC
+collector.13@opsview.com → BDO NTH CARD
+collector.14@opsview.com → AXA
+collector.15@opsview.com → AXA CLP
+collector.16@opsview.com → CBC
+collector.17@opsview.com → CBC HPL
+collector.18@opsview.com → MEDICARD
 
 All passwords: password123
 ```
 
 ### All 8 Agents (Assigned to 3 campaigns each)
 ```
-john.smith@opspulse.com    → BPI PA OUTBOUND, BPI PA INBOUND, BPI PL
-jane.doe@opspulse.com      → BPI BL, BPI FF, MB ACQ
-mike.johnson@opspulse.com  → MB PL, MB PA, BDO SGM
-emily.davis@opspulse.com   → BDO CIE, BDO SUPPLE, BDO VC
-chris.wilson@opspulse.com  → BDO NTH CARD, AXA, AXA CLP
-anna.brown@opspulse.com    → CBC, CBC HPL, MEDICARD
-david.lee@opspulse.com     → BPI PA OUTBOUND, MB PL, BDO NTH CARD
-lisa.chen@opspulse.com     → BPI PA INBOUND, MB PA, AXA
+john.smith@opsview.com    → BPI PA OUTBOUND, BPI PA INBOUND, BPI PL
+jane.doe@opsview.com      → BPI BL, BPI FF, MB ACQ
+mike.johnson@opsview.com  → MB PL, MB PA, BDO SGM
+emily.davis@opsview.com   → BDO CIE, BDO SUPPLE, BDO VC
+chris.wilson@opsview.com  → BDO NTH CARD, AXA, AXA CLP
+anna.brown@opsview.com    → CBC, CBC HPL, MEDICARD
+david.lee@opsview.com     → BPI PA OUTBOUND, MB PL, BDO NTH CARD
+lisa.chen@opsview.com     → BPI PA INBOUND, MB PA, AXA
 
 All passwords: password123
 ```
@@ -255,8 +255,8 @@ All passwords: password123
 ## Quick Access
 - **Dev Server**: http://127.0.0.1:3001
 - **Login Page**: http://127.0.0.1:3001/login
-- **Admin Test**: admin@opspulse.com / password123
-- **Collector Test**: collector.1@opspulse.com / password123
+- **Admin Test**: admin@opsview.com / password123
+- **Collector Test**: collector.1@opsview.com / password123
 
 ---
 

@@ -37,7 +37,7 @@ async function testCollectorAccess() {
     console.log("\n✅ API structure verified - pages and auth flow in place");
     console.log("\n📝 To fully test:");
     console.log("   1. Open browser: http://127.0.0.1:3001/login");
-    console.log("   2. Login as: collector.1@opspulse.com / password123");
+    console.log("   2. Login as: collector.1@opsview.com / password123");
     console.log("   3. Navigate to: My Campaign");
     console.log("   4. Verify: Can only see BPI PA OUTBOUND campaign agents");
   } catch (error) {

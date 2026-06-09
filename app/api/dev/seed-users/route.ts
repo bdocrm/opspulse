@@ -24,7 +24,7 @@ export async function POST() {
       admin = await prisma.user.create({
         data: {
           name: "Admin User",
-          email: "admin@opspulse.com",
+          email: "admin@opsview.com",
           password: passwordHash,
           role: "CEO",
         },
@@ -40,7 +40,7 @@ export async function POST() {
       manager = await prisma.user.create({
         data: {
           name: "Sarah Manager",
-          email: "manager@opspulse.com",
+          email: "manager@opsview.com",
           password: passwordHash,
           role: "OM",
         },
@@ -65,8 +65,8 @@ export async function POST() {
       message: "Test users created successfully",
       count,
       users: [
-        { email: admin?.email || "admin@opspulse.com", role: admin?.role || "CEO", password: "password123" },
-        { email: manager?.email || "manager@opspulse.com", role: manager?.role || "OM", password: "password123" },
+        { email: admin?.email || "admin@opsview.com", role: admin?.role || "CEO", password: "password123" },
+        { email: manager?.email || "manager@opsview.com", role: manager?.role || "OM", password: "password123" },
       ],
     });
   } catch (error) {

@@ -1,4 +1,4 @@
-# OpsPulse 360 - Campaign-Based Access Control Implementation
+# OpsView 360 - Campaign-Based Access Control Implementation
 
 ## What Changed
 
@@ -43,13 +43,13 @@ After migration completes:
 Try logging in with these campaign-specific accounts:
 
 **CEO Account (Global Access)**
-- Email: `ceo@opspulse.com`
+- Email: `ceo@opsview.com`
 - Password: `password123`
 
 **BPI PA OUTBOUND Campaign Examples**
-- Collector: `collector.bpi.out@opspulse.com`
-- OM: `om.bpi.out@opspulse.com`
-- Agent: `agent1.bpi.out@opspulse.com`
+- Collector: `collector.bpi.out@opsview.com`
+- OM: `om.bpi.out@opsview.com`
+- Agent: `agent1.bpi.out@opsview.com`
 
 (Similar patterns for other campaigns)
 

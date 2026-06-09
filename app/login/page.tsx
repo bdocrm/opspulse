@@ -181,7 +181,7 @@ export default function LoginPage() {
             <div className="logo-float">
               <Image
                 src="/ops.png"
-                alt="OpsPulse"
+                alt="OpsView"
                 width={240}
                 height={240}
                 className="h-60 w-60 object-contain drop-shadow-2xl"
@@ -207,7 +207,7 @@ export default function LoginPage() {
                 <input
                   id="email"
                   type="email"
-                  placeholder="admin@opspulse.com"
+                  placeholder="admin@opsview.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required

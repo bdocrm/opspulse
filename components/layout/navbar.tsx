@@ -37,7 +37,7 @@ export function Navbar({ onMenuClick }: NavbarProps) {
         {/* Logo only visible on mobile when sidebar is hidden */}
         <Image
           src="/ops.png"
-          alt="OpsPulse 360"
+          alt="OpsView 360"
           width={40}
           height={40}
           className="h-10 w-10 object-contain lg:hidden"

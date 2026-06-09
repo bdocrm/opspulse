@@ -16,6 +16,7 @@ interface AgentDetail {
   activations: number;
   approvals: number;
   booked: number;
+  volume: number;
   qualityRate: number;
   conversionRate: number;
 }
@@ -30,6 +31,7 @@ interface SavedEntry {
     activations: number;
     approvals: number;
     booked: number;
+    volume: number;
     qualityRate: number | null;
     conversionRate: number | null;
   }>;
@@ -87,6 +89,7 @@ export default function DataEntryPage() {
             activations: 0,
             approvals: 0,
             booked: 0,
+            volume: 0,
             qualityRate: 0,
             conversionRate: 0,
           };
@@ -148,13 +151,14 @@ export default function DataEntryPage() {
 
   // Calculate totals from SAVED entries (from database)
   const savedTotals = useMemo(() => {
-    const totals = { transmittals: 0, activations: 0, approvals: 0, booked: 0 };
+    const totals = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
     savedEntries.forEach((entry) => {
       entry.details.forEach((detail) => {
         totals.transmittals += detail.transmittals || 0;
-        totals.activations += detail.activations || 0;
-        totals.approvals += detail.approvals || 0;
-        totals.booked += detail.booked || 0;
+        totals.activations  += detail.activations  || 0;
+        totals.approvals    += detail.approvals    || 0;
+        totals.booked       += detail.booked       || 0;
+        totals.volume       += detail.volume       || 0;
       });
     });
     return totals;
@@ -162,12 +166,13 @@ export default function DataEntryPage() {
 
   // Calculate totals from current form
   const pendingTotals = useMemo(() => {
-    const totals = { transmittals: 0, activations: 0, approvals: 0, booked: 0 };
+    const totals = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
     Object.values(agentData).forEach((detail) => {
       totals.transmittals += detail.transmittals || 0;
-      totals.activations += detail.activations || 0;
-      totals.approvals += detail.approvals || 0;
-      totals.booked += detail.booked || 0;
+      totals.activations  += detail.activations  || 0;
+      totals.approvals    += detail.approvals    || 0;
+      totals.booked       += detail.booked       || 0;
+      totals.volume       += detail.volume       || 0;
     });
     return totals;
   }, [agentData]);
@@ -175,23 +180,25 @@ export default function DataEntryPage() {
   // Combined daily totals (saved + pending)
   const dailyTotals = useMemo(() => ({
     transmittals: savedTotals.transmittals + pendingTotals.transmittals,
-    activations: savedTotals.activations + pendingTotals.activations,
-    approvals: savedTotals.approvals + pendingTotals.approvals,
-    booked: savedTotals.booked + pendingTotals.booked,
+    activations:  savedTotals.activations  + pendingTotals.activations,
+    approvals:    savedTotals.approvals    + pendingTotals.approvals,
+    booked:       savedTotals.booked       + pendingTotals.booked,
+    volume:       savedTotals.volume       + pendingTotals.volume,
   }), [savedTotals, pendingTotals]);
 
   // Calculate per-agent saved totals from all entries
   const agentSavedTotals = useMemo(() => {
-    const totals: Record<string, { transmittals: number; activations: number; approvals: number; booked: number }> = {};
+    const totals: Record<string, { transmittals: number; activations: number; approvals: number; booked: number; volume: number }> = {};
     savedEntries.forEach((entry) => {
       entry.details.forEach((detail) => {
         if (!totals[detail.agentId]) {
-          totals[detail.agentId] = { transmittals: 0, activations: 0, approvals: 0, booked: 0 };
+          totals[detail.agentId] = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
         }
         totals[detail.agentId].transmittals += detail.transmittals || 0;
-        totals[detail.agentId].activations += detail.activations || 0;
-        totals[detail.agentId].approvals += detail.approvals || 0;
-        totals[detail.agentId].booked += detail.booked || 0;
+        totals[detail.agentId].activations  += detail.activations  || 0;
+        totals[detail.agentId].approvals    += detail.approvals    || 0;
+        totals[detail.agentId].booked       += detail.booked       || 0;
+        totals[detail.agentId].volume       += detail.volume       || 0;
       });
     });
     return totals;
@@ -247,6 +254,7 @@ export default function DataEntryPage() {
         activations: 0,
         approvals: 0,
         booked: 0,
+        volume: 0,
         qualityRate: 0,
         conversionRate: 0,
       };
@@ -410,7 +418,7 @@ export default function DataEntryPage() {
           </div>
         </div>
         
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <div className="text-center p-3 bg-background/80 rounded-lg">
             <p className="text-xs text-muted-foreground mb-1">Transmittals</p>
             <p className="text-2xl font-bold text-primary">{dailyTotals.transmittals}</p>
@@ -426,6 +434,12 @@ export default function DataEntryPage() {
           <div className="text-center p-3 bg-background/80 rounded-lg">
             <p className="text-xs text-muted-foreground mb-1">Booked</p>
             <p className="text-2xl font-bold text-primary">{dailyTotals.booked}</p>
+          </div>
+          <div className="text-center p-3 bg-background/80 rounded-lg col-span-2 sm:col-span-1">
+            <p className="text-xs text-muted-foreground mb-1">Volume (₱)</p>
+            <p className="text-xl font-bold text-primary">
+              {dailyTotals.volume > 0 ? `₱${dailyTotals.volume.toLocaleString()}` : '—'}
+            </p>
           </div>
         </div>
       </Card>
@@ -646,6 +660,18 @@ export default function DataEntryPage() {
                           />
                         </div>
                       </div>
+                      <div className="mt-2 space-y-1">
+                        <Label className="text-[10px] text-muted-foreground">Volume (₱ Gross Premium)</Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={agentData[agent.id]?.volume || 0}
+                          onChange={(e) => updateAgentDetail(agent.id, 'volume', parseFloat(e.target.value) || 0)}
+                          className="h-8 text-center text-xs"
+                          placeholder="0"
+                        />
+                      </div>
                       <div className="grid grid-cols-2 gap-2 mt-2">
                         <div className="space-y-1">
                           <Label className="text-[10px] text-muted-foreground">Quality %</Label>
@@ -698,6 +724,7 @@ export default function DataEntryPage() {
                     <th className="text-center py-3 px-2 font-medium w-20">Act</th>
                     <th className="text-center py-3 px-2 font-medium w-20">Appr</th>
                     <th className="text-center py-3 px-2 font-medium w-20">Book</th>
+                    <th className="text-center py-3 px-2 font-medium w-28">Volume (₱)</th>
                     <th className="text-center py-3 px-2 font-medium w-16">Q%</th>
                     <th className="text-center py-3 px-2 font-medium w-16">C%</th>
                   </tr>
@@ -774,6 +801,18 @@ export default function DataEntryPage() {
                           value={agentData[agent.id]?.booked || 0}
                           onChange={(e) => updateAgentDetail(agent.id, 'booked', parseInt(e.target.value) || 0)}
                           className="w-full h-8 text-center font-semibold"
+                        />
+                      </td>
+                      <td className="py-1 px-1">
+                        <Input
+                          type="number"
+                          min="0"
+                          step="1"
+                          disabled={!isPresent}
+                          value={agentData[agent.id]?.volume || 0}
+                          onChange={(e) => updateAgentDetail(agent.id, 'volume', parseFloat(e.target.value) || 0)}
+                          className="w-full h-8 text-center text-xs"
+                          placeholder="0"
                         />
                       </td>
                       <td className="py-1 px-1">

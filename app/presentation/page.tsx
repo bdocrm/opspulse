@@ -13,12 +13,12 @@ interface Slide {
 const slides: Slide[] = [
   {
     id: 1,
-    title: 'OpsPulse 360',
+    title: 'OpsView 360',
     subtitle: 'Operational Performance Intelligence Dashboard',
     content: (
       <div className="text-center space-y-6">
         <div className="text-6xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
-          OpsPulse 360
+          OpsView 360
         </div>
         <p className="text-2xl text-gray-600 dark:text-gray-300">
           Real-time operational performance monitoring & analytics
@@ -31,7 +31,7 @@ const slides: Slide[] = [
   },
   {
     id: 2,
-    title: 'What is OpsPulse?',
+    title: 'What is OpsView?',
     content: (
       <div className="space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -434,17 +434,17 @@ const slides: Slide[] = [
             <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
               <tr className="bg-blue-50 dark:bg-blue-900/20">
                 <td className="px-4 py-2">CEO</td>
-                <td className="px-4 py-2">ceo@opspulse.com</td>
+                <td className="px-4 py-2">ceo@opsview.com</td>
                 <td className="px-4 py-2 font-mono">password123</td>
               </tr>
               <tr className="bg-green-50 dark:bg-green-900/20">
                 <td className="px-4 py-2">OM (Example)</td>
-                <td className="px-4 py-2">om.bpi.out@opspulse.com</td>
+                <td className="px-4 py-2">om.bpi.out@opsview.com</td>
                 <td className="px-4 py-2 font-mono">password123</td>
               </tr>
               <tr className="bg-orange-50 dark:bg-orange-900/20">
                 <td className="px-4 py-2">COLLECTOR (Example)</td>
-                <td className="px-4 py-2">collector.bpi.out@opspulse.com</td>
+                <td className="px-4 py-2">collector.bpi.out@opsview.com</td>
                 <td className="px-4 py-2 font-mono">password123</td>
               </tr>
             </tbody>

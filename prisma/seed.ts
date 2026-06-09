@@ -21,7 +21,7 @@ async function main() {
   const admin = await prisma.user.create({
     data: {
       name: "Admin User",
-      email: "admin@opspulse.com",
+      email: "admin@opsview.com",
       password: passwordHash,
       role: Role.CEO,
     },
@@ -30,7 +30,7 @@ async function main() {
   const manager = await prisma.user.create({
     data: {
       name: "Sarah Manager",
-      email: "manager@opspulse.com",
+      email: "manager@opsview.com",
       password: passwordHash,
       role: Role.OM,
     },
@@ -202,7 +202,7 @@ async function main() {
       prisma.user.create({
         data: {
           name: config.name,
-          email: `${config.name.toLowerCase().replace(" ", ".")}@opspulse.com`,
+          email: `${config.name.toLowerCase().replace(" ", ".")}@opsview.com`,
           password: passwordHash,
           role: Role.AGENT,
           seatNumber: config.seat,
@@ -219,7 +219,7 @@ async function main() {
       prisma.user.create({
         data: {
           name: `Collector - ${campaign.campaignName}`,
-          email: `collector.${index + 1}@opspulse.com`,
+          email: `collector.${index + 1}@opsview.com`,
           password: passwordHash,
           role: Role.COLLECTOR,
           // Assign to specific campaign
@@ -271,9 +271,9 @@ async function main() {
   console.log(`   - ${salesData.length} daily sales records`);
   console.log("");
   console.log("📧 Login credentials:");
-  console.log("   Admin:   admin@opspulse.com / password123");
-  console.log("   Manager: manager@opspulse.com / password123");
-  console.log("   Agent:   john.smith@opspulse.com / password123");
+  console.log("   Admin:   admin@opsview.com / password123");
+  console.log("   Manager: manager@opsview.com / password123");
+  console.log("   Agent:   john.smith@opsview.com / password123");
   console.log("");
   console.log("📊 Agent-Campaign Assignments:");
   agentConfigs.forEach((config, idx) => {

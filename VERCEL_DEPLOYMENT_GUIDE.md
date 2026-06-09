@@ -14,16 +14,16 @@ The `/api/users` and `/api/campaigns` endpoints return 500 errors on production 
 
 **CRITICAL**: Deploy will fail without these. Go to Vercel Dashboard:
 
-1. Click your project: **opspulse-lac**
+1. Click your project: **opsview-lac**
 2. Go to **Settings** → **Environment Variables**
 3. Add these three variables:
 
 ```
 DATABASE_URL=postgresql://postgres.cfnmnptftnnnupxgobkk:Igdbe1xDqx64orBv@aws-1-ap-northeast-2.pooler.supabase.com:6543/postgres?pgbouncer=true
 
-NEXTAUTH_URL=https://opspulse-lac.vercel.app
+NEXTAUTH_URL=https://opsview-lac.vercel.app
 
-NEXTAUTH_SECRET=opspulse360-secret-key-9f8a7b6c5d4e3f2a
+NEXTAUTH_SECRET=opsview360-secret-key-9f8a7b6c5d4e3f2a
 ```
 
 **Important Notes**:
@@ -73,8 +73,8 @@ npm run prisma:seed
    ```
    Should show User, Campaign, and other tables
 3. **API endpoints work**: Visit:
-   - `https://opspulse-lac.vercel.app/api/users` → Returns 200 with users array
-   - `https://opspulse-lac.vercel.app/api/campaigns` → Returns 200 with campaigns array
+   - `https://opsview-lac.vercel.app/api/users` → Returns 200 with users array
+   - `https://opsview-lac.vercel.app/api/campaigns` → Returns 200 with campaigns array
 
 ## Troubleshooting
 
@@ -147,9 +147,9 @@ npm run dev            # Start dev server
 ## Testing After Deployment
 
 1. Open browser Network tab: `F12` > Network
-2. Visit: `https://opspulse-lac.vercel.app/api/users`
+2. Visit: `https://opsview-lac.vercel.app/api/users`
 3. Should return 200 status with user array
-4. Visit: `https://opspulse-lac.vercel.app/api/campaigns`
+4. Visit: `https://opsview-lac.vercel.app/api/campaigns`
 5. Should return 200 status with campaign array
 
 ## Troubleshooting

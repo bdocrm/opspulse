@@ -5,7 +5,7 @@ Verify that collectors can upload CSV files with production data and records are
 
 ## Prerequisites
 - [ ] Server running: http://localhost:3002
-- [ ] Logged in as COLLECTOR (manager@opspulse.com / password123)
+- [ ] Logged in as COLLECTOR (manager@opsview.com / password123)
 - [ ] Campaign assigned to collector
 - [ ] Agents in system
 
@@ -42,8 +42,8 @@ Verify that collectors can upload CSV files with production data and records are
 1. Create test CSV file with content:
 
 AgentEmail,Date,Transmittals,Activations,Approvals,Booked
-admin@opspulse.com,2026-03-11,50,45,40,35
-admin@opspulse.com,2026-03-12,55,50,45,40
+admin@opsview.com,2026-03-11,50,45,40,35
+admin@opsview.com,2026-03-12,55,50,45,40
 
 2. Save as "test-data.csv"
 3. Verify file format (plain text, no extra sheets)

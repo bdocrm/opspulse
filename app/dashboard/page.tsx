@@ -65,7 +65,7 @@ export default function DashboardPage() {
 
   // Build API URL — always pass current month/year so KPIs use current period
   const apiUrl = `/api/dashboard?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}`;
-  const { data, isLoading } = useSWR(apiUrl, fetcher);
+  const { data, isLoading } = useSWR(apiUrl, fetcher, { refreshInterval: 30000 });
 
   const kpis = data?.kpis ?? {
     totalMTD: 0,

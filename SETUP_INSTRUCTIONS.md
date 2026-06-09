@@ -3,7 +3,7 @@
 ## ⚠️ CRITICAL: Execute These Steps in Supabase SQL Editor
 
 ### Step 1: Run Database Migration
-**Location**: `c:\xampp1\htdocs\OpsPulse\MIGRATION_CAMPAIGN_ACCESS.sql`
+**Location**: `c:\xampp1\htdocs\OpsView\MIGRATION_CAMPAIGN_ACCESS.sql`
 
 In Supabase Dashboard:
 1. Go to **SQL Editor**
@@ -21,7 +21,7 @@ DELETE FROM "Campaign";
 ```
 
 ### Step 3: Run New Seed Script
-**Location**: `c:\xampp1\htdocs\OpsPulse\SEED_DATA.sql`
+**Location**: `c:\xampp1\htdocs\OpsView\SEED_DATA.sql`
 
 In the same SQL Editor:
 1. Create new query
@@ -35,7 +35,7 @@ In the same SQL Editor:
 
 ### CEO (Global Admin)
 ```
-Email: ceo@opspulse.com
+Email: ceo@opsview.com
 Password: password123
 Access: All campaigns
 ```
@@ -43,16 +43,16 @@ Access: All campaigns
 ### Campaign Teams (Example: BPI PA OUTBOUND)
 ```
 Collector (Data Input):
-  Email: collector.bpi.out@opspulse.com
+  Email: collector.bpi.out@opsview.com
   Password: password123
   
 OM (Data Review):
-  Email: om.bpi.out@opspulse.com
+  Email: om.bpi.out@opsview.com
   Password: password123
   
 Agents (Data Submission):
-  Email: agent1.bpi.out@opspulse.com
-  Email: agent2.bpi.out@opspulse.com
+  Email: agent1.bpi.out@opsview.com
+  Email: agent2.bpi.out@opsview.com
   Password: password123 (all agents)
 ```
 
@@ -63,23 +63,23 @@ Agents (Data Submission):
 - **BDO SGM** (4 agents)
 - **BPI BI** (3 agents)
 
-Each follows the pattern: `email.campaign.acronym@opspulse.com`
+Each follows the pattern: `email.campaign.acronym@opsview.com`
 
 ---
 
 ## New System Structure
 
 ```
-OpsPulse 360
-├── CEO (ceo@opspulse.com)
+OpsView 360
+├── CEO (ceo@opsview.com)
 │   └── Views all campaigns
 │
 ├── Campaign: BPI PA OUTBOUND
-│   ├── COLLECTOR: collector.bpi.out@opspulse.com
+│   ├── COLLECTOR: collector.bpi.out@opsview.com
 │   │   └── Collects agent data, manages daily submissions
-│   ├── OM: om.bpi.out@opspulse.com
+│   ├── OM: om.bpi.out@opsview.com
 │   │   └── Views collected data, reports to CEO
-│   └── AGENTS: agent1-6.bpi.out@opspulse.com
+│   └── AGENTS: agent1-6.bpi.out@opsview.com
 │       └── Submit daily transmittals, attendance
 │
 ├── Campaign: BPI PA INBOUND

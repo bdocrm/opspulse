@@ -1,4 +1,4 @@
-# OpsPulse 360
+# OpsView 360
 
 **Operational Performance Intelligence Dashboard**  
 Developed by Business Dev Team
@@ -37,7 +37,7 @@ cp .env.example .env
 ```
 
 ```env
-DATABASE_URL="postgresql://postgres:<PASSWORD>@<HOST>:5432/opspulse"
+DATABASE_URL="postgresql://postgres:<PASSWORD>@<HOST>:5432/opsview"
 NEXTAUTH_SECRET="generate-a-random-secret"
 NEXTAUTH_URL="http://localhost:3000"
 ```
@@ -66,9 +66,9 @@ This creates default users, campaigns, and sample daily sales data.
 
 | Role    | Email                    | Password     |
 | ------- | ------------------------ | ------------ |
-| Admin   | admin@opspulse.com       | password123  |
-| Manager | manager@opspulse.com     | password123  |
-| Agent   | john.smith@opspulse.com  | password123  |
+| Admin   | admin@opsview.com       | password123  |
+| Manager | manager@opsview.com     | password123  |
+| Agent   | john.smith@opsview.com  | password123  |
 
 ### 6. Run development server
 

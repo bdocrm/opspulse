@@ -6,7 +6,7 @@ import { Providers } from "@/components/providers";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "OpsPulse 360",
+  title: "OpsView 360",
   description: "Operational Performance Intelligence Dashboard",
   icons: {
     icon: "/ops.png",

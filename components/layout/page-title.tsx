@@ -12,7 +12,7 @@ export function PageTitle({ title, subtitle }: PageTitleProps) {
     <div className="flex items-center gap-3 mb-6">
       <Image
         src="/ops.png"
-        alt="OpsPulse 360"
+        alt="OpsView 360"
         width={28}
         height={28}
         className="h-7 w-7 object-contain hidden sm:block"

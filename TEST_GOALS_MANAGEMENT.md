@@ -5,7 +5,7 @@ Verify that CEO/OM can set campaign goals, configure weekly breakdowns, and assi
 
 ## Prerequisites
 - [ ] Server running: http://localhost:3002
-- [ ] Logged in as CEO or OM (admin@opspulse.com / password123)
+- [ ] Logged in as CEO or OM (admin@opsview.com / password123)
 - [ ] At least one campaign exists with agents
 - [ ] Agents assigned to campaign
 

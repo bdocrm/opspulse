@@ -31,7 +31,7 @@ const defaultLinks = [
   { href: "/reports/campaigns", label: "Campaign Reports", icon: BarChart3, roles: ['CEO', 'OM'] },
   { href: "/reports/campaign-performance", label: "Agent Performance", icon: Zap, roles: ['CEO', 'OM'] },
   { href: "/om-dashboard", label: "OM Dashboard", icon: Gauge, roles: ['OM'] },
-  { href: "/presentation", label: "OpsPulse Deck", icon: Projector, roles: ['CEO', 'OM'] },
+  { href: "/presentation", label: "OpsView Deck", icon: Projector, roles: ['CEO', 'OM'] },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -78,7 +78,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           <Link href={userRole === 'COLLECTOR' ? '/collector' : '/dashboard'} className="flex flex-col items-center">
             <Image
               src="/ops.png"
-              alt="OpsPulse 360"
+              alt="OpsView 360"
               width={200}
               height={200}
               className="h-[200px] w-[200px] object-contain"

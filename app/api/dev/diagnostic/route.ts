@@ -25,9 +25,9 @@ export async function GET() {
     console.log("Users:", allUsers);
 
     // Test 3: Try to find admin user
-    console.log("📌 Test 3: Looking for admin@opspulse.com");
+    console.log("📌 Test 3: Looking for admin@opsview.com");
     const adminUser = await prisma.user.findUnique({
-      where: { email: "admin@opspulse.com" },
+      where: { email: "admin@opsview.com" },
       select: {
         id: true,
         email: true,

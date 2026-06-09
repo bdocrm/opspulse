@@ -1,4 +1,4 @@
-# OpsPulse 360 - Campaign Access Control Setup (CLEAN SLATE)
+# OpsView 360 - Campaign Access Control Setup (CLEAN SLATE)
 
 ## 🚀 SETUP STEPS (Run in Supabase SQL Editor)
 
@@ -32,7 +32,7 @@
 
 ### CEO (Global Access)
 ```
-Email: ceo@opspulse.com
+Email: ceo@opsview.com
 Password: password123
 Access: All 6 campaigns
 ```
@@ -40,11 +40,11 @@ Access: All 6 campaigns
 ### Campaign Teams (Example: BPI PA OUTBOUND)
 ```
 COLLECTOR (Data Input):
-  Email: collector.bpi.out@opspulse.com
+  Email: collector.bpi.out@opsview.com
   Password: password123
 
 OM (Data Review):
-  Email: om.bpi.out@opspulse.com
+  Email: om.bpi.out@opsview.com
   Password: password123
 ```
 
@@ -73,16 +73,16 @@ This matches your requirement: *"only the name of the agents will be input by th
 ## 📊 System Structure After Setup
 
 ```
-OpsPulse 360
+OpsView 360
 │
-├── CEO (ceo@opspulse.com)
+├── CEO (ceo@opsview.com)
 │   └── Sees all 6 campaigns globally
 │
 ├── Campaign: BPI PA OUTBOUND
-│   ├── COLLECTOR: collector.bpi.out@opspulse.com
+│   ├── COLLECTOR: collector.bpi.out@opsview.com
 │   │   └── Manages agents (adds names, assigns seats)
 │   │   └── Collects daily transmittals
-│   ├── OM: om.bpi.out@opspulse.com
+│   ├── OM: om.bpi.out@opsview.com
 │   │   └── Reviews collected data
 │   │   └── Forwards to CEO
 │   └── AGENTS: Managed by COLLECTOR
@@ -158,7 +158,7 @@ $2a$10$m8WD3n6ckYoisDBawArZ6eavo16dLP/pko7T/mJgXhHC4F34qSIwi
 
 To change passwords in Supabase SQL Editor:
 ```sql
-UPDATE "User" SET password = '[new_bcrypt_hash]' WHERE email = 'email@opspulse.com';
+UPDATE "User" SET password = '[new_bcrypt_hash]' WHERE email = 'email@opsview.com';
 ```
 
 Generate new bcrypt hash:

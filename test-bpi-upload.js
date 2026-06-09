@@ -54,7 +54,7 @@ async function testBulkImportWithBPI() {
         console.log('   ❌ Unauthorized (expected - need auth session)\n');
         console.log('   ℹ️  To test with auth, use the browser:');
         console.log('   1. Go to http://localhost:3003/login');
-        console.log('   2. Login as COLLECTOR (manager@opspulse.com / password123)');
+        console.log('   2. Login as COLLECTOR (manager@opsview.com / password123)');
         console.log('   3. Click "Bulk Import" in sidebar');
         console.log('   4. Upload BPI.xlsx file\n');
       } else {
@@ -73,7 +73,7 @@ async function testBulkImportWithBPI() {
     
     console.log('1️⃣  LOGIN:');
     console.log('   URL: http://localhost:3003/login');
-    console.log('   Email: manager@opspulse.com');
+    console.log('   Email: manager@opsview.com');
     console.log('   Password: password123');
     console.log('   Role: COLLECTOR\n');
 

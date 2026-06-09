@@ -1,5 +1,5 @@
 export const metadata = {
-  title: "Campaign Performance Report - OpsPulse",
+  title: "Campaign Performance Report - OpsView",
   description: "Detailed campaign performance analysis with agent metrics",
 };
 

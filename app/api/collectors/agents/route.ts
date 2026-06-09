@@ -48,7 +48,7 @@ export async function POST(request: NextRequest) {
 
     // Generate unique email for agent (system-generated, not for login)
     const timestamp = Date.now();
-    const agentEmail = `agent-s${seatNumber}-${campaignId.slice(0, 8)}-${timestamp}@opspulse.local`;
+    const agentEmail = `agent-s${seatNumber}-${campaignId.slice(0, 8)}-${timestamp}@opsview.local`;
 
     // Check if email already exists (edge case)
     const existingEmail = await prisma.user.findUnique({
