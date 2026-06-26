@@ -64,6 +64,18 @@ export const authOptions: AuthOptions = {
         token.role = (user as any).role;
         token.campaignId = (user as any).campaignId;
         token.campaignName = (user as any).campaignName;
+      } else if (token.id && !token.campaignId && token.role !== "CEO") {
+        // Self-heal: a campaign may have been assigned after login (e.g. a
+        // collector's first bulk import). Re-read it so the dashboard can load
+        // without forcing a logout/login. Only runs while no campaign is set.
+        const dbUser = await prisma.user.findUnique({
+          where: { id: token.id as string },
+          select: { campaignId: true, campaign: { select: { campaignName: true } } },
+        });
+        if (dbUser?.campaignId) {
+          token.campaignId = dbUser.campaignId;
+          token.campaignName = dbUser.campaign?.campaignName;
+        }
       }
       return token;
     },

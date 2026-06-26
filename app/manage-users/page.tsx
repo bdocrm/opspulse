@@ -14,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/components/toast-provider";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { Trash2, Edit2, Plus } from "lucide-react";
+import { Trash2, Edit2, Plus, Search, AlertTriangle } from "lucide-react";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -105,8 +105,12 @@ export default function ManageUsersPage() {
   });
   const [deleting, setDeleting] = useState(false);
   const [selectedCampaignFilter, setSelectedCampaignFilter] = useState<string | null>(null);
+  const [roleFilter, setRoleFilter] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   const [formData, setFormData] = useState<FormData>({
     name: "",
@@ -252,12 +256,15 @@ export default function ManageUsersPage() {
     setSelectedUserIds(newSelected);
   };
 
-  const handleSelectAll = (filteredUsers: User[]) => {
-    if (selectedUserIds.size === filteredUsers.length) {
-      setSelectedUserIds(new Set());
+  const handleSelectAll = (list: User[]) => {
+    const allSelected = list.length > 0 && list.every((u) => selectedUserIds.has(u.id));
+    const newSelected = new Set(selectedUserIds);
+    if (allSelected) {
+      list.forEach((u) => newSelected.delete(u.id));
     } else {
-      setSelectedUserIds(new Set(filteredUsers.map((u) => u.id)));
+      list.forEach((u) => newSelected.add(u.id));
     }
+    setSelectedUserIds(newSelected);
   };
 
   const handleBulkDelete = async () => {
@@ -284,6 +291,7 @@ export default function ManageUsersPage() {
       const data = await res.json();
       addToast("success", `✅ ${data.data.deletedCount} user(s) deleted successfully`);
       setSelectedUserIds(new Set());
+      setBulkDeleteOpen(false);
       mutateUsers();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Error deleting users";
@@ -294,6 +302,29 @@ export default function ManageUsersPage() {
     }
   };
 
+  // Duplicate-name monitoring: a name is flagged when it appears on more than
+  // one user account (case-insensitive, trimmed).
+  const nameCounts = users.reduce((acc, u) => {
+    const key = u.name.trim().toLowerCase();
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  const isDuplicateName = (name: string) => (nameCounts[name.trim().toLowerCase()] || 0) > 1;
+  const duplicateCount = users.filter((u) => isDuplicateName(u.name)).length;
+
+  // Apply campaign filter, role filter, search, and duplicate filter.
+  const filteredUsers = users.filter((user) => {
+    if (selectedCampaignFilter && user.campaignId !== selectedCampaignFilter) return false;
+    if (roleFilter !== "all" && user.role !== roleFilter) return false;
+    if (showDuplicatesOnly && !isDuplicateName(user.name)) return false;
+    const q = searchQuery.trim().toLowerCase();
+    if (q && !`${user.name} ${user.email}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  const allFilteredSelected =
+    filteredUsers.length > 0 && filteredUsers.every((u) => selectedUserIds.has(u.id));
+
   if (status === "loading") {
     return <div className="p-6">Loading...</div>;
   }
@@ -302,6 +333,16 @@ export default function ManageUsersPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <PageTitle title="Manage Users" subtitle="Create, update, and delete user accounts" />
+        <div className="flex items-center gap-2">
+        <Button
+          variant="destructive"
+          className="gap-2"
+          disabled={selectedUserIds.size === 0}
+          onClick={() => setBulkDeleteOpen(true)}
+        >
+          <Trash2 className="h-4 w-4" />
+          Delete Selected ({selectedUserIds.size})
+        </Button>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <Button onClick={() => { resetForm(); setDialogOpen(true); }} className="gap-2">
@@ -420,47 +461,74 @@ export default function ManageUsersPage() {
             </form>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {/* Users Table */}
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Users</CardTitle>
-          {campaigns.length > 0 && (
-            <div className="w-48">
-              <Select 
-                value={selectedCampaignFilter || "all"} 
-                onValueChange={(val) => setSelectedCampaignFilter(val === "all" ? null : val)}
-              >
+        <CardHeader className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <CardTitle>Users ({filteredUsers.length})</CardTitle>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="relative w-full sm:w-56">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search name or email..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-8"
+              />
+            </div>
+            <div className="w-full sm:w-40">
+              <Select value={roleFilter} onValueChange={setRoleFilter}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Filter by campaign" />
+                  <SelectValue placeholder="Filter by role" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Campaigns</SelectItem>
-                  {campaigns.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.campaignName}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="all">All Roles</SelectItem>
+                  <SelectItem value="CEO">CEO</SelectItem>
+                  <SelectItem value="OM">Operations Manager</SelectItem>
+                  <SelectItem value="COLLECTOR">Collector</SelectItem>
+                  <SelectItem value="AGENT">Agent</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-          )}
+            <Button
+              variant={showDuplicatesOnly ? "default" : "outline"}
+              className={`gap-2 ${showDuplicatesOnly ? "" : "border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"}`}
+              onClick={() => setShowDuplicatesOnly((v) => !v)}
+              title="Show only users with duplicate names"
+            >
+              <AlertTriangle className="h-4 w-4" />
+              Duplicates ({duplicateCount})
+            </Button>
+            {campaigns.length > 0 && (
+              <div className="w-full sm:w-48">
+                <Select
+                  value={selectedCampaignFilter || "all"}
+                  onValueChange={(val) => setSelectedCampaignFilter(val === "all" ? null : val)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Filter by campaign" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Campaigns</SelectItem>
+                    {campaigns.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.campaignName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {selectedUserIds.size > 0 && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
               <span className="text-sm font-semibold text-red-700">
                 {selectedUserIds.size} user(s) selected
               </span>
-              <Button
-                onClick={handleBulkDelete}
-                disabled={bulkDeleting}
-                className="bg-red-600 hover:bg-red-700 gap-2"
-              >
-                <Trash2 className="h-4 w-4" />
-                {bulkDeleting ? "Deleting..." : "Delete Selected"}
-              </Button>
             </div>
           )}
           <div className="overflow-x-auto">
@@ -470,8 +538,8 @@ export default function ManageUsersPage() {
                   <TableHead className="w-12">
                     <input
                       type="checkbox"
-                      checked={selectedUserIds.size > 0 && selectedUserIds.size === users.filter((user) => selectedCampaignFilter ? user.campaignId === selectedCampaignFilter : true).length}
-                      onChange={() => handleSelectAll(users.filter((user) => selectedCampaignFilter ? user.campaignId === selectedCampaignFilter : true))}
+                      checked={allFilteredSelected}
+                      onChange={() => handleSelectAll(filteredUsers)}
                       className="cursor-pointer"
                     />
                   </TableHead>
@@ -485,22 +553,14 @@ export default function ManageUsersPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {users.length === 0 ? (
+                {filteredUsers.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                       No users found
                     </TableCell>
                   </TableRow>
                 ) : (
-                  users
-                    .filter((user) => {
-                      // Filter by campaign if selected
-                      if (selectedCampaignFilter) {
-                        return user.campaignId === selectedCampaignFilter;
-                      }
-                      return true;
-                    })
-                    .map((user) => (
+                  filteredUsers.map((user) => (
                     <TableRow key={user.id}>
                       <TableCell className="w-12">
                         <input
@@ -510,7 +570,17 @@ export default function ManageUsersPage() {
                           className="cursor-pointer"
                         />
                       </TableCell>
-                      <TableCell className="font-medium">{user.name}</TableCell>
+                      <TableCell className={`font-medium ${isDuplicateName(user.name) ? "text-red-600" : ""}`}>
+                        <span className="inline-flex items-center gap-1.5">
+                          {user.name}
+                          {isDuplicateName(user.name) && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+                              <AlertTriangle className="h-3 w-3" />
+                              Duplicate
+                            </span>
+                          )}
+                        </span>
+                      </TableCell>
                       <TableCell className="text-sm">{user.email}</TableCell>
                       <TableCell>
                         <span className="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-primary/10 text-primary">
@@ -560,6 +630,17 @@ export default function ManageUsersPage() {
         actionLabel="Delete"
         isDangerous={true}
         onCancel={() => setDeleteDialog({ open: false, userId: "", name: "" })}
+      />
+
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        title="Delete Selected Users"
+        description={`Are you sure you want to delete ${selectedUserIds.size} selected user(s)? This action cannot be undone.`}
+        onConfirm={handleBulkDelete}
+        isLoading={bulkDeleting}
+        actionLabel="Delete Selected"
+        isDangerous={true}
+        onCancel={() => setBulkDeleteOpen(false)}
       />
     </div>
   );

@@ -21,7 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { kpiColorClass } from "@/utils/kpi";
 import { cn } from "@/lib/utils";
-import { BarChart3, Download, Search, TrendingUp } from "lucide-react";
+import { BarChart3, Download, Search, TrendingUp, AlertTriangle } from "lucide-react";
 
 interface CampaignReport {
   id: string;
@@ -45,6 +45,7 @@ export default function CampaignReportsPage() {
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterStatus, setFilterStatus] = useState<'all' | 'on-track' | 'at-risk' | 'exceeding'>('all');
+  const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
 
   useEffect(() => {
     if (status === 'loading') return;
@@ -72,9 +73,20 @@ export default function CampaignReportsPage() {
     avgAchievement: 0,
   };
 
+  // Duplicate-name monitoring: a campaign name is flagged when it appears on
+  // more than one campaign row (case-insensitive, trimmed).
+  const nameCounts = campaigns.reduce((acc, c) => {
+    const key = c.name.trim().toLowerCase();
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  const isDuplicateName = (name: string) => (nameCounts[name.trim().toLowerCase()] || 0) > 1;
+  const duplicateCount = campaigns.filter(c => isDuplicateName(c.name)).length;
+
   const filteredCampaigns = campaigns
     .filter(c => c.name.toLowerCase().includes(searchTerm.toLowerCase()))
-    .filter(c => filterStatus === 'all' || c.status === filterStatus);
+    .filter(c => filterStatus === 'all' || c.status === filterStatus)
+    .filter(c => !showDuplicatesOnly || isDuplicateName(c.name));
 
   const chartData = campaigns.map(c => ({ name: c.name, achievement: c.achievement }));
 
@@ -171,6 +183,15 @@ export default function CampaignReportsPage() {
             {status === 'all' ? 'All Campaigns' : status.replace('-', ' ')}
           </Button>
         ))}
+        <Button
+          variant={showDuplicatesOnly ? 'default' : 'outline'}
+          onClick={() => setShowDuplicatesOnly(v => !v)}
+          className={cn("gap-2", showDuplicatesOnly ? "" : "border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700")}
+          title="Show only campaigns with duplicate names"
+        >
+          <AlertTriangle className="h-4 w-4" />
+          Duplicates ({duplicateCount})
+        </Button>
       </div>
 
       {/* Detailed Reports Table */}
@@ -197,7 +218,17 @@ export default function CampaignReportsPage() {
               <TableBody>
                 {filteredCampaigns.map((campaign) => (
                   <TableRow key={campaign.id}>
-                    <TableCell className="font-medium">{campaign.name}</TableCell>
+                    <TableCell className={cn("font-medium", isDuplicateName(campaign.name) && "text-red-600")}>
+                      <span className="inline-flex items-center gap-1.5">
+                        {campaign.name}
+                        {isDuplicateName(campaign.name) && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+                            <AlertTriangle className="h-3 w-3" />
+                            Duplicate
+                          </span>
+                        )}
+                      </span>
+                    </TableCell>
                     <TableCell className="capitalize">{campaign.kpiMetric}</TableCell>
                     <TableCell>{campaign.monthlyGoal}</TableCell>
                     <TableCell className="font-semibold">{Math.round(campaign.mtd)}</TableCell>

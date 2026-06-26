@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -q \"Ready\" /tmp/nextdev.log)",
+      "Bash(break)",
+      "Read(//tmp/**)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"http://localhost:3939/analytics/trends\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless --disable-gpu --no-sandbox --remote-debugging-port=9222 \"about:blank\")",
+      "Bash(curl -s http://localhost:9222/json/version)",
+      "Bash(curl -s http://localhost:9222/json)",
+      "Bash(node -e \"try{require.resolve\\('ws'\\);console.log\\('WS_OK'\\)}catch\\(e\\){console.log\\('no ws'\\)}\")",
+      "Bash(node -e \"console.log\\(process.version\\); console.log\\('WebSocket' in globalThis ? 'WS_GLOBAL' : 'no global ws'\\)\")",
+      "Bash(node cdp.mjs \"http://localhost:3939/analytics/trends\")",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"const u=require\\('@prisma/client'\\); \")",
+      "Bash(node -e \"require\\('dotenv'\\).config\\(\\); console.log\\('secret len:', \\(process.env.NEXTAUTH_SECRET||''\\).length\\)\")",
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(node cdp2.mjs)",
+      "Bash(node verify.mjs)",
+      "Bash(curl -s -o /tmp/sess.txt -w 'HTTP %{http_code}\\\\n' --cookie next-auth.session-token=__TRACKED_VAR__ http://localhost:3941/api/auth/session)",
+      "Bash(curl -s -o /tmp/prod.txt -w 'HTTP %{http_code}\\\\n' --cookie next-auth.session-token=__TRACKED_VAR__ 'http://localhost:3941/api/collectors/production?dateFrom=2026-06-24&dateTo=2026-06-24')",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless --disable-gpu --no-sandbox --remote-debugging-port=9223 \"about:blank\")",
+      "Bash(curl -s http://localhost:9223/json/version)",
+      "Bash(node collector.mjs)",
+      "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./package.json'\\).scripts,null,2\\)\\)\")"
+    ]
+  }
+}

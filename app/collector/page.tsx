@@ -453,11 +453,14 @@ export default function CollectorDashboard() {
     return filtered;
   }, [agents, agentSearch, sortBy, agentProduction, attendanceData]);
 
-  // Update pagination total when filtered agents change
+  // Update pagination total when filtered agents change, and reset to page 1
+  // only when the filtered count actually changes (e.g. on search/sort), not
+  // on every render — otherwise paging forward would immediately snap back.
   useEffect(() => {
     setTotalAgentsCount(sortedAgents.length);
     pagination.goToPage(1);
-  }, [sortedAgents.length, pagination]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortedAgents.length]);
 
   // Get paginated agents
   const paginatedAgents = sortedAgents.slice(

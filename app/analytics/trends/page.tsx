@@ -8,6 +8,7 @@ import { PageTitle } from "@/components/layout/page-title";
 import { KpiCard } from "@/components/kpi-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DailyLineChart } from "@/components/charts/daily-line-chart";
+import { DailyBarChart } from "@/components/charts/daily-bar-chart";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { TrendingUp, Download } from "lucide-react";
@@ -45,7 +46,12 @@ export default function PerformanceTrendsPage() {
   );
 
   const trends = data?.trends || [];
-  const stats = data?.stats || { totalMetric: 0, avgDaily: 0, peakDay: 0, growthRate: 0 };
+
+  // Stats are computed per selected metric so activations, approvals and booked
+  // are kept separate from transmittals regardless of the month.
+  const metricTotal = trends.reduce((sum: number, t: TrendData) => sum + (t[metric] || 0), 0);
+  const metricAvg = trends.length > 0 ? Math.round(metricTotal / trends.length) : 0;
+  const metricPeak = trends.length > 0 ? Math.max(...trends.map((t: TrendData) => t[metric] || 0)) : 0;
 
   // Calculate growth trend
   const sortedTrends = [...trends].sort((a: TrendData, b: TrendData) => new Date(a.date).getTime() - new Date(b.date).getTime());
@@ -102,15 +108,15 @@ export default function PerformanceTrendsPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
           title="Total"
-          value={stats.totalMetric || 0}
+          value={metricTotal}
         />
         <KpiCard
           title="Daily Average"
-          value={Math.round(stats.avgDaily || 0)}
+          value={metricAvg}
         />
         <KpiCard
           title="Peak Day"
-          value={stats.peakDay || 0}
+          value={metricPeak}
         />
         <KpiCard
           title={`Growth Rate`}
@@ -126,7 +132,11 @@ export default function PerformanceTrendsPage() {
         </CardHeader>
         <CardContent>
           {chartData.length > 0 ? (
-            <DailyLineChart data={chartData} />
+            metric === 'transmittals' ? (
+              <DailyBarChart data={chartData} label="Transmittals" />
+            ) : (
+              <DailyLineChart data={chartData} label={metric.charAt(0).toUpperCase() + metric.slice(1)} />
+            )
           ) : (
             <div className="h-96 flex items-center justify-center text-muted-foreground">
               No data available for this period

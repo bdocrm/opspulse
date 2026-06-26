@@ -41,10 +41,32 @@ model Campaign {
   workingDays       Int                @default(22) // Configurable working days per month
   daysLapsed        Int                @default(0) // Manually set days lapsed for run rate
   metrics           CampaignMetric[] // New: Multiple KPI metrics per campaign
+  monthlyGoals      CampaignGoal[] // Per-month goal configurations
   users             User[]
   dailySales        DailySales[]
   productionDetails ProductionDetail[] // Production details for this campaign
   createdAt         DateTime           @default(now())
+}
+
+// Per-(campaign, month, year) goal configuration. Lets the same campaign keep
+// independent monthly goal / run-rate settings (e.g. BPI PA OUTBOUND → January
+// vs February). When a row is absent for a given month, callers fall back to the
+// legacy Campaign-level fields for backward compatibility.
+model CampaignGoal {
+  id          String   @id @default(uuid())
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  month       Int // 1-12
+  year        Int
+  monthlyGoal Float    @default(0)
+  kpiMetric   String   @default("transmittals")
+  workingDays Int      @default(22)
+  daysLapsed  Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([campaignId, month, year])
+  @@index([campaignId])
 }
 
 model CampaignMetric {

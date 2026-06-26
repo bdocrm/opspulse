@@ -22,17 +22,21 @@ export async function GET(req: NextRequest) {
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0, 23, 59, 59);
 
-    const sales = await prisma.dailySales.findMany({
+    // Read from ProductionDetail (the source the collector data-entry and bulk
+    // import write to), grouped by the parent ProductionEntry date. CEO sees
+    // every campaign; OM is scoped to their own campaign.
+    const details = await prisma.productionDetail.findMany({
       where: {
-        date: { gte: startDate, lte: endDate },
+        ...(user.role !== 'CEO' && user.campaignId ? { campaignId: user.campaignId } : {}),
+        productionEntry: { date: { gte: startDate, lte: endDate } },
       },
-      orderBy: { date: 'asc' },
+      include: { productionEntry: { select: { date: true } } },
     });
 
     // Group by date
     const trendMap = new Map();
-    sales.forEach(s => {
-      const dateKey = s.date.toISOString().split('T')[0];
+    details.forEach(d => {
+      const dateKey = d.productionEntry.date.toISOString().split('T')[0];
       if (!trendMap.has(dateKey)) {
         trendMap.set(dateKey, {
           date: dateKey,
@@ -43,10 +47,10 @@ export async function GET(req: NextRequest) {
         });
       }
       const day = trendMap.get(dateKey);
-      day.transmittals += Number(s.transmittals);
-      day.activations += Number(s.activations);
-      day.approvals += Number(s.approvals);
-      day.booked += Number(s.booked);
+      day.transmittals += Number(d.transmittals);
+      day.activations += Number(d.activations);
+      day.approvals += Number(d.approvals);
+      day.booked += Number(d.booked);
     });
 
     const trends = Array.from(trendMap.values());

@@ -22,49 +22,54 @@ export async function GET(req: NextRequest) {
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0, 23, 59, 59);
 
-    const sales = await prisma.dailySales.findMany({
+    // Read from ProductionDetail (the source the collector data-entry and bulk
+    // import write to), scoped to the OM's campaign; CEO sees all.
+    const details = await prisma.productionDetail.findMany({
       where: {
-        date: { gte: startDate, lte: endDate },
+        ...(user.role !== 'CEO' && user.campaignId ? { campaignId: user.campaignId } : {}),
+        productionEntry: { date: { gte: startDate, lte: endDate } },
       },
       include: {
-        user: { select: { id: true, name: true, seatNumber: true } },
+        agent: { select: { id: true, name: true, seatNumber: true } },
+        productionEntry: { select: { date: true } },
       },
     });
 
     const agentMap = new Map();
 
-    sales.forEach(s => {
-      if (!agentMap.has(s.userId)) {
-        agentMap.set(s.userId, {
-          agentId: s.userId,
-          agentName: s.user.name,
-          seatNumber: s.user.seatNumber,
+    details.forEach(d => {
+      if (!agentMap.has(d.agentId)) {
+        agentMap.set(d.agentId, {
+          agentId: d.agentId,
+          agentName: d.agent.name,
+          seatNumber: d.agent.seatNumber,
           tasksCompleted: 0,
           totalQuality: 0,
           totalConversion: 0,
-          daysWorked: 0,
+          workedDates: new Set<string>(),
           qualityCount: 0,
           conversionCount: 0,
         });
       }
-      const agent = agentMap.get(s.userId);
-      agent.tasksCompleted += Number(s.transmittals) + Number(s.activations) + Number(s.approvals) + Number(s.booked);
-      if (s.qualityRate) {
-        agent.totalQuality += s.qualityRate;
+      const agent = agentMap.get(d.agentId);
+      agent.tasksCompleted += Number(d.transmittals) + Number(d.activations) + Number(d.approvals) + Number(d.booked);
+      if (d.qualityRate) {
+        agent.totalQuality += d.qualityRate;
         agent.qualityCount += 1;
       }
-      if (s.conversionRate) {
-        agent.totalConversion += s.conversionRate;
+      if (d.conversionRate) {
+        agent.totalConversion += d.conversionRate;
         agent.conversionCount += 1;
       }
-      agent.daysWorked += 1;
+      agent.workedDates.add(d.productionEntry.date.toISOString().split('T')[0]);
     });
 
     const metrics = Array.from(agentMap.values()).map(a => {
+      const daysWorked = a.workedDates.size;
       const avgQuality = a.qualityCount > 0 ? a.totalQuality / a.qualityCount : 0;
       const avgConversion = a.conversionCount > 0 ? a.totalConversion / a.conversionCount : 0;
       // Calculate efficiency based on tasks per day
-      const tasksPerDay = a.daysWorked > 0 ? a.tasksCompleted / a.daysWorked : 0;
+      const tasksPerDay = daysWorked > 0 ? a.tasksCompleted / daysWorked : 0;
       const efficiency = Math.min(100, (tasksPerDay / 20) * 100); // Assume 20 tasks per day is 100% efficiency
 
       return {
@@ -75,8 +80,8 @@ export async function GET(req: NextRequest) {
         avgTaskTime: a.tasksCompleted > 0 ? 480 / a.tasksCompleted : 0, // 480 mins in 8 hours
         efficiencyScore: Math.round(efficiency * 10) / 10,
         qualityScore: Math.round(avgQuality * 10) / 10,
-        daysWorked: a.daysWorked,
-        overtimeHours: Math.max(0, (a.tasksCompleted - a.daysWorked * 20) * 0.1), // Estimate overtime
+        daysWorked,
+        overtimeHours: Math.max(0, (a.tasksCompleted - daysWorked * 20) * 0.1), // Estimate overtime
       };
     });
 

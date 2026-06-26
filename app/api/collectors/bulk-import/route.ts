@@ -70,23 +70,47 @@ export async function POST(req: NextRequest) {
       select: { id: true, campaignId: true },
     });
 
-    if (!collectorUser?.campaignId) {
-      return NextResponse.json({ error: 'Collector has no campaign assigned' }, { status: 400 });
-    }
-
     const formData = await req.formData();
     const file = formData.get('file') as File;
     const mode = (formData.get('mode') as string) || 'import';
     const metricType = (formData.get('metricType') as string) || 'transmittals';
     const reportDateStr = formData.get('reportDate') as string;
+    const selectedCampaignId = (formData.get('campaignId') as string) || '';
+
+    // Resolve the target campaign: prefer the one chosen on the import page,
+    // otherwise fall back to the collector's assigned campaign.
+    const effectiveCampaignId = selectedCampaignId || collectorUser?.campaignId;
+    if (!effectiveCampaignId) {
+      return NextResponse.json({ error: 'No campaign selected. Choose a campaign to import into.' }, { status: 400 });
+    }
+
+    const campaignExists = await prisma.campaign.findUnique({
+      where: { id: effectiveCampaignId },
+      select: { id: true },
+    });
+    if (!campaignExists) {
+      return NextResponse.json({ error: 'Selected campaign not found' }, { status: 400 });
+    }
+
+    // If the collector has no campaign assigned yet, bind them to the one they
+    // are importing into. Without this, their dashboard (which keys off the
+    // collector's own campaign) would never show the imported agents.
+    if (mode !== 'preview' && !collectorUser?.campaignId) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { campaignId: effectiveCampaignId },
+      });
+    }
 
     let reportDate: Date;
     if (reportDateStr) {
-      const [year, month] = reportDateStr.split('-').map(Number);
-      reportDate = new Date(year, month - 1, 1);
+      // Accepts a full date (YYYY-MM-DD); falls back to the 1st if only a month
+      // (YYYY-MM) is provided, for backward compatibility.
+      const [year, month, day] = reportDateStr.split('-').map(Number);
+      reportDate = new Date(year, (month || 1) - 1, day || 1);
     } else {
       const now = new Date();
-      reportDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      reportDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     }
 
     if (!file) {
@@ -122,7 +146,7 @@ export async function POST(req: NextRequest) {
           const agent = await prisma.user.findFirst({
             where: {
               name: { contains: entry.name, mode: 'insensitive' },
-              campaignId: collectorUser.campaignId,
+              campaignId: effectiveCampaignId,
             },
             select: { id: true, name: true },
           });
@@ -146,7 +170,7 @@ export async function POST(req: NextRequest) {
       const createdAgents: Record<string, string> = {}; // name → id
       for (const name of confirmedNewAgents) {
         const existing = await prisma.user.findFirst({
-          where: { name: { contains: name, mode: 'insensitive' }, campaignId: collectorUser.campaignId },
+          where: { name: { contains: name, mode: 'insensitive' }, campaignId: effectiveCampaignId },
           select: { id: true },
         });
         if (existing) {
@@ -162,7 +186,7 @@ export async function POST(req: NextRequest) {
             email,
             password,
             role: 'AGENT',
-            campaignId: collectorUser.campaignId,
+            campaignId: effectiveCampaignId,
           },
         });
         createdAgents[name] = newAgent.id;
@@ -178,7 +202,7 @@ export async function POST(req: NextRequest) {
       // Create one ProductionEntry for the batch
       const entry = await prisma.productionEntry.create({
         data: {
-          campaignId: collectorUser.campaignId,
+          campaignId: effectiveCampaignId,
           date: reportDate,
           time: new Date().toLocaleTimeString(),
           createdBy: user.id,
@@ -190,7 +214,7 @@ export async function POST(req: NextRequest) {
           let agent = await prisma.user.findFirst({
             where: {
               name: { contains: row.name, mode: 'insensitive' },
-              campaignId: collectorUser.campaignId,
+              campaignId: effectiveCampaignId,
             },
             select: { id: true, name: true },
           });
@@ -237,7 +261,7 @@ export async function POST(req: NextRequest) {
               data: {
                 productionEntryId: entry.id,
                 agentId: agent.id,
-                campaignId: collectorUser.campaignId,
+                campaignId: effectiveCampaignId,
                 ...metricData,
               },
             });
@@ -292,7 +316,7 @@ export async function POST(req: NextRequest) {
 
       for (const entry of csvEntries) {
         const agent = await prisma.user.findFirst({
-          where: { name: { contains: entry.name, mode: 'insensitive' }, campaignId: collectorUser.campaignId },
+          where: { name: { contains: entry.name, mode: 'insensitive' }, campaignId: effectiveCampaignId },
           select: { id: true, name: true },
         });
         if (agent) matched.push({ name: entry.name, count: entry.count, volume: entry.volume, agentId: agent.id, agentName: agent.name });
@@ -310,7 +334,7 @@ export async function POST(req: NextRequest) {
     const createdAgentsCsv: Record<string, string> = {};
     for (const name of confirmedNewAgentsCsv) {
       const existing = await prisma.user.findFirst({
-        where: { name: { contains: name, mode: 'insensitive' }, campaignId: collectorUser.campaignId },
+        where: { name: { contains: name, mode: 'insensitive' }, campaignId: effectiveCampaignId },
         select: { id: true },
       });
       if (existing) { createdAgentsCsv[name] = existing.id; continue; }
@@ -318,7 +342,7 @@ export async function POST(req: NextRequest) {
       const email = nameToEmail(name);
       const password = await bcrypt.hash(crypto.randomUUID(), 10);
       const newAgent = await prisma.user.create({
-        data: { name, email, password, role: 'AGENT', campaignId: collectorUser.campaignId },
+        data: { name, email, password, role: 'AGENT', campaignId: effectiveCampaignId },
       });
       createdAgentsCsv[name] = newAgent.id;
     }
@@ -332,7 +356,7 @@ export async function POST(req: NextRequest) {
 
     const csvProdEntry = await prisma.productionEntry.create({
       data: {
-        campaignId: collectorUser.campaignId,
+        campaignId: effectiveCampaignId,
         date: reportDate,
         time: new Date().toLocaleTimeString(),
         createdBy: user.id,
@@ -342,7 +366,7 @@ export async function POST(req: NextRequest) {
     for (const row of csvEntries) {
       try {
         let agent = await prisma.user.findFirst({
-          where: { name: { contains: row.name, mode: 'insensitive' }, campaignId: collectorUser.campaignId },
+          where: { name: { contains: row.name, mode: 'insensitive' }, campaignId: effectiveCampaignId },
           select: { id: true, name: true },
         });
         if (!agent && createdAgentsCsv[row.name]) {
@@ -370,7 +394,7 @@ export async function POST(req: NextRequest) {
           await prisma.productionDetail.update({ where: { id: existingDetail.id }, data: metricData });
         } else {
           await prisma.productionDetail.create({
-            data: { productionEntryId: csvProdEntry.id, agentId: agent.id, campaignId: collectorUser.campaignId, ...metricData },
+            data: { productionEntryId: csvProdEntry.id, agentId: agent.id, campaignId: effectiveCampaignId, ...metricData },
           });
         }
 

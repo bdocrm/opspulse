@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -32,15 +32,17 @@ const METRIC_LABELS: Record<string, string> = {
 };
 
 export default function BulkImportPage() {
-  const { data: session, status } = useSession();
+  const { data: session, status, update: updateSession } = useSession();
   const router = useRouter();
 
   // Settings
   const [file, setFile] = useState<File | null>(null);
   const [metricType, setMetricType] = useState('transmittals');
+  const [campaigns, setCampaigns] = useState<{ id: string; campaignName: string }[]>([]);
+  const [campaignId, setCampaignId] = useState('');
   const [reportDate, setReportDate] = useState(() => {
     const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   });
 
   // Flow state
@@ -49,6 +51,19 @@ export default function BulkImportPage() {
   const [newAgents, setNewAgents] = useState<NewAgent[]>([]);
   const [importResult, setImportResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Load campaigns for the picker and default to the collector's assigned one
+  useEffect(() => {
+    fetch('/api/campaigns')
+      .then(res => (res.ok ? res.json() : []))
+      .then(data => setCampaigns(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const assigned = (session?.user as any)?.campaignId;
+    if (assigned) setCampaignId(assigned);
+  }, [session]);
 
   if (status === 'unauthenticated') {
     router.push('/login');
@@ -78,6 +93,7 @@ export default function BulkImportPage() {
 
   const handlePreview = async () => {
     if (!file) { alert('Please select a file'); return; }
+    if (!campaignId) { alert('Please select a campaign'); return; }
     setStep('previewing');
     setError(null);
     try {
@@ -86,6 +102,7 @@ export default function BulkImportPage() {
       fd.append('mode', 'preview');
       fd.append('metricType', metricType);
       fd.append('reportDate', reportDate);
+      fd.append('campaignId', campaignId);
 
       const res = await fetch('/api/collectors/bulk-import', { method: 'POST', body: fd });
       const data = await res.json();
@@ -122,6 +139,7 @@ export default function BulkImportPage() {
       fd.append('mode', 'import');
       fd.append('metricType', metricType);
       fd.append('reportDate', reportDate);
+      fd.append('campaignId', campaignId);
       fd.append('confirmedNewAgents', JSON.stringify(approvedNew.map(a => a.name)));
 
       const res = await fetch('/api/collectors/bulk-import', { method: 'POST', body: fd });
@@ -135,6 +153,12 @@ export default function BulkImportPage() {
 
       setImportResult(data);
       setStep('done');
+
+      // If this collector had no campaign before, the import just assigned one.
+      // Refresh the session so the dashboard picks it up without a re-login.
+      if (!(session?.user as any)?.campaignId) {
+        try { await updateSession(); } catch { /* non-blocking */ }
+      }
     } catch (err) {
       setError(String(err));
       setStep('confirm');
@@ -198,7 +222,21 @@ export default function BulkImportPage() {
           <CardHeader>
             <CardTitle className="text-lg">Import Settings</CardTitle>
           </CardHeader>
-          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <CardContent className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Campaign</label>
+              <select
+                value={campaignId}
+                onChange={e => setCampaignId(e.target.value)}
+                className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Select a campaign…</option>
+                {campaigns.map(c => (
+                  <option key={c.id} value={c.id}>{c.campaignName}</option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-500">Campaign this data will be imported into</p>
+            </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">Metric Type (COUNT column)</label>
               <select
@@ -213,14 +251,14 @@ export default function BulkImportPage() {
               <p className="text-xs text-slate-500">The COUNT column will be stored as {METRIC_LABELS[metricType]}</p>
             </div>
             <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Report Month</label>
+              <label className="text-sm font-medium text-slate-700">Report Date</label>
               <input
-                type="month"
+                type="date"
                 value={reportDate}
                 onChange={e => setReportDate(e.target.value)}
                 className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
-              <p className="text-xs text-slate-500">Month this data belongs to</p>
+              <p className="text-xs text-slate-500">Date this data is as-of (used in daily trends)</p>
             </div>
           </CardContent>
         </Card>
@@ -241,7 +279,7 @@ export default function BulkImportPage() {
                 <p className="text-xs text-slate-500 mt-1">.csv or .xlsx · max 10 MB</p>
               </label>
             </div>
-            <Button onClick={handlePreview} disabled={!file} className="w-full gap-2">
+            <Button onClick={handlePreview} disabled={!file || !campaignId} className="w-full gap-2">
               <Upload className="h-4 w-4" />
               Preview Import
             </Button>

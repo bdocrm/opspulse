@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Button } from '@/components/ui/button';
@@ -25,6 +25,18 @@ interface Campaign {
   }>;
 }
 
+interface SavedGoal {
+  campaignId: string;
+  campaignName: string;
+  month: number;
+  year: number;
+  monthlyGoal: number;
+  kpiMetric: string;
+  workingDays: number;
+  daysLapsed: number;
+  updatedAt: string;
+}
+
 const KPI_METRICS = [
   { value: 'transmittals', label: 'Transmittals' },
   { value: 'approvals', label: 'Approvals' },
@@ -36,15 +48,29 @@ const KPI_METRICS = [
   { value: 'conversionRate', label: 'Conversion Rate' },
 ];
 
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
 export default function GoalsManagement() {
   const router = useRouter();
   const { data: session, status } = useSession();
   const user = session?.user as any;
 
+  const now = new Date();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
+  const [selectedMonth, setSelectedMonth] = useState<number>(now.getMonth() + 1); // 1-12, defaults to current month
+  const [selectedYear] = useState<number>(now.getFullYear());
+  const [savedGoals, setSavedGoals] = useState<SavedGoal[]>([]);
+  // When editing a saved row from another month, remember which campaign to
+  // re-select after the month-change effect reloads the campaign list.
+  const [pendingCampaignId, setPendingCampaignId] = useState<string | null>(null);
+  // Top of the editor — scrolled into view when "Edit" is pressed on a saved row.
+  const editorRef = useRef<HTMLDivElement>(null);
 
   // Campaign-level fields
   const [monthlyGoal, setMonthlyGoal] = useState('');
@@ -64,30 +90,67 @@ export default function GoalsManagement() {
     }
   }, [status, user?.role, router]);
 
-  useEffect(() => {
-    const fetchCampaigns = async () => {
-      try {
-        const res = await fetch('/api/goals');
-        if (res.ok) {
-          const data = await res.json();
-          setCampaigns(data);
-          if (data.length > 0) {
-            applySelectedCampaign(data[0]);
-          }
+  const loadCampaigns = async (month: number, year: number, keepId?: string) => {
+    try {
+      const res = await fetch(`/api/goals?month=${month}&year=${year}`);
+      if (res.ok) {
+        const data = await res.json();
+        setCampaigns(data);
+        const toSelect = keepId ? data.find((c: Campaign) => c.id === keepId) : data[0];
+        if (toSelect) {
+          applySelectedCampaign(toSelect);
+        } else {
+          setSelectedCampaign(null);
         }
-      } catch {
-        setError('Failed to load campaigns');
-      } finally {
-        setLoading(false);
       }
-    };
+    } catch {
+      setError('Failed to load campaigns');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    if (status === 'authenticated') fetchCampaigns();
-  }, [status]);
+  const loadSavedGoals = async () => {
+    try {
+      const res = await fetch('/api/goals/saved');
+      if (res.ok) setSavedGoals(await res.json());
+    } catch {
+      /* non-critical: the saved list is informational */
+    }
+  };
+
+  // Load the goal configuration for the selected campaign + month. Re-runs when
+  // the month or year changes, preserving the currently selected campaign (or
+  // re-selecting a campaign requested via the saved-goals "Edit" action).
+  useEffect(() => {
+    if (status === 'authenticated') {
+      const keepId = pendingCampaignId ?? selectedCampaign?.id;
+      loadCampaigns(selectedMonth, selectedYear, keepId).then(() => {
+        if (pendingCampaignId) setPendingCampaignId(null);
+      });
+      loadSavedGoals();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, selectedMonth, selectedYear]);
+
+  // Load a saved goal record into the form for editing. If it belongs to a
+  // different month, switch the month (the effect reloads + re-selects it).
+  const handleEditSaved = (row: SavedGoal) => {
+    if (row.month === selectedMonth && row.year === selectedYear) {
+      const c = campaigns.find((c) => c.id === row.campaignId);
+      if (c) applySelectedCampaign(c);
+    } else {
+      setPendingCampaignId(row.campaignId);
+      setSelectedMonth(row.month);
+    }
+    // Bring the editor into view — the saved list sits below the form, so without
+    // this the form updates off-screen and the click appears to do nothing.
+    setTimeout(() => editorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  };
 
   function applySelectedCampaign(campaign: Campaign) {
     setSelectedCampaign(campaign);
-    setMonthlyGoal(campaign.monthlyGoal.toString());
+    setMonthlyGoal(Number(campaign.monthlyGoal).toFixed(2));
     setKpiMetric(campaign.kpiMetric || 'transmittals');
     setWorkingDays((campaign.workingDays ?? 22).toString());
     setDaysLapsed((campaign.daysLapsed ?? 0).toString());
@@ -105,6 +168,10 @@ export default function GoalsManagement() {
       setError('Monthly goal is required');
       return;
     }
+    if (!selectedMonth) {
+      setError('Please select a month before saving.');
+      return;
+    }
 
     setSaving(true);
     setMessage('');
@@ -116,6 +183,8 @@ export default function GoalsManagement() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           campaignId: selectedCampaign.id,
+          month: selectedMonth,
+          year: selectedYear,
           monthlyGoal: Number(monthlyGoal),
           kpiMetric,
           workingDays: Number(workingDays) || 22,
@@ -124,14 +193,12 @@ export default function GoalsManagement() {
       });
 
       if (res.ok) {
-        setMessage('Campaign settings saved successfully');
-        const fsRes = await fetch('/api/goals');
-        if (fsRes.ok) {
-          const data = await fsRes.json();
-          setCampaigns(data);
-          const updated = data.find((c: Campaign) => c.id === selectedCampaign.id);
-          if (updated) setSelectedCampaign(updated);
-        }
+        // Reload the saved month's configuration, keeping this campaign selected.
+        // (loadCampaigns → applySelectedCampaign resets message/error, so set the
+        // success message AFTER the reload, not before, or it gets cleared.)
+        await loadCampaigns(selectedMonth, selectedYear, selectedCampaign.id);
+        await loadSavedGoals();
+        setMessage(`Goals for ${MONTHS[selectedMonth - 1]} ${selectedYear} saved successfully`);
       } else {
         const data = await res.json();
         setError(data.error || 'Failed to update goal');
@@ -149,6 +216,10 @@ export default function GoalsManagement() {
       setError('Target value is required');
       return;
     }
+    if (!selectedCampaign) {
+      setError('Select a campaign first');
+      return;
+    }
 
     setSaving(true);
     setMessage('');
@@ -158,7 +229,11 @@ export default function GoalsManagement() {
       const res = await fetch('/api/goals', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, monthlyTarget: Number(target) }),
+        body: JSON.stringify({
+          userId,
+          campaignId: selectedCampaign.id,
+          monthlyTarget: Number(target),
+        }),
       });
 
       if (res.ok) {
@@ -200,7 +275,7 @@ export default function GoalsManagement() {
   const previewRRAch = goal > 0 ? ((previewRR / goal) * 100).toFixed(1) : '0.0';
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" ref={editorRef}>
       <PageTitle title="Goals Management" subtitle="Configure campaign goals and run rate parameters" />
 
       {error && (
@@ -234,6 +309,24 @@ export default function GoalsManagement() {
             </button>
           ))}
         </div>
+
+        {/* Month selector — goals are configured per Campaign + Month */}
+        <div className="mt-6 max-w-xs">
+          <Label htmlFor="month">Month</Label>
+          <select
+            id="month"
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(Number(e.target.value))}
+            className="mt-1 w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            {MONTHS.map((m, i) => (
+              <option key={m} value={i + 1}>{m} {selectedYear}</option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-gray-400">
+            Each campaign keeps independent goals per month.
+          </p>
+        </div>
       </Card>
 
       {selectedCampaign && (
@@ -265,9 +358,14 @@ export default function GoalsManagement() {
                   id="monthly-goal"
                   type="number"
                   min={0}
+                  step="0.01"
                   value={monthlyGoal}
                   onChange={(e) => setMonthlyGoal(e.target.value)}
-                  placeholder="e.g. 220"
+                  onBlur={(e) => {
+                    const n = Number(e.target.value);
+                    if (e.target.value !== '' && !Number.isNaN(n)) setMonthlyGoal(n.toFixed(2));
+                  }}
+                  placeholder="e.g. 220.00"
                   className="mt-1"
                 />
               </div>
@@ -314,10 +412,16 @@ export default function GoalsManagement() {
               <Label>Weekly Goal Breakdown (Monthly Goal ÷ 4 weeks)</Label>
               <div className="mt-2 grid grid-cols-4 gap-2">
                 {['W1', 'W2', 'W3', 'W4'].map((week) => (
-                  <div key={week} className="bg-blue-50 border border-blue-200 rounded p-3 text-center">
+                  <div
+                    key={week}
+                    className="group relative bg-blue-50 border border-blue-200 rounded p-3 text-center cursor-help"
+                  >
                     <div className="text-xs font-medium text-blue-600">{week}</div>
                     <div className="text-lg font-bold text-blue-900 mt-1">
                       {weekGoal.toLocaleString()}
+                    </div>
+                    <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-max max-w-[240px] -translate-x-1/2 whitespace-normal rounded-md bg-gray-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block">
+                      {`${week} = Monthly Goal ÷ 4 = ${goal.toLocaleString()} ÷ 4 = ${weekGoal.toLocaleString()}`}
                     </div>
                   </div>
                 ))}
@@ -328,25 +432,37 @@ export default function GoalsManagement() {
             <div className="mt-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Formula Preview (on-pace estimate)</p>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center text-sm">
-                <div>
+                <div className="group relative cursor-help">
                   <p className="text-xs text-gray-400">MTD (on pace)</p>
                   <p className="text-lg font-bold text-gray-800">{previewMTD.toLocaleString()}</p>
                   <p className="text-xs text-gray-400">sum W1–W4</p>
+                  <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-max max-w-[240px] -translate-x-1/2 whitespace-normal rounded-md bg-gray-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block">
+                    {`MTD (on pace) = Goal × (Days Lapsed ÷ WDays) = ${goal.toLocaleString()} × (${dLapsed} ÷ ${wDays}) = ${previewMTD.toLocaleString()}`}
+                  </div>
                 </div>
-                <div>
+                <div className="group relative cursor-help">
                   <p className="text-xs text-gray-400">Achievement</p>
                   <p className="text-lg font-bold text-blue-700">{previewAch}%</p>
                   <p className="text-xs text-gray-400">MTD / Goal</p>
+                  <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-max max-w-[240px] -translate-x-1/2 whitespace-normal rounded-md bg-gray-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block">
+                    {`Achievement = MTD ÷ Goal × 100 = ${previewMTD.toLocaleString()} ÷ ${goal.toLocaleString()} × 100 = ${previewAch}%`}
+                  </div>
                 </div>
-                <div>
+                <div className="group relative cursor-help">
                   <p className="text-xs text-gray-400">Run Rate</p>
                   <p className="text-lg font-bold text-gray-800">{previewRR.toLocaleString()}</p>
                   <p className="text-xs text-gray-400">MTD / Lapsed × WDays</p>
+                  <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-max max-w-[240px] -translate-x-1/2 whitespace-normal rounded-md bg-gray-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block">
+                    {`Run Rate = MTD ÷ Days Lapsed × WDays = ${previewMTD.toLocaleString()} ÷ ${dLapsed} × ${wDays} = ${previewRR.toLocaleString()}`}
+                  </div>
                 </div>
-                <div>
+                <div className="group relative cursor-help">
                   <p className="text-xs text-gray-400">RR Achievement</p>
                   <p className="text-lg font-bold text-blue-700">{previewRRAch}%</p>
                   <p className="text-xs text-gray-400">Run Rate / Goal</p>
+                  <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-max max-w-[240px] -translate-x-1/2 whitespace-normal rounded-md bg-gray-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block">
+                    {`RR Achievement = Run Rate ÷ Goal × 100 = ${previewRR.toLocaleString()} ÷ ${goal.toLocaleString()} × 100 = ${previewRRAch}%`}
+                  </div>
                 </div>
               </div>
             </div>
@@ -433,6 +549,64 @@ export default function GoalsManagement() {
           </Card>
         </>
       )}
+
+      {/* Saved Campaign Goals — view all saved per-month configurations */}
+      <Card className="p-6">
+        <h3 className="text-lg font-semibold mb-1">Saved Campaign Goals</h3>
+        <p className="text-sm text-gray-500 mb-4">
+          All saved goal configurations by campaign and month. Click Edit to load one for changes.
+        </p>
+        {savedGoals.length === 0 ? (
+          <p className="text-sm text-gray-500">No saved goal configurations yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-gray-500">
+                  <th className="py-2 pr-4 font-medium">Campaign</th>
+                  <th className="py-2 pr-4 font-medium">Month</th>
+                  <th className="py-2 pr-4 font-medium">KPI Metric</th>
+                  <th className="py-2 pr-4 font-medium text-right">Monthly Goal</th>
+                  <th className="py-2 pr-4 font-medium text-center">WDays</th>
+                  <th className="py-2 pr-4 font-medium text-center">Lapsed</th>
+                  <th className="py-2 pr-4 font-medium text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {savedGoals.map((row) => {
+                  const isCurrent =
+                    selectedCampaign?.id === row.campaignId &&
+                    selectedMonth === row.month &&
+                    selectedYear === row.year;
+                  return (
+                    <tr
+                      key={`${row.campaignId}-${row.year}-${row.month}`}
+                      className={`border-b ${isCurrent ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                    >
+                      <td className="py-2 pr-4 font-medium text-gray-900">{row.campaignName}</td>
+                      <td className="py-2 pr-4">{MONTHS[row.month - 1]} {row.year}</td>
+                      <td className="py-2 pr-4 capitalize">{row.kpiMetric}</td>
+                      <td className="py-2 pr-4 text-right">{row.monthlyGoal.toLocaleString()}</td>
+                      <td className="py-2 pr-4 text-center">{row.workingDays}</td>
+                      <td className="py-2 pr-4 text-center">{row.daysLapsed}</td>
+                      <td className="py-2 pr-4 text-right">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleEditSaved(row)}
+                          disabled={isCurrent}
+                        >
+                          {isCurrent ? 'Editing' : 'Edit'}
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

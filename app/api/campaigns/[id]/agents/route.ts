@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { prisma } from '@/lib/prisma';
+import { getCampaignAgents } from '@/lib/campaign-agents';
 
 interface Params {
   id: string;
@@ -30,23 +30,9 @@ export async function GET(
       );
     }
 
-    // Get all agents for the campaign, sorted by seat number
-    const agents = await prisma.user.findMany({
-      where: {
-        campaignId,
-        role: 'AGENT',
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        seatNumber: true,
-        monthlyTarget: true,
-      },
-      orderBy: {
-        seatNumber: 'asc',
-      },
-    });
+    // Shared campaign-agent assignment source (same query the Admin/CEO Goals
+    // Management "Agent Targets" list uses) — filtered by campaign id.
+    const agents = await getCampaignAgents(campaignId);
 
     return NextResponse.json(agents);
   } catch (error) {
