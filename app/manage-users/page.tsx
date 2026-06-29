@@ -302,21 +302,27 @@ export default function ManageUsersPage() {
     }
   };
 
-  // Duplicate-name monitoring: a name is flagged when it appears on more than
-  // one user account (case-insensitive, trimmed).
-  const nameCounts = users.reduce((acc, u) => {
-    const key = u.name.trim().toLowerCase();
+  // Duplicate monitoring: a user is flagged only when the same normalized name
+  // appears more than once within the same campaign.
+  const duplicateKeyForUser = (user: User) => {
+    const normalizedName = user.name.trim().toLowerCase();
+    const campaignKey = user.campaignId || "no-campaign";
+    return `${normalizedName}::${campaignKey}`;
+  };
+
+  const nameCampaignCounts = users.reduce((acc, u) => {
+    const key = duplicateKeyForUser(u);
     acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
-  const isDuplicateName = (name: string) => (nameCounts[name.trim().toLowerCase()] || 0) > 1;
-  const duplicateCount = users.filter((u) => isDuplicateName(u.name)).length;
+  const isDuplicateUser = (user: User) => (nameCampaignCounts[duplicateKeyForUser(user)] || 0) > 1;
+  const duplicateCount = users.filter(isDuplicateUser).length;
 
   // Apply campaign filter, role filter, search, and duplicate filter.
   const filteredUsers = users.filter((user) => {
     if (selectedCampaignFilter && user.campaignId !== selectedCampaignFilter) return false;
     if (roleFilter !== "all" && user.role !== roleFilter) return false;
-    if (showDuplicatesOnly && !isDuplicateName(user.name)) return false;
+    if (showDuplicatesOnly && !isDuplicateUser(user)) return false;
     const q = searchQuery.trim().toLowerCase();
     if (q && !`${user.name} ${user.email}`.toLowerCase().includes(q)) return false;
     return true;
@@ -496,7 +502,7 @@ export default function ManageUsersPage() {
               variant={showDuplicatesOnly ? "default" : "outline"}
               className={`gap-2 ${showDuplicatesOnly ? "" : "border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"}`}
               onClick={() => setShowDuplicatesOnly((v) => !v)}
-              title="Show only users with duplicate names"
+              title="Show only users with duplicate names in the same campaign"
             >
               <AlertTriangle className="h-4 w-4" />
               Duplicates ({duplicateCount})
@@ -535,6 +541,7 @@ export default function ManageUsersPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-12 text-center">#</TableHead>
                   <TableHead className="w-12">
                     <input
                       type="checkbox"
@@ -555,13 +562,16 @@ export default function ManageUsersPage() {
               <TableBody>
                 {filteredUsers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
                       No users found
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredUsers.map((user) => (
+                  filteredUsers.map((user, index) => (
                     <TableRow key={user.id}>
+                      <TableCell className="w-12 text-center text-sm text-muted-foreground">
+                        {index + 1}
+                      </TableCell>
                       <TableCell className="w-12">
                         <input
                           type="checkbox"
@@ -570,10 +580,10 @@ export default function ManageUsersPage() {
                           className="cursor-pointer"
                         />
                       </TableCell>
-                      <TableCell className={`font-medium ${isDuplicateName(user.name) ? "text-red-600" : ""}`}>
+                      <TableCell className={`font-medium ${isDuplicateUser(user) ? "text-red-600" : ""}`}>
                         <span className="inline-flex items-center gap-1.5">
                           {user.name}
-                          {isDuplicateName(user.name) && (
+                          {isDuplicateUser(user) && (
                             <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
                               <AlertTriangle className="h-3 w-3" />
                               Duplicate

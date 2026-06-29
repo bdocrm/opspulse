@@ -21,6 +21,10 @@ export async function ensureCampaignGoalTable() {
       "kpiMetric" TEXT NOT NULL DEFAULT 'transmittals',
       "workingDays" INTEGER NOT NULL DEFAULT 22,
       "daysLapsed" INTEGER NOT NULL DEFAULT 0,
+      "deletedAt" TIMESTAMP(3),
+      "deletedBy" TEXT,
+      "restoredAt" TIMESTAMP(3),
+      "restoredBy" TEXT,
       "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
       CONSTRAINT "CampaignGoal_pkey" PRIMARY KEY ("id")
@@ -29,6 +33,13 @@ export async function ensureCampaignGoalTable() {
   await prisma.$executeRawUnsafe(`
     CREATE UNIQUE INDEX IF NOT EXISTS "CampaignGoal_campaignId_month_year_key"
       ON "CampaignGoal" ("campaignId", "month", "year");
+  `);
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE "CampaignGoal"
+      ADD COLUMN IF NOT EXISTS "deletedAt" TIMESTAMP(3),
+      ADD COLUMN IF NOT EXISTS "deletedBy" TEXT,
+      ADD COLUMN IF NOT EXISTS "restoredAt" TIMESTAMP(3),
+      ADD COLUMN IF NOT EXISTS "restoredBy" TEXT;
   `);
 }
 
