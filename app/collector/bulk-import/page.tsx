@@ -386,7 +386,15 @@ export default function BulkImportPage() {
                       <p className="text-xs text-slate-500">Will be created as Agent in this campaign</p>
                     </div>
                     <div className="text-right shrink-0">
-                      <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
+                      {metricType === 'all_metrics' ? (
+                        <>
+                          <p className="text-sm font-semibold text-slate-700">
+                            T: {(agent.transmittals ?? 0).toLocaleString()} | A: {(agent.approvals ?? 0).toLocaleString()} | B: {(agent.booked ?? 0).toLocaleString()}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
+                      )}
                       {agent.volume > 0 && (
                         <p className="text-xs text-slate-500">₱{agent.volume.toLocaleString()}</p>
                       )}
@@ -426,7 +434,15 @@ export default function BulkImportPage() {
                       )}
                     </div>
                     <div className="text-right">
-                      <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
+                      {metricType === 'all_metrics' ? (
+                        <>
+                          <p className="text-sm font-semibold text-slate-700">
+                            T: {(agent.transmittals ?? 0).toLocaleString()} | A: {(agent.approvals ?? 0).toLocaleString()} | B: {(agent.booked ?? 0).toLocaleString()}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
+                      )}
                       {agent.volume > 0 && (
                         <p className="text-xs text-slate-500">₱{agent.volume.toLocaleString()}</p>
                       )}

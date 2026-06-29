@@ -162,8 +162,8 @@ export async function POST(req: NextRequest) {
 
       // ── PREVIEW MODE: classify agents, no DB writes ──────────────────────
       if (mode === 'preview') {
-        const matched: { name: string; count: number; volume: number; agentId: string; agentName: string }[] = [];
-        const notFound: { name: string; count: number; volume: number }[] = [];
+        const matched: any[] = [];
+        const notFound: any[] = [];
 
         for (const entry of entries) {
           const agent = await prisma.user.findFirst({
@@ -174,10 +174,17 @@ export async function POST(req: NextRequest) {
             select: { id: true, name: true },
           });
 
+          const baseData: any = { name: entry.name, count: entry.count, volume: entry.volume };
+          if (metricType === 'all_metrics') {
+            baseData.transmittals = entry.transmittals;
+            baseData.approvals = entry.approvals;
+            baseData.booked = entry.booked;
+          }
+
           if (agent) {
-            matched.push({ name: entry.name, count: entry.count, volume: entry.volume, agentId: agent.id, agentName: agent.name });
+            matched.push({ ...baseData, agentId: agent.id, agentName: agent.name });
           } else {
-            notFound.push({ name: entry.name, count: entry.count, volume: entry.volume });
+            notFound.push(baseData);
           }
         }
 
@@ -346,16 +353,24 @@ export async function POST(req: NextRequest) {
 
     // Preview mode for CSV
     if (mode === 'preview') {
-      const matched: { name: string; count: number; volume: number; agentId: string; agentName: string }[] = [];
-      const notFound: { name: string; count: number; volume: number }[] = [];
+      const matched: any[] = [];
+      const notFound: any[] = [];
 
       for (const entry of csvEntries) {
         const agent = await prisma.user.findFirst({
           where: { name: { contains: entry.name, mode: 'insensitive' }, campaignId: effectiveCampaignId },
           select: { id: true, name: true },
         });
-        if (agent) matched.push({ name: entry.name, count: entry.count, volume: entry.volume, agentId: agent.id, agentName: agent.name });
-        else notFound.push({ name: entry.name, count: entry.count, volume: entry.volume });
+
+        const baseData: any = { name: entry.name, count: entry.count, volume: entry.volume };
+        if (metricType === 'all_metrics') {
+          baseData.transmittals = entry.transmittals;
+          baseData.approvals = entry.approvals;
+          baseData.booked = entry.booked;
+        }
+
+        if (agent) matched.push({ ...baseData, agentId: agent.id, agentName: agent.name });
+        else notFound.push(baseData);
       }
 
       return NextResponse.json({ preview: true, matched, notFound, metricType, reportDate });
