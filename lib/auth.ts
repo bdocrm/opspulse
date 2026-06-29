@@ -22,7 +22,7 @@ export const authOptions: AuthOptions = {
           
           const user = await prisma.user.findUnique({
             where: { email: credentials.email },
-            include: { campaign: true },
+            include: { campaign: true, campaignAssignments: true },
           });
 
           if (!user) {
@@ -42,6 +42,16 @@ export const authOptions: AuthOptions = {
 
           console.log(`✅ Auth successful for ${credentials.email}`);
 
+          // Full assigned-campaign set (join table + legacy primary), de-duped.
+          const campaignIds = Array.from(
+            new Set(
+              [
+                user.campaignId,
+                ...user.campaignAssignments.map((a) => a.campaignId),
+              ].filter(Boolean) as string[]
+            )
+          );
+
           return {
             id: user.id,
             name: user.name,
@@ -49,6 +59,7 @@ export const authOptions: AuthOptions = {
             role: user.role,
             campaignId: user.campaignId,
             campaignName: user.campaign?.campaignName,
+            campaignIds,
           };
         } catch (error) {
           console.error("❌ Auth error:", error);
@@ -58,23 +69,42 @@ export const authOptions: AuthOptions = {
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger }) {
       if (user) {
         token.id = user.id;
         token.role = (user as any).role;
         token.campaignId = (user as any).campaignId;
         token.campaignName = (user as any).campaignName;
-      } else if (token.id && !token.campaignId && token.role !== "CEO") {
-        // Self-heal: a campaign may have been assigned after login (e.g. a
-        // collector's first bulk import). Re-read it so the dashboard can load
-        // without forcing a logout/login. Only runs while no campaign is set.
+        token.campaignIds = (user as any).campaignIds ?? [];
+      } else if (
+        token.id &&
+        token.role !== "CEO" &&
+        (trigger === "update" ||
+          !token.campaignId ||
+          !Array.isArray(token.campaignIds))
+      ) {
+        // Self-heal: campaign assignments may change after login (first bulk
+        // import, or an admin editing the user's campaigns). Re-read the full
+        // assigned set so the dashboard reflects it without a forced re-login.
         const dbUser = await prisma.user.findUnique({
           where: { id: token.id as string },
-          select: { campaignId: true, campaign: { select: { campaignName: true } } },
+          select: {
+            campaignId: true,
+            campaign: { select: { campaignName: true } },
+            campaignAssignments: { select: { campaignId: true } },
+          },
         });
-        if (dbUser?.campaignId) {
+        if (dbUser) {
           token.campaignId = dbUser.campaignId;
           token.campaignName = dbUser.campaign?.campaignName;
+          token.campaignIds = Array.from(
+            new Set(
+              [
+                dbUser.campaignId,
+                ...dbUser.campaignAssignments.map((a) => a.campaignId),
+              ].filter(Boolean) as string[]
+            )
+          );
         }
       }
       return token;
@@ -85,6 +115,7 @@ export const authOptions: AuthOptions = {
         (session.user as any).role = token.role;
         (session.user as any).campaignId = token.campaignId;
         (session.user as any).campaignName = token.campaignName;
+        (session.user as any).campaignIds = (token.campaignIds as string[]) ?? [];
       }
       return session;
     },

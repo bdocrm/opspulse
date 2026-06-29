@@ -32,6 +32,7 @@ interface Production {
   activations: number;
   approvals: number;
   booked: number;
+  volume?: number;
 }
 
 interface CampaignBlock {
@@ -45,13 +46,14 @@ interface CampaignBlock {
   entriesCount: number;
 }
 
-const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, booked: 0 };
+const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
 
 function kpiValueFor(metric: string, prod: Production): number {
   switch (metric) {
     case 'transmittals': return prod.transmittals;
     case 'activations': return prod.activations;
     case 'approvals': return prod.approvals;
+    case 'volume': return prod.volume || 0;
     default: return prod.booked;
   }
 }
@@ -75,19 +77,25 @@ interface TargetModalProps {
   agentName: string;
   currentTarget?: number;
   onClose: () => void;
-  onSave: (target: number) => void;
+  onSave: (target: number, setForAll?: boolean) => void;
   loading: boolean;
+  agentCount?: number;
 }
 
-function TargetModal({ agentName, currentTarget, onClose, onSave, loading }: TargetModalProps) {
+function TargetModal({ agentName, currentTarget, onClose, onSave, loading, agentCount }: TargetModalProps) {
   const [target, setTarget] = useState(currentTarget?.toString() || '');
+  const [setForAll, setSetForAll] = useState(false);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>Set Target for {agentName}</CardTitle>
-          <CardDescription>Monthly target/goal for this agent</CardDescription>
+          <CardTitle>
+            {setForAll ? 'Set Target for All Agents' : `Set Target for ${agentName}`}
+          </CardTitle>
+          <CardDescription>
+            {setForAll ? `Apply to all ${agentCount} agents in this campaign` : 'Monthly target/goal for this agent'}
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
@@ -105,10 +113,36 @@ function TargetModal({ agentName, currentTarget, onClose, onSave, loading }: Tar
             <Button variant="outline" onClick={onClose} disabled={loading} className="flex-1">
               Cancel
             </Button>
-            <Button onClick={() => onSave(parseFloat(target) || 0)} disabled={loading || !target} className="flex-1">
-              {loading ? 'Saving...' : 'Save Target'}
+            <Button
+              onClick={() => onSave(parseFloat(target) || 0, setForAll)}
+              disabled={loading || !target}
+              className="flex-1"
+            >
+              {loading ? 'Saving...' : setForAll ? 'Set for All' : 'Save Target'}
             </Button>
           </div>
+          {agentCount && agentCount > 1 && !setForAll && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSetForAll(true)}
+              className="w-full text-xs"
+              disabled={loading}
+            >
+              Apply to all {agentCount} agents instead
+            </Button>
+          )}
+          {setForAll && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSetForAll(false)}
+              className="w-full text-xs"
+              disabled={loading}
+            >
+              Back to {agentName} only
+            </Button>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -135,7 +169,7 @@ export default function CollectorDashboard() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [createdAgent, setCreatedAgent] = useState<{ name: string; email: string; seatNumber: number; campaignName: string } | null>(null);
-  const [targetModal, setTargetModal] = useState<{ agentId: string; agentName: string; currentTarget?: number } | null>(null);
+  const [targetModal, setTargetModal] = useState<{ agentId: string; agentName: string; currentTarget?: number; campaignId: string; agentCount: number } | null>(null);
   const [savingTarget, setSavingTarget] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [agentSearch, setAgentSearch] = useState('');
@@ -330,17 +364,27 @@ export default function CollectorDashboard() {
     }
   };
 
-  const handleSaveTarget = async (target: number) => {
+  const handleSaveTarget = async (target: number, setForAll?: boolean) => {
     if (!targetModal) return;
     setSavingTarget(true);
     try {
-      const res = await fetch(`/api/collectors/agents/${targetModal.agentId}/targets`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target }),
-      });
-      if (!res.ok) throw new Error('Failed to save target');
-      setMessage(`✅ Target updated for ${targetModal.agentName}!`);
+      if (setForAll) {
+        const res = await fetch(`/api/collectors/campaigns/${targetModal.campaignId}/agents/targets`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target }),
+        });
+        if (!res.ok) throw new Error('Failed to save targets');
+        setMessage(`✅ Target updated for all ${targetModal.agentCount} agents!`);
+      } else {
+        const res = await fetch(`/api/collectors/agents/${targetModal.agentId}/targets`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target }),
+        });
+        if (!res.ok) throw new Error('Failed to save target');
+        setMessage(`✅ Target updated for ${targetModal.agentName}!`);
+      }
       setTargetModal(null);
       mutateDashboard();
     } catch (error) {
@@ -936,8 +980,8 @@ export default function CollectorDashboard() {
                             <TableHead className="w-12">Seat</TableHead>
                             <TableHead>Collector</TableHead>
                             <TableHead className="text-center w-20">Attendance</TableHead>
-                            <TableHead className="text-center">Trans</TableHead>
-                            <TableHead className="text-center">Appr</TableHead>
+                            <TableHead className="text-center">Transmitted</TableHead>
+                            <TableHead className="text-center">Approved</TableHead>
                             <TableHead className="text-center">Booked</TableHead>
                             <TableHead className="w-32">Progress</TableHead>
                             <TableHead className="text-right w-20">Actions</TableHead>
@@ -1001,7 +1045,7 @@ export default function CollectorDashboard() {
                                   <div className="flex gap-1 justify-end">
                                     <Button
                                       variant="ghost" size="icon" className="h-7 w-7"
-                                      onClick={() => setTargetModal({ agentId: agent.id, agentName: agent.name, currentTarget: agent.monthlyTarget })}
+                                      onClick={() => setTargetModal({ agentId: agent.id, agentName: agent.name, currentTarget: agent.monthlyTarget, campaignId: block.id, agentCount: block.agents.length })}
                                       title="Set Target"
                                     >
                                       <Target className="h-3.5 w-3.5" />
@@ -1057,6 +1101,7 @@ export default function CollectorDashboard() {
           onClose={() => setTargetModal(null)}
           onSave={handleSaveTarget}
           loading={savingTarget}
+          agentCount={targetModal.agentCount}
         />
       )}
     </div>

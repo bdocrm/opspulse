@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { v4 as uuidv4 } from 'uuid';
+import { isUserInCampaign } from '@/lib/user-campaigns';
 
 // POST: Create a new agent for collector's campaign
 export async function POST(request: NextRequest) {
@@ -22,8 +23,9 @@ export async function POST(request: NextRequest) {
 
     const { name, seatNumber, campaignId } = await request.json();
 
-    // Verify collector belongs to this campaign
-    if (campaignId !== user.campaignId) {
+    // Verify collector is assigned to this campaign (primary or multi-campaign).
+    const allowed = await isUserInCampaign(user.id, campaignId);
+    if (!allowed) {
       return NextResponse.json(
         { message: 'Cannot add agents to other campaigns' },
         { status: 403 }

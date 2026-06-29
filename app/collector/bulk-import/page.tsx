@@ -16,6 +16,9 @@ interface MatchedAgent {
   volume: number;
   agentId: string;
   agentName: string;
+  transmittals?: number;
+  approvals?: number;
+  booked?: number;
 }
 
 interface NewAgent {
@@ -23,6 +26,9 @@ interface NewAgent {
   count: number;
   volume: number;
   approved: boolean;
+  transmittals?: number;
+  approvals?: number;
+  booked?: number;
 }
 
 const METRIC_LABELS: Record<string, string> = {

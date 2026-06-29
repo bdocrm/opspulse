@@ -4,6 +4,9 @@ declare module "next-auth" {
   interface User {
     id: string;
     role: string;
+    campaignId?: string | null;
+    campaignName?: string | null;
+    campaignIds?: string[];
   }
   interface Session {
     user: {
@@ -11,6 +14,9 @@ declare module "next-auth" {
       name: string;
       email: string;
       role: string;
+      campaignId?: string | null;
+      campaignName?: string | null;
+      campaignIds?: string[];
     };
   }
 }
@@ -19,5 +25,8 @@ declare module "next-auth/jwt" {
   interface JWT {
     id: string;
     role: string;
+    campaignId?: string | null;
+    campaignName?: string | null;
+    campaignIds?: string[];
   }
 }

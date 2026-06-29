@@ -16,10 +16,10 @@ const bcryptHash = '$2a$10$m8WD3n6ckYoisDBawArZ6eavo16dLP/pko7T/mJgXhHC4F34qSIwi
       data: [
         { id: '11111111-1111-1111-1111-111111111111', campaignName: 'BPI PA OUTBOUND', goalType: 'sales', monthlyGoal: 1000000, kpiMetric: 'transmittals' },
         { id: '11111111-1111-1111-1111-111111111112', campaignName: 'BPI PA INBOUND', goalType: 'sales', monthlyGoal: 800000, kpiMetric: 'transmittals' },
-        { id: '11111111-1111-1111-1111-111111111113', campaignName: 'BPI PL', goalType: 'sales', monthlyGoal: 500000, kpiMetric: 'transmittals' },
+        { id: '11111111-1111-1111-1111-111111111113', campaignName: 'BPI PL', goalType: 'sales', monthlyGoal: 500000, kpiMetric: 'volume' },
         { id: '11111111-1111-1111-1111-111111111114', campaignName: 'MB ACQ', goalType: 'activation', monthlyGoal: 2000, kpiMetric: 'activations' },
         { id: '11111111-1111-1111-1111-111111111115', campaignName: 'BDO SGM', goalType: 'quality', monthlyGoal: 95, kpiMetric: 'qualityRate' },
-        { id: '11111111-1111-1111-1111-111111111116', campaignName: 'BPI BI', goalType: 'conversion', monthlyGoal: 80, kpiMetric: 'conversionRate' },
+        { id: '11111111-1111-1111-1111-111111111116', campaignName: 'MEDICARD', goalType: 'conversion', monthlyGoal: 80, kpiMetric: 'conversionRate' },
       ],
     });
     console.log(`✅ ${campaigns.count} campaigns created`);
@@ -49,8 +49,8 @@ const bcryptHash = '$2a$10$m8WD3n6ckYoisDBawArZ6eavo16dLP/pko7T/mJgXhHC4F34qSIwi
       { id: '22222222-2222-2222-2222-222222222208', name: 'MB OM - ACQ', email: 'om.mb.acq@opsview.com', role: 'OM', campaignId: '11111111-1111-1111-1111-111111111114' },
       { id: '22222222-2222-2222-2222-222222222209', name: 'BDO Collector - SGM', email: 'collector.bdo.sgm@opsview.com', role: 'COLLECTOR', campaignId: '11111111-1111-1111-1111-111111111115' },
       { id: '22222222-2222-2222-2222-222222222210', name: 'BDO OM - SGM', email: 'om.bdo.sgm@opsview.com', role: 'OM', campaignId: '11111111-1111-1111-1111-111111111115' },
-      { id: '22222222-2222-2222-2222-222222222211', name: 'BPI Collector - BI', email: 'collector.bpi.bi@opsview.com', role: 'COLLECTOR', campaignId: '11111111-1111-1111-1111-111111111116' },
-      { id: '22222222-2222-2222-2222-222222222212', name: 'BPI OM - BI', email: 'om.bpi.bi@opsview.com', role: 'OM', campaignId: '11111111-1111-1111-1111-111111111116' },
+      { id: '22222222-2222-2222-2222-222222222211', name: 'MEDICARD Collector - CBC', email: 'collector.medicard.cbc@opsview.com', role: 'COLLECTOR', campaignId: '11111111-1111-1111-1111-111111111116' },
+      { id: '22222222-2222-2222-2222-222222222212', name: 'MEDICARD OM - CBC', email: 'om.medicard.cbc@opsview.com', role: 'OM', campaignId: '11111111-1111-1111-1111-111111111116' },
     ];
 
     const createdUsers = await prisma.user.createMany({

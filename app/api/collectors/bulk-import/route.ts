@@ -188,6 +188,16 @@ export async function POST(req: NextRequest) {
           }
         }
 
+        // Sort by volume descending, then by count/metrics descending
+        matched.sort((a, b) => {
+          if (b.volume !== a.volume) return b.volume - a.volume;
+          return b.count - a.count;
+        });
+        notFound.sort((a, b) => {
+          if (b.volume !== a.volume) return b.volume - a.volume;
+          return b.count - a.count;
+        });
+
         return NextResponse.json({ preview: true, matched, notFound, metricType, reportDate });
       }
 
@@ -322,6 +332,14 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Sort results by volume descending, then by the primary metric
+      results.details.sort((a, b) => {
+        if (b.volume !== a.volume) return b.volume - a.volume;
+        const aMetric = metricType === 'all_metrics' ? a.transmittals : a[metricType] || a.count || 0;
+        const bMetric = metricType === 'all_metrics' ? b.transmittals : b[metricType] || b.count || 0;
+        return bMetric - aMetric;
+      });
+
       return NextResponse.json({
         message: `Imported ${results.success} records. ${results.created} new agent(s) created.`,
         ...results,
@@ -372,6 +390,16 @@ export async function POST(req: NextRequest) {
         if (agent) matched.push({ ...baseData, agentId: agent.id, agentName: agent.name });
         else notFound.push(baseData);
       }
+
+      // Sort by volume descending, then by count/metrics descending
+      matched.sort((a, b) => {
+        if (b.volume !== a.volume) return b.volume - a.volume;
+        return b.count - a.count;
+      });
+      notFound.sort((a, b) => {
+        if (b.volume !== a.volume) return b.volume - a.volume;
+        return b.count - a.count;
+      });
 
       return NextResponse.json({ preview: true, matched, notFound, metricType, reportDate });
     }
@@ -472,6 +500,14 @@ export async function POST(req: NextRequest) {
         csvResults.errors.push(`Row ${row.rowIdx}: ${rowError.message}`);
       }
     }
+
+    // Sort results by volume descending, then by the primary metric
+    csvResults.details.sort((a, b) => {
+      if (b.volume !== a.volume) return b.volume - a.volume;
+      const aMetric = metricType === 'all_metrics' ? a.transmittals : a[metricType] || a.count || 0;
+      const bMetric = metricType === 'all_metrics' ? b.transmittals : b[metricType] || b.count || 0;
+      return bMetric - aMetric;
+    });
 
     return NextResponse.json({
       message: `Imported ${csvResults.success} records. ${csvResults.created} new agent(s) created.`,

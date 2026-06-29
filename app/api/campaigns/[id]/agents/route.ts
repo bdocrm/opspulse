@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { getCampaignAgents } from '@/lib/campaign-agents';
+import { isUserInCampaign } from '@/lib/user-campaigns';
 
 interface Params {
   id: string;
@@ -21,13 +22,16 @@ export async function GET(
     const user = session.user as any;
     const campaignId = params.id;
 
-    // Check if user has access to this campaign
-    // CEO can see all, COLLECTOR/OM/AGENT can only see their own campaign
-    if (user.role !== 'CEO' && user.campaignId !== campaignId) {
-      return NextResponse.json(
-        { message: 'Unauthorized to view this campaign' },
-        { status: 403 }
-      );
+    // Check if user has access to this campaign. CEO can see all; everyone else
+    // may view any campaign in their assigned set (primary or multi-campaign).
+    if (user.role !== 'CEO') {
+      const allowed = await isUserInCampaign(user.id, campaignId);
+      if (!allowed) {
+        return NextResponse.json(
+          { message: 'Unauthorized to view this campaign' },
+          { status: 403 }
+        );
+      }
     }
 
     // Shared campaign-agent assignment source (same query the Admin/CEO Goals

@@ -19,6 +19,7 @@ export interface Production {
   activations: number;
   approvals: number;
   booked: number;
+  volume?: number;
 }
 
 export interface CampaignSummaryProps {
@@ -36,13 +37,14 @@ export interface CampaignSummaryProps {
   children?: React.ReactNode;
 }
 
-const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, booked: 0 };
+const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
 
 function kpiValueFor(metric: string, prod: Production): number {
   switch (metric) {
     case 'transmittals': return prod.transmittals;
     case 'activations': return prod.activations;
     case 'approvals': return prod.approvals;
+    case 'volume': return prod.volume || 0;
     default: return prod.booked;
   }
 }
