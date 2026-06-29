@@ -141,6 +141,7 @@ export default function CollectorDashboard() {
   const [agentSearch, setAgentSearch] = useState('');
   const [sortBy, setSortBy] = useState<'seat' | 'booked' | 'name'>('booked');
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
+  const [deletingCampaignData, setDeletingCampaignData] = useState(false);
 
   // Date range filter
   const today = new Date().toISOString().split('T')[0];
@@ -362,6 +363,28 @@ export default function CollectorDashboard() {
     }
   };
 
+  const handleDeleteCampaignData = async () => {
+    const selectedCampaign = allCampaigns.find(c => c.id === selectedCampaignId);
+    if (!selectedCampaign) return;
+
+    const confirmMessage = `Are you sure you want to delete all production data for "${selectedCampaign.campaignName}"? This action cannot be undone.`;
+    if (!confirm(confirmMessage)) return;
+
+    setDeletingCampaignData(true);
+    try {
+      const res = await fetch(`/api/collectors/campaigns/${selectedCampaignId}/data`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('Failed to delete campaign data');
+      setMessage(`✅ All data deleted for ${selectedCampaign.campaignName}`);
+      mutateDashboard();
+    } catch (error) {
+      setMessage(`Error: ${(error as Error).message}`);
+    } finally {
+      setDeletingCampaignData(false);
+    }
+  };
+
   // Export every assigned campaign's agents to a single CSV (Campaign column
   // disambiguates the grouped data).
   const handleExport = () => {
@@ -439,21 +462,31 @@ export default function CollectorDashboard() {
       </div>
 
       {/* Campaign Selector */}
-      {allCampaigns.length > 1 && (
+      {allCampaigns.length > 0 && (
         <Card>
           <CardContent className="py-3">
-            <div className="flex items-center gap-3">
-              <label className="text-sm font-medium text-muted-foreground">Select Campaign:</label>
-              <Select value={selectedCampaignId || ''} onValueChange={setSelectedCampaignId}>
-                <SelectTrigger className="w-64">
-                  <SelectValue placeholder="Choose a campaign..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {allCampaigns.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>{c.campaignName}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <label className="text-sm font-medium text-muted-foreground">Select Campaign:</label>
+                <Select value={selectedCampaignId || ''} onValueChange={setSelectedCampaignId}>
+                  <SelectTrigger className="w-64">
+                    <SelectValue placeholder="Choose a campaign..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {allCampaigns.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>{c.campaignName}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleDeleteCampaignData}
+                disabled={deletingCampaignData}
+              >
+                {deletingCampaignData ? 'Deleting...' : 'Delete All Data'}
+              </Button>
             </div>
           </CardContent>
         </Card>
