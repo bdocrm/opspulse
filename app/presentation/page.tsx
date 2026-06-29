@@ -190,11 +190,11 @@ const slides: Slide[] = [
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {[
             'BPI PA OUTBOUND',
-            'BPI PA INBOUND',
             'BPI PL',
+            'CBC',
             'MB ACQ',
             'BDO SGM',
-            'BPI BI',
+            'MEDICARD',
           ].map((campaign, idx) => (
             <div
               key={idx}

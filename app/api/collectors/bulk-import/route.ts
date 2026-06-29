@@ -5,11 +5,14 @@ import { prisma } from '@/lib/prisma';
 import * as XLSX from 'xlsx';
 import bcrypt from 'bcryptjs';
 
-// Parse BPI PA Raw Excel rows and return agent name, count, and volume
-function parseExcelRows(rows: any[]): { name: string; count: number; volume: number; rowIdx: number }[] {
+// Parse BPI PA Raw Excel rows - handles both single COUNT and multiple metrics
+function parseExcelRows(rows: any[], metricType: string): { name: string; count: number; volume: number; transmittals?: number; approvals?: number; booked?: number; rowIdx: number }[] {
   let nameCol  = 1;
   let countCol = 3;
   let volumeCol = 4;
+  let transmittalsCol = -1;
+  let approvalsCol = -1;
+  let bookedCol = -1;
 
   for (let i = 0; i < Math.min(5, rows.length); i++) {
     const row = rows[i];
@@ -18,6 +21,9 @@ function parseExcelRows(rows: any[]): { name: string; count: number; volume: num
       if (cell.includes('full name')) nameCol = j;
       if (cell === 'count') countCol = j;
       if (cell === 'volume') volumeCol = j;
+      if (cell === 'transmitted') transmittalsCol = j;
+      if (cell === 'approvals') approvalsCol = j;
+      if (cell === 'booked') bookedCol = j;
     }
   }
 
@@ -30,16 +36,33 @@ function parseExcelRows(rows: any[]): { name: string; count: number; volume: num
     }
   }
 
-  const entries: { name: string; count: number; volume: number; rowIdx: number }[] = [];
+  const entries: { name: string; count: number; volume: number; transmittals?: number; approvals?: number; booked?: number; rowIdx: number }[] = [];
   for (let i = dataStartRow; i < rows.length; i++) {
     const row = rows[i];
     if (!row || row.length === 0) continue;
     const agentName = row[nameCol];
     if (!agentName || !String(agentName).trim()) continue;
     if (row[0] !== null && row[0] !== undefined && typeof row[0] !== 'number') continue;
-    const count  = Math.max(0, Math.floor(Number(row[countCol])  || 0));
+
     const volume = Math.max(0, Math.round(Number(row[volumeCol]) || 0));
-    entries.push({ name: String(agentName).trim(), count, volume, rowIdx: i + 1 });
+
+    if (metricType === 'all_metrics') {
+      // Try to read all three metrics from separate columns
+      let transmittals = transmittalsCol >= 0 ? Math.max(0, Math.floor(Number(row[transmittalsCol]) || 0)) : 0;
+      let approvals = approvalsCol >= 0 ? Math.max(0, Math.floor(Number(row[approvalsCol]) || 0)) : 0;
+      let booked = bookedCol >= 0 ? Math.max(0, Math.floor(Number(row[bookedCol]) || 0)) : 0;
+
+      // Fallback: if individual metric columns not found but COUNT column exists, use COUNT for transmittals
+      if (transmittalsCol < 0 && approvalsCol < 0 && bookedCol < 0 && countCol >= 0) {
+        transmittals = Math.max(0, Math.floor(Number(row[countCol]) || 0));
+      }
+
+      entries.push({ name: String(agentName).trim(), count: transmittals, volume, transmittals, approvals, booked, rowIdx: i + 1 });
+    } else {
+      // Single COUNT column
+      const count = Math.max(0, Math.floor(Number(row[countCol]) || 0));
+      entries.push({ name: String(agentName).trim(), count, volume, rowIdx: i + 1 });
+    }
   }
   return entries;
 }
@@ -135,12 +158,12 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Excel file has insufficient rows' }, { status: 400 });
       }
 
-      const entries = parseExcelRows(rows);
+      const entries = parseExcelRows(rows, metricType);
 
       // ── PREVIEW MODE: classify agents, no DB writes ──────────────────────
       if (mode === 'preview') {
-        const matched: { name: string; count: number; volume: number; agentId: string; agentName: string }[] = [];
-        const notFound: { name: string; count: number; volume: number }[] = [];
+        const matched: any[] = [];
+        const notFound: any[] = [];
 
         for (const entry of entries) {
           const agent = await prisma.user.findFirst({
@@ -151,12 +174,29 @@ export async function POST(req: NextRequest) {
             select: { id: true, name: true },
           });
 
+          const baseData: any = { name: entry.name, count: entry.count, volume: entry.volume };
+          if (metricType === 'all_metrics') {
+            baseData.transmittals = entry.transmittals;
+            baseData.approvals = entry.approvals;
+            baseData.booked = entry.booked;
+          }
+
           if (agent) {
-            matched.push({ name: entry.name, count: entry.count, volume: entry.volume, agentId: agent.id, agentName: agent.name });
+            matched.push({ ...baseData, agentId: agent.id, agentName: agent.name });
           } else {
-            notFound.push({ name: entry.name, count: entry.count, volume: entry.volume });
+            notFound.push(baseData);
           }
         }
+
+        // Sort by volume descending, then by count/metrics descending
+        matched.sort((a, b) => {
+          if (b.volume !== a.volume) return b.volume - a.volume;
+          return b.count - a.count;
+        });
+        notFound.sort((a, b) => {
+          if (b.volume !== a.volume) return b.volume - a.volume;
+          return b.count - a.count;
+        });
 
         return NextResponse.json({ preview: true, matched, notFound, metricType, reportDate });
       }
@@ -241,6 +281,11 @@ export async function POST(req: NextRequest) {
           if (metricType === 'transmittals') metricData.transmittals = BigInt(row.count);
           else if (metricType === 'approvals') metricData.approvals = BigInt(row.count);
           else if (metricType === 'booked') metricData.booked = BigInt(row.count);
+          else if (metricType === 'all_metrics') {
+            metricData.transmittals = BigInt(row.transmittals || 0);
+            metricData.approvals = BigInt(row.approvals || 0);
+            metricData.booked = BigInt(row.booked || 0);
+          }
 
           const existingDetail = await prisma.productionDetail.findUnique({
             where: {
@@ -268,17 +313,32 @@ export async function POST(req: NextRequest) {
           }
 
           results.success++;
-          results.details.push({
+          const detail: any = {
             row: row.rowIdx,
             agent: agent.name,
             date: reportDate.toLocaleDateString(),
-            [metricType]: row.count,
             volume: row.volume,
-          });
+          };
+          if (metricType === 'all_metrics') {
+            detail.transmittals = row.transmittals;
+            detail.approvals = row.approvals;
+            detail.booked = row.booked;
+          } else {
+            detail[metricType] = row.count;
+          }
+          results.details.push(detail);
         } catch (rowError: any) {
           results.errors.push(`Row ${row.rowIdx}: ${rowError.message}`);
         }
       }
+
+      // Sort results by volume descending, then by the primary metric
+      results.details.sort((a, b) => {
+        if (b.volume !== a.volume) return b.volume - a.volume;
+        const aMetric = metricType === 'all_metrics' ? a.transmittals : a[metricType] || a.count || 0;
+        const bMetric = metricType === 'all_metrics' ? b.transmittals : b[metricType] || b.count || 0;
+        return bMetric - aMetric;
+      });
 
       return NextResponse.json({
         message: `Imported ${results.success} records. ${results.created} new agent(s) created.`,
@@ -303,7 +363,7 @@ export async function POST(req: NextRequest) {
       })
     );
 
-    const csvEntries = parseExcelRows(csvRows);
+    const csvEntries = parseExcelRows(csvRows, metricType);
 
     if (csvEntries.length === 0) {
       return NextResponse.json({ error: 'No data rows found. Check that your CSV matches the BPI PA template format.' }, { status: 400 });
@@ -311,17 +371,35 @@ export async function POST(req: NextRequest) {
 
     // Preview mode for CSV
     if (mode === 'preview') {
-      const matched: { name: string; count: number; volume: number; agentId: string; agentName: string }[] = [];
-      const notFound: { name: string; count: number; volume: number }[] = [];
+      const matched: any[] = [];
+      const notFound: any[] = [];
 
       for (const entry of csvEntries) {
         const agent = await prisma.user.findFirst({
           where: { name: { contains: entry.name, mode: 'insensitive' }, campaignId: effectiveCampaignId },
           select: { id: true, name: true },
         });
-        if (agent) matched.push({ name: entry.name, count: entry.count, volume: entry.volume, agentId: agent.id, agentName: agent.name });
-        else notFound.push({ name: entry.name, count: entry.count, volume: entry.volume });
+
+        const baseData: any = { name: entry.name, count: entry.count, volume: entry.volume };
+        if (metricType === 'all_metrics') {
+          baseData.transmittals = entry.transmittals;
+          baseData.approvals = entry.approvals;
+          baseData.booked = entry.booked;
+        }
+
+        if (agent) matched.push({ ...baseData, agentId: agent.id, agentName: agent.name });
+        else notFound.push(baseData);
       }
+
+      // Sort by volume descending, then by count/metrics descending
+      matched.sort((a, b) => {
+        if (b.volume !== a.volume) return b.volume - a.volume;
+        return b.count - a.count;
+      });
+      notFound.sort((a, b) => {
+        if (b.volume !== a.volume) return b.volume - a.volume;
+        return b.count - a.count;
+      });
 
       return NextResponse.json({ preview: true, matched, notFound, metricType, reportDate });
     }
@@ -386,6 +464,11 @@ export async function POST(req: NextRequest) {
         if (metricType === 'transmittals') metricData.transmittals = BigInt(row.count);
         else if (metricType === 'approvals') metricData.approvals = BigInt(row.count);
         else if (metricType === 'booked') metricData.booked = BigInt(row.count);
+        else if (metricType === 'all_metrics') {
+          metricData.transmittals = BigInt(row.transmittals || 0);
+          metricData.approvals = BigInt(row.approvals || 0);
+          metricData.booked = BigInt(row.booked || 0);
+        }
 
         const existingDetail = await prisma.productionDetail.findUnique({
           where: { productionEntryId_agentId: { productionEntryId: csvProdEntry.id, agentId: agent.id } },
@@ -399,11 +482,32 @@ export async function POST(req: NextRequest) {
         }
 
         csvResults.success++;
-        csvResults.details.push({ row: row.rowIdx, agent: agent.name, date: reportDate.toLocaleDateString(), [metricType]: row.count, volume: row.volume });
+        const detail: any = {
+          row: row.rowIdx,
+          agent: agent.name,
+          date: reportDate.toLocaleDateString(),
+          volume: row.volume,
+        };
+        if (metricType === 'all_metrics') {
+          detail.transmittals = row.transmittals;
+          detail.approvals = row.approvals;
+          detail.booked = row.booked;
+        } else {
+          detail[metricType] = row.count;
+        }
+        csvResults.details.push(detail);
       } catch (rowError: any) {
         csvResults.errors.push(`Row ${row.rowIdx}: ${rowError.message}`);
       }
     }
+
+    // Sort results by volume descending, then by the primary metric
+    csvResults.details.sort((a, b) => {
+      if (b.volume !== a.volume) return b.volume - a.volume;
+      const aMetric = metricType === 'all_metrics' ? a.transmittals : a[metricType] || a.count || 0;
+      const bMetric = metricType === 'all_metrics' ? b.transmittals : b[metricType] || b.count || 0;
+      return bMetric - aMetric;
+    });
 
     return NextResponse.json({
       message: `Imported ${csvResults.success} records. ${csvResults.created} new agent(s) created.`,

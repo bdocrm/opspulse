@@ -45,7 +45,7 @@ export default function DataEntryPage() {
   const { data: session } = useSession();
   const router = useRouter();
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-  const [time, setTime] = useState('09:00');
+  const time = '00:00'; // Default time for entries
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [agentData, setAgentData] = useState<Record<string, AgentDetail>>({});
@@ -309,7 +309,7 @@ export default function DataEntryPage() {
         throw new Error(result.error || 'Failed to submit entry');
       }
 
-      setMessage({ type: 'success', text: `Entry saved for ${formatTime(time)}!` });
+      setMessage({ type: 'success', text: 'Entry saved!' });
       resetForm();
       mutateSaved();
     } catch (error: any) {
@@ -489,7 +489,7 @@ export default function DataEntryPage() {
 
       {/* Entry Form */}
       <form onSubmit={handleSubmit} className="space-y-4">
-        {/* Date & Time Row */}
+        {/* Date & Search Row */}
         <Card className="p-4">
           <div className="flex flex-wrap gap-4 items-end">
             <div className="space-y-1.5">
@@ -500,17 +500,6 @@ export default function DataEntryPage() {
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
                 className="w-40"
-                required
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="time" className="text-sm font-medium">Booking Time</Label>
-              <Input
-                id="time"
-                type="time"
-                value={time}
-                onChange={(e) => setTime(e.target.value)}
-                className="w-32"
                 required
               />
             </div>
@@ -531,7 +520,7 @@ export default function DataEntryPage() {
         {/* Pending Entry Stats */}
         {hasData && (
           <div className="flex items-center justify-between p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-sm">
-            <span className="text-yellow-500 font-medium">Pending Entry: {formatTime(time)}</span>
+            <span className="text-yellow-500 font-medium">Pending Entry</span>
             <div className="flex gap-4 text-xs">
               <span>T:{pendingTotals.transmittals}</span>
               <span>A:{pendingTotals.activations}</span>
@@ -620,7 +609,7 @@ export default function DataEntryPage() {
                       </p>
                       <div className="grid grid-cols-4 gap-2">
                         <div className="space-y-1">
-                          <Label className="text-[10px] text-muted-foreground">Trans</Label>
+                          <Label className="text-[10px] text-muted-foreground">Transmitted</Label>
                           <Input
                             type="number"
                             min="0"
@@ -640,7 +629,7 @@ export default function DataEntryPage() {
                           />
                         </div>
                         <div className="space-y-1">
-                          <Label className="text-[10px] text-muted-foreground">Appr</Label>
+                          <Label className="text-[10px] text-muted-foreground">Approved</Label>
                           <Input
                             type="number"
                             min="0"
@@ -720,9 +709,9 @@ export default function DataEntryPage() {
                     <th className="text-center py-3 px-2 font-medium w-12">Status</th>
                     <th className="text-left py-3 px-3 font-medium">Agent</th>
                     <th className="text-center py-3 px-1 font-medium w-16 text-[10px] text-green-500">Saved</th>
-                    <th className="text-center py-3 px-2 font-medium w-20">Trans</th>
+                    <th className="text-center py-3 px-2 font-medium w-20">Transmitted</th>
                     <th className="text-center py-3 px-2 font-medium w-20">Act</th>
-                    <th className="text-center py-3 px-2 font-medium w-20">Appr</th>
+                    <th className="text-center py-3 px-2 font-medium w-20">Approved</th>
                     <th className="text-center py-3 px-2 font-medium w-20">Book</th>
                     <th className="text-center py-3 px-2 font-medium w-28">Volume (₱)</th>
                     <th className="text-center py-3 px-2 font-medium w-16">Q%</th>
@@ -922,7 +911,7 @@ export default function DataEntryPage() {
             ) : (
               <>
                 <Plus className="w-4 h-4 mr-2" />
-                Save Entry ({formatTime(time)})
+                Save Entry
               </>
             )}
           </Button>

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { getAssignedCampaignIds } from '@/lib/user-campaigns';
 
 // GET - Fetch attendance for a specific date and campaign
 export async function GET(request: NextRequest) {
@@ -74,18 +75,36 @@ export async function POST(request: NextRequest) {
 
     const user = session.user as any;
     const body = await request.json();
-    const { date, attendance } = body;
+    const { date } = body;
 
-    // attendance is expected to be: { [agentId]: { status: 'PRESENT' | 'ABSENT' | 'LEAVE' | 'HALFDAY', remarks?: string } }
-
-    if (!date || !attendance) {
+    // Accept two shapes for backward compatibility:
+    //  - bulk map:    { date, attendance: { [agentId]: { status, remarks? } } }
+    //  - single agent:{ date, agentId, status, remarks? }   (dashboard toggle)
+    let attendance: Record<string, { status: string; remarks?: string }>;
+    if (body.attendance && typeof body.attendance === 'object') {
+      attendance = body.attendance;
+    } else if (body.agentId && body.status) {
+      attendance = { [body.agentId]: { status: body.status, remarks: body.remarks } };
+    } else {
       return NextResponse.json({ error: 'Date and attendance data are required' }, { status: 400 });
     }
 
-    const campaignId = user.campaignId;
-    if (!campaignId) {
-      return NextResponse.json({ error: 'User is not associated with a campaign' }, { status: 400 });
+    if (!date) {
+      return NextResponse.json({ error: 'Date is required' }, { status: 400 });
     }
+
+    // Resolve each agent's own campaign so a multi-campaign collector records
+    // attendance against the correct campaign (not just their primary). Only
+    // agents in one of the collector's assigned campaigns are accepted.
+    const agentIds = Object.keys(attendance);
+    const agentRecords = await prisma.user.findMany({
+      where: { id: { in: agentIds }, role: 'AGENT' },
+      select: { id: true, campaignId: true },
+    });
+    const agentCampaign = new Map(agentRecords.map((a) => [a.id, a.campaignId]));
+
+    const assignedIds = await getAssignedCampaignIds(user.id);
+    const allowed = new Set(assignedIds);
 
     // Parse date
     const attendanceDate = new Date(date);
@@ -95,7 +114,14 @@ export async function POST(request: NextRequest) {
     const results = [];
     for (const [agentId, data] of Object.entries(attendance)) {
       const { status, remarks } = data as { status: string; remarks?: string };
-      
+      const campaignId = agentCampaign.get(agentId) ?? user.campaignId;
+
+      // Skip agents outside the collector's assigned campaigns (CEO unrestricted).
+      if (user.role !== 'CEO' && (!campaignId || !allowed.has(campaignId))) {
+        continue;
+      }
+      if (!campaignId) continue;
+
       const record = await prisma.attendance.upsert({
         where: {
           agentId_date: {

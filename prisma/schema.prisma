@@ -20,8 +20,13 @@ model User {
   email             String             @unique
   password          String
   role              Role
+  // Legacy / "primary" campaign. Kept for backward compatibility: every code
+  // path that read a single campaign still works, and it mirrors the first
+  // entry of the multi-campaign assignment (see UserCampaign). For COLLECTOR/OM
+  // users the full set of assigned campaigns lives in `campaignAssignments`.
   campaignId        String?
   campaign          Campaign?          @relation(fields: [campaignId], references: [id])
+  campaignAssignments UserCampaign[]   // Multi-campaign assignment (collectors/managers)
   seatNumber        Int?
   monthlyTarget     Float? // Current target for this agent
   dailySales        DailySales[]
@@ -29,6 +34,23 @@ model User {
   productionDetails ProductionDetail[] // AGENT produces production details
   createdAt         DateTime           @default(now())
 
+  @@index([campaignId])
+}
+
+// Explicit many-to-many join between users and campaigns. Lets a single
+// collector/manager be assigned to multiple campaigns at once while the legacy
+// User.campaignId continues to hold the "primary" campaign for backward
+// compatibility. The unique constraint guarantees no duplicate assignments.
+model UserCampaign {
+  id         String   @id @default(uuid())
+  userId     String
+  campaignId String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, campaignId])
+  @@index([userId])
   @@index([campaignId])
 }
 
@@ -43,6 +65,7 @@ model Campaign {
   metrics           CampaignMetric[] // New: Multiple KPI metrics per campaign
   monthlyGoals      CampaignGoal[] // Per-month goal configurations
   users             User[]
+  userAssignments   UserCampaign[] // Multi-campaign assignment (collectors/managers)
   dailySales        DailySales[]
   productionDetails ProductionDetail[] // Production details for this campaign
   createdAt         DateTime           @default(now())

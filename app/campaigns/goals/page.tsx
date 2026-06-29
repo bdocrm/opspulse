@@ -9,9 +9,14 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { PageTitle } from '@/components/layout/page-title';
+<<<<<<< HEAD
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { useToast } from '@/components/toast-provider';
 import { AlertCircle, ArchiveRestore, ArrowUpDown, CheckCircle, ChevronDown, ChevronUp, Download, Eye, Loader2, Pencil, Search, Trash2 } from 'lucide-react';
+=======
+import { AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
+import { formatNumberWithCommas, parseFormattedNumber } from '@/lib/number-format';
+>>>>>>> 0d58bd7b19bff43227ff3d81f835a15b6cb3a085
 
 interface Campaign {
   id: string;
@@ -161,8 +166,15 @@ export default function GoalsManagement() {
   const [savedGoals, setSavedGoals] = useState<SavedGoal[]>([]);
   const [deletedGoals, setDeletedGoals] = useState<SavedGoal[]>([]);
   // When editing a saved row from another month, remember which campaign to
-  // re-select after the month-change effect reloads the campaign list.
-  const [pendingCampaignId, setPendingCampaignId] = useState<string | null>(null);
+  // re-select after the month-change effect reloads the campaign list. Kept in a
+  // ref (not state) so the data-loading effect can read it WITHOUT taking it as
+  // a dependency — otherwise the effect, which itself selects a campaign, would
+  // re-trigger on its own writes and loop ("Maximum update depth exceeded").
+  const pendingCampaignIdRef = useRef<string | null>(null);
+  // Mirror of the currently selected campaign id, for the same reason: the
+  // effect needs "which campaign was selected" to preserve it across a month
+  // reload, but must not depend on the selectedCampaign state it sets.
+  const selectedCampaignIdRef = useRef<string | null>(null);
   // Top of the editor — scrolled into view when "Edit" is pressed on a saved row.
   const editorRef = useRef<HTMLDivElement>(null);
 
@@ -257,6 +269,7 @@ export default function GoalsManagement() {
           applySelectedCampaign(toSelect);
         } else {
           setSelectedCampaign(null);
+          selectedCampaignIdRef.current = null;
         }
       }
     } catch {
@@ -284,12 +297,14 @@ export default function GoalsManagement() {
   // re-selecting a campaign requested via the saved-goals "Edit" action).
   useEffect(() => {
     if (status === 'authenticated') {
-      const keepId = pendingCampaignId ?? selectedCampaign?.id;
+      const keepId = pendingCampaignIdRef.current ?? selectedCampaignIdRef.current ?? undefined;
       loadCampaigns(selectedMonth, selectedYear, keepId).then(() => {
-        if (pendingCampaignId) setPendingCampaignId(null);
+        pendingCampaignIdRef.current = null;
       });
       loadSavedGoals();
     }
+    // loadCampaigns/loadSavedGoals are stable for our purposes; the campaign to
+    // keep selected is read from refs so it is intentionally NOT a dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, selectedMonth, selectedYear]);
 
@@ -300,7 +315,7 @@ export default function GoalsManagement() {
       const c = campaigns.find((c) => c.id === row.campaignId);
       if (c) applySelectedCampaign(c);
     } else {
-      setPendingCampaignId(row.campaignId);
+      pendingCampaignIdRef.current = row.campaignId;
       setSelectedMonth(row.month);
     }
     // Bring the editor into view — the saved list sits below the form, so without
@@ -310,7 +325,12 @@ export default function GoalsManagement() {
 
   function applySelectedCampaign(campaign: Campaign) {
     setSelectedCampaign(campaign);
+<<<<<<< HEAD
     setMonthlyGoal(formatInputNumber(campaign.monthlyGoal, 2));
+=======
+    selectedCampaignIdRef.current = campaign.id;
+    setMonthlyGoal(Number(campaign.monthlyGoal).toFixed(2));
+>>>>>>> 0d58bd7b19bff43227ff3d81f835a15b6cb3a085
     setKpiMetric(campaign.kpiMetric || 'transmittals');
     setWorkingDays((campaign.workingDays ?? 22).toString());
     setDaysLapsed((campaign.daysLapsed ?? 0).toString());
@@ -1329,7 +1349,7 @@ export default function GoalsManagement() {
                       <td className="py-2 pr-4 font-medium text-gray-900">{row.campaignName}</td>
                       <td className="py-2 pr-4">{MONTHS[row.month - 1]} {row.year}</td>
                       <td className="py-2 pr-4 capitalize">{row.kpiMetric}</td>
-                      <td className="py-2 pr-4 text-right">{row.monthlyGoal.toLocaleString()}</td>
+                      <td className="py-2 pr-4 text-right">{formatNumberWithCommas(row.monthlyGoal, 2)}</td>
                       <td className="py-2 pr-4 text-center">{row.workingDays}</td>
                       <td className="py-2 pr-4 text-center">{row.daysLapsed}</td>
                       <td className="py-2 pr-4 text-right">

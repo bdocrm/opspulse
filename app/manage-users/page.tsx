@@ -14,6 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/components/toast-provider";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { CampaignMultiSelect } from "@/components/campaign-multi-select";
 import { Trash2, Edit2, Plus, Search, AlertTriangle } from "lucide-react";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -27,6 +28,9 @@ interface User {
   campaignId: string | null;
   monthlyTarget: number | null;
   campaign?: { id: string; campaignName: string };
+  // Full multi-campaign assignment (always includes the primary campaign).
+  campaigns?: { id: string; campaignName: string }[];
+  campaignIds?: string[];
   createdAt: string;
 }
 
@@ -41,7 +45,7 @@ interface FormData {
   password: string;
   role: string;
   seatNumber: string;
-  campaignId: string;
+  campaignIds: string[];
   monthlyTarget: string;
 }
 
@@ -117,8 +121,8 @@ export default function ManageUsersPage() {
     email: "",
     password: "",
     role: "AGENT",
+    campaignIds: [],
     seatNumber: "",
-    campaignId: "",
     monthlyTarget: "",
   });
 
@@ -136,8 +140,8 @@ export default function ManageUsersPage() {
       email: "",
       password: "",
       role: "AGENT",
+      campaignIds: [],
       seatNumber: "",
-      campaignId: "",
       monthlyTarget: "",
     });
     setErrors({});
@@ -146,13 +150,22 @@ export default function ManageUsersPage() {
   };
 
   const handleEditClick = (user: User) => {
+    // Load the user's existing multi-campaign assignment. Fall back to the
+    // legacy single campaignId so users created before this feature still
+    // pre-select their campaign.
+    const campaignIds =
+      user.campaignIds && user.campaignIds.length > 0
+        ? user.campaignIds
+        : user.campaignId
+        ? [user.campaignId]
+        : [];
     setFormData({
       name: user.name,
       email: user.email,
       password: "",
       role: user.role,
+      campaignIds,
       seatNumber: user.seatNumber?.toString() || "",
-      campaignId: user.campaignId || "",
       monthlyTarget: user.monthlyTarget?.toString() || "",
     });
     setIsEditing(true);
@@ -178,7 +191,9 @@ export default function ManageUsersPage() {
         email: formData.email,
         role: formData.role,
         seatNumber: formData.seatNumber ? parseInt(formData.seatNumber) : null,
-        campaignId: formData.campaignId || null,
+        // Multi-campaign assignment; the backend keeps the legacy primary
+        // campaignId in sync from the first entry.
+        campaignIds: formData.campaignIds,
         monthlyTarget: formData.monthlyTarget ? parseFloat(formData.monthlyTarget) : null,
       };
 
@@ -320,7 +335,15 @@ export default function ManageUsersPage() {
 
   // Apply campaign filter, role filter, search, and duplicate filter.
   const filteredUsers = users.filter((user) => {
-    if (selectedCampaignFilter && user.campaignId !== selectedCampaignFilter) return false;
+    if (selectedCampaignFilter) {
+      const assigned =
+        user.campaignIds && user.campaignIds.length > 0
+          ? user.campaignIds
+          : user.campaignId
+          ? [user.campaignId]
+          : [];
+      if (!assigned.includes(selectedCampaignFilter)) return false;
+    }
     if (roleFilter !== "all" && user.role !== roleFilter) return false;
     if (showDuplicatesOnly && !isDuplicateUser(user)) return false;
     const q = searchQuery.trim().toLowerCase();
@@ -419,19 +442,21 @@ export default function ManageUsersPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="campaignId">Campaign</Label>
-                <Select value={formData.campaignId} onValueChange={(val) => setFormData({ ...formData, campaignId: val })}>
-                  <SelectTrigger id="campaignId">
-                    <SelectValue placeholder="Select campaign (optional)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {campaigns.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>
-                        {c.campaignName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label htmlFor="campaignIds">
+                  Campaigns
+                  {formData.campaignIds.length > 0 && (
+                    <span className="ml-1 text-xs font-normal text-muted-foreground">
+                      ({formData.campaignIds.length} selected)
+                    </span>
+                  )}
+                </Label>
+                <CampaignMultiSelect
+                  id="campaignIds"
+                  campaigns={campaigns}
+                  value={formData.campaignIds}
+                  onChange={(ids) => setFormData({ ...formData, campaignIds: ids })}
+                  placeholder="Select campaigns (optional)"
+                />
               </div>
 
               <div className="space-y-2">
@@ -597,7 +622,29 @@ export default function ManageUsersPage() {
                           {user.role}
                         </span>
                       </TableCell>
-                      <TableCell>{user.campaign?.campaignName || "-"}</TableCell>
+                      <TableCell>
+                        {(() => {
+                          const list =
+                            user.campaigns && user.campaigns.length > 0
+                              ? user.campaigns
+                              : user.campaign
+                              ? [user.campaign]
+                              : [];
+                          if (list.length === 0) return "-";
+                          return (
+                            <div className="flex flex-wrap gap-1">
+                              {list.map((c) => (
+                                <span
+                                  key={c.id}
+                                  className="inline-block rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                                >
+                                  {c.campaignName}
+                                </span>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </TableCell>
                       <TableCell className="text-center">{user.seatNumber || "-"}</TableCell>
                       <TableCell>{user.monthlyTarget ? user.monthlyTarget.toLocaleString() : "-"}</TableCell>
                       <TableCell className="text-right">

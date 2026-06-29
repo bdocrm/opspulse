@@ -16,6 +16,9 @@ interface MatchedAgent {
   volume: number;
   agentId: string;
   agentName: string;
+  transmittals?: number;
+  approvals?: number;
+  booked?: number;
 }
 
 interface NewAgent {
@@ -23,12 +26,16 @@ interface NewAgent {
   count: number;
   volume: number;
   approved: boolean;
+  transmittals?: number;
+  approvals?: number;
+  booked?: number;
 }
 
 const METRIC_LABELS: Record<string, string> = {
-  transmittals: 'Transmittals',
+  transmittals: 'Transmitted',
   approvals: 'Approvals',
   booked: 'Booked',
+  all_metrics: 'All (Transmitted, Approvals, Booked)',
 };
 
 export default function BulkImportPage() {
@@ -175,15 +182,28 @@ export default function BulkImportPage() {
   };
 
   const downloadTemplate = () => {
-    // Matches BPI PA Raw format: No. | Full Name | Level | Count | Volume
-    const csv = [
-      `,BPI,LEVEL,COUNT,VOLUME`,
-      `,FULL NAME`,
-      `1,DELA CRUZ JUAN SANTOS,CORE,50,1234567.00`,
-      `2,REYES MARIA GRACE SANTOS,CORE,35,987654.00`,
-      `3,CABALLERO PEDRO JOSE III,ROOKIE I,20,543210.00`,
-      `4,MENDOZA ANA PATRICIA,ROOKIE I,15,321000.00`,
-    ].join('\n');
+    let csv: string;
+    if (metricType === 'all_metrics') {
+      // Format with separate columns for each metric type
+      csv = [
+        `,BPI,LEVEL,TRANSMITTED,APPROVALS,BOOKED,VOLUME`,
+        `,FULL NAME`,
+        `1,DELA CRUZ JUAN SANTOS,CORE,50,45,30,1234567.00`,
+        `2,REYES MARIA GRACE SANTOS,CORE,35,32,20,987654.00`,
+        `3,CABALLERO PEDRO JOSE III,ROOKIE I,20,18,12,543210.00`,
+        `4,MENDOZA ANA PATRICIA,ROOKIE I,15,14,8,321000.00`,
+      ].join('\n');
+    } else {
+      // Single COUNT column for specific metric
+      csv = [
+        `,BPI,LEVEL,COUNT,VOLUME`,
+        `,FULL NAME`,
+        `1,DELA CRUZ JUAN SANTOS,CORE,50,1234567.00`,
+        `2,REYES MARIA GRACE SANTOS,CORE,35,987654.00`,
+        `3,CABALLERO PEDRO JOSE III,ROOKIE I,20,543210.00`,
+        `4,MENDOZA ANA PATRICIA,ROOKIE I,15,321000.00`,
+      ].join('\n');
+    }
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     const a = document.createElement('a');
     a.href = url; a.download = 'bpi-pa-import-template.csv'; a.click();
@@ -209,8 +229,9 @@ export default function BulkImportPage() {
             <CardTitle className="text-lg">Supported Formats</CardTitle>
           </CardHeader>
           <CardContent className="text-sm text-slate-600 space-y-2">
-            <p><span className="font-medium text-slate-800">BPI PA Raw Excel (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/COUNT/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Count | Volume</p>
-            <p className="text-xs text-slate-400">The COUNT column is stored as the selected Metric Type. Use the Report Month picker to set the period.</p>
+            <p><span className="font-medium text-slate-800">Single Metric (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/COUNT/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Count | Volume</p>
+            <p><span className="font-medium text-slate-800">All Metrics (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/TRANSMITTED/APPROVALS/BOOKED/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Transmitted | Approvals | Booked | Volume</p>
+            <p className="text-xs text-slate-400">For single metric mode, the COUNT column is stored as the selected type. For all metrics mode, each column is stored separately. Use the Report Month picker to set the period.</p>
             <Button onClick={downloadTemplate} variant="outline" size="sm" className="gap-2 mt-1">
               <Download className="h-4 w-4" /> Download CSV Template
             </Button>
@@ -238,17 +259,24 @@ export default function BulkImportPage() {
               <p className="text-xs text-slate-500">Campaign this data will be imported into</p>
             </div>
             <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Metric Type (COUNT column)</label>
+              <label className="text-sm font-medium text-slate-700">
+                Metric Type {metricType === 'all_metrics' ? '(TRANSMITTED/APPROVALS/BOOKED columns)' : '(COUNT column)'}
+              </label>
               <select
                 value={metricType}
                 onChange={e => setMetricType(e.target.value)}
                 className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                <option value="transmittals">Transmittals</option>
+                <option value="transmittals">Transmitted</option>
                 <option value="approvals">Approvals</option>
                 <option value="booked">Booked</option>
+                <option value="all_metrics">All (Transmitted, Approvals, Booked)</option>
               </select>
-              <p className="text-xs text-slate-500">The COUNT column will be stored as {METRIC_LABELS[metricType]}</p>
+              <p className="text-xs text-slate-500">
+                {metricType === 'all_metrics'
+                  ? 'Transmitted, Approvals, and Booked columns will be stored separately'
+                  : `The COUNT column will be stored as ${METRIC_LABELS[metricType]}`}
+              </p>
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">Report Date</label>
@@ -364,7 +392,15 @@ export default function BulkImportPage() {
                       <p className="text-xs text-slate-500">Will be created as Agent in this campaign</p>
                     </div>
                     <div className="text-right shrink-0">
-                      <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
+                      {metricType === 'all_metrics' ? (
+                        <>
+                          <p className="text-sm font-semibold text-slate-700">
+                            T: {(agent.transmittals ?? 0).toLocaleString()} | A: {(agent.approvals ?? 0).toLocaleString()} | B: {(agent.booked ?? 0).toLocaleString()}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
+                      )}
                       {agent.volume > 0 && (
                         <p className="text-xs text-slate-500">₱{agent.volume.toLocaleString()}</p>
                       )}
@@ -404,7 +440,15 @@ export default function BulkImportPage() {
                       )}
                     </div>
                     <div className="text-right">
-                      <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
+                      {metricType === 'all_metrics' ? (
+                        <>
+                          <p className="text-sm font-semibold text-slate-700">
+                            T: {(agent.transmittals ?? 0).toLocaleString()} | A: {(agent.approvals ?? 0).toLocaleString()} | B: {(agent.booked ?? 0).toLocaleString()}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
+                      )}
                       {agent.volume > 0 && (
                         <p className="text-xs text-slate-500">₱{agent.volume.toLocaleString()}</p>
                       )}
@@ -501,7 +545,15 @@ export default function BulkImportPage() {
                   <tr>
                     <th className="text-left p-2">Agent</th>
                     <th className="text-left p-2">Date</th>
-                    <th className="text-right p-2">{METRIC_LABELS[metricType]}</th>
+                    {metricType === 'all_metrics' ? (
+                      <>
+                        <th className="text-right p-2">Transmittals</th>
+                        <th className="text-right p-2">Approvals</th>
+                        <th className="text-right p-2">Booked</th>
+                      </>
+                    ) : (
+                      <th className="text-right p-2">{METRIC_LABELS[metricType]}</th>
+                    )}
                     <th className="text-right p-2">Volume</th>
                   </tr>
                 </thead>
@@ -510,9 +562,17 @@ export default function BulkImportPage() {
                     <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
                       <td className="p-2">{d.agent}</td>
                       <td className="p-2">{d.date}</td>
-                      <td className="text-right p-2">
-                        {(d.transmittals ?? d.approvals ?? d.booked ?? 0).toLocaleString()}
-                      </td>
+                      {metricType === 'all_metrics' ? (
+                        <>
+                          <td className="text-right p-2">{(d.transmittals ?? 0).toLocaleString()}</td>
+                          <td className="text-right p-2">{(d.approvals ?? 0).toLocaleString()}</td>
+                          <td className="text-right p-2">{(d.booked ?? 0).toLocaleString()}</td>
+                        </>
+                      ) : (
+                        <td className="text-right p-2">
+                          {(d.transmittals ?? d.approvals ?? d.booked ?? 0).toLocaleString()}
+                        </td>
+                      )}
                       <td className="text-right p-2">
                         {d.volume > 0 ? `₱${Number(d.volume).toLocaleString()}` : '—'}
                       </td>

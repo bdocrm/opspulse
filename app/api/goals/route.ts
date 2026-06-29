@@ -224,9 +224,29 @@ export async function PUT(req: NextRequest) {
       where: { id: campaignId },
       select: { campaignName: true },
     });
+
+    const activityType = isUpdate ? 'GOAL_UPDATED' : 'GOAL_CREATED';
+    try {
+      await prisma.$executeRaw`
+        INSERT INTO "ActivityLog"
+          ("id", "type", "campaignId", "month", "year", "previousValue", "newValue", "changedBy", "changedByName", "details", "createdAt")
+        VALUES
+          (${crypto.randomUUID()}, ${activityType}, ${campaignId}, ${month}, ${year},
+           ${previousGoal ? previousGoal.toString() : null}, ${goal.toString()},
+           ${user?.id}, ${user?.name ?? user?.email ?? user?.role ?? 'Unknown'},
+           ${JSON.stringify({ kpiMetric: metric, workingDays: wDays, daysLapsed: dLapsed })},
+           CURRENT_TIMESTAMP)
+      `;
+    } catch (logError) {
+      // Non-critical: log table may not exist on older DBs
+      console.log('ActivityLog insert skipped (table may not exist):', logError);
+    }
+
     console.log(
-      `[ActivityLog] Goal Configuration Updated | Campaign: ${campaign?.campaignName ?? campaignId} | ` +
-      `Month: ${MONTH_NAMES[month - 1]} ${year} | Updated By: ${user?.name ?? user?.email ?? user?.role} | ` +
+      `[ActivityLog] Goal Configuration ${activityType === 'GOAL_CREATED' ? 'Created' : 'Updated'} | ` +
+      `Campaign: ${campaign?.campaignName ?? campaignId} | ` +
+      `Month: ${MONTH_NAMES[month - 1]} ${year} | ${activityType === 'GOAL_UPDATED' && previousGoal ? `Previous: ${previousGoal}, ` : ''}New: ${goal} | ` +
+      `Updated By: ${user?.name ?? user?.email ?? user?.role} | ` +
       `Date: ${now.toISOString()}`
     );
 

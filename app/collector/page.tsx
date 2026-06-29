@@ -9,14 +9,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { usePagination } from '@/hooks/use-pagination';
-import { PaginationControls } from '@/components/pagination-controls';
-import { 
-  Plus, Trash2, Users, UserCheck, UserX, ClipboardList, 
-  TrendingUp, Calendar, Target, BarChart3, ChevronRight,
+import { CampaignSummaryCard } from '@/components/campaign-summary-card';
+import {
+  Plus, Trash2, Users, UserCheck, UserX, ClipboardList,
+  TrendingUp, Target, ChevronRight,
   RefreshCw, CheckCircle2, AlertCircle, Download, Search,
-  Award, Clock, Percent, AlertTriangle, CalendarDays, Trophy
+  AlertTriangle, CalendarDays, Trophy
 } from 'lucide-react';
 
 interface Agent {
@@ -27,29 +27,75 @@ interface Agent {
   monthlyTarget?: number;
 }
 
-interface Campaign {
-  id: string;
-  campaignName: string;
+interface Production {
+  transmittals: number;
+  activations: number;
+  approvals: number;
+  booked: number;
+  volume?: number;
 }
 
+interface CampaignBlock {
+  id: string;
+  campaignName: string;
+  kpiMetric: string;
+  goal: number;
+  agents: Agent[];
+  production: Record<string, Production>;
+  attendance: Record<string, { status: string; remarks: string | null }>;
+  entriesCount: number;
+}
+
+const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
+
+function kpiValueFor(metric: string, prod: Production): number {
+  switch (metric) {
+    case 'transmittals': return prod.transmittals;
+    case 'activations': return prod.activations;
+    case 'approvals': return prod.approvals;
+    case 'volume': return prod.volume || 0;
+    default: return prod.booked;
+  }
+}
+
+const getProgressColor = (progress: number) => {
+  if (progress >= 100) return 'bg-green-500';
+  if (progress >= 75) return 'bg-blue-500';
+  if (progress >= 50) return 'bg-yellow-500';
+  if (progress >= 25) return 'bg-orange-500';
+  return 'bg-red-500';
+};
+
+const getRankBadge = (index: number) => {
+  if (index === 0) return <span className="text-yellow-500 text-lg">🥇</span>;
+  if (index === 1) return <span className="text-gray-400 text-lg">🥈</span>;
+  if (index === 2) return <span className="text-amber-600 text-lg">🥉</span>;
+  return <span className="text-muted-foreground text-sm">{index + 1}</span>;
+};
+
 interface TargetModalProps {
-  agentId: string;
   agentName: string;
   currentTarget?: number;
   onClose: () => void;
-  onSave: (target: number) => void;
+  onSave: (target: number, setForAll?: boolean) => void;
   loading: boolean;
+  agentCount?: number;
 }
 
-function TargetModal({ agentId, agentName, currentTarget, onClose, onSave, loading }: TargetModalProps) {
+function TargetModal({ agentName, currentTarget, onClose, onSave, loading, agentCount }: TargetModalProps) {
   const [target, setTarget] = useState(currentTarget?.toString() || '');
+  const [setForAll, setSetForAll] = useState(false);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>Set Target for {agentName}</CardTitle>
-          <CardDescription>Monthly target/goal for this agent</CardDescription>
+          <CardTitle>
+            {setForAll ? 'Set Target for All Agents' : `Set Target for ${agentName}`}
+          </CardTitle>
+          <CardDescription>
+            {setForAll ? `Apply to all ${agentCount} agents in this campaign` : 'Monthly target/goal for this agent'}
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
@@ -64,66 +110,80 @@ function TargetModal({ agentId, agentName, currentTarget, onClose, onSave, loadi
             />
           </div>
           <div className="flex gap-2">
-            <Button
-              variant="outline"
-              onClick={onClose}
-              disabled={loading}
-              className="flex-1"
-            >
+            <Button variant="outline" onClick={onClose} disabled={loading} className="flex-1">
               Cancel
             </Button>
             <Button
-              onClick={() => onSave(parseFloat(target) || 0)}
+              onClick={() => onSave(parseFloat(target) || 0, setForAll)}
               disabled={loading || !target}
               className="flex-1"
             >
-              {loading ? 'Saving...' : 'Save Target'}
+              {loading ? 'Saving...' : setForAll ? 'Set for All' : 'Save Target'}
             </Button>
           </div>
+          {agentCount && agentCount > 1 && !setForAll && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSetForAll(true)}
+              className="w-full text-xs"
+              disabled={loading}
+            >
+              Apply to all {agentCount} agents instead
+            </Button>
+          )}
+          {setForAll && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSetForAll(false)}
+              className="w-full text-xs"
+              disabled={loading}
+            >
+              Back to {agentName} only
+            </Button>
+          )}
         </CardContent>
       </Card>
     </div>
   );
 }
 
+
 export default function CollectorDashboard() {
   const { data: session, status } = useSession();
   const router = useRouter();
 
-  // Check authorization - redirect non-collectors
+  // Authorization — only collectors.
   useEffect(() => {
-    if (status === "unauthenticated") {
-      router.push("/login");
-    } else if (status === "authenticated" && (session?.user as any)?.role !== "COLLECTOR") {
-      router.push("/dashboard");
+    if (status === 'unauthenticated') {
+      router.push('/login');
+    } else if (status === 'authenticated' && (session?.user as any)?.role !== 'COLLECTOR') {
+      router.push('/dashboard');
     }
   }, [status, session, router]);
 
-  const collectorCampaignId = (session?.user as any)?.campaignId;
-  const collectorCampaignName = (session?.user as any)?.campaignName;
-
   const [agentName, setAgentName] = useState('');
+  const [addAgentCampaignId, setAddAgentCampaignId] = useState('');
   const [nextSeat, setNextSeat] = useState(1);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
-  const [createdAgent, setCreatedAgent] = useState<{ name: string; email: string; password: string; seatNumber: number } | null>(null);
-  const [targetModal, setTargetModal] = useState<{ agentId: string; agentName: string; currentTarget?: number } | null>(null);
+  const [createdAgent, setCreatedAgent] = useState<{ name: string; email: string; seatNumber: number; campaignName: string } | null>(null);
+  const [targetModal, setTargetModal] = useState<{ agentId: string; agentName: string; currentTarget?: number; campaignId: string; agentCount: number } | null>(null);
   const [savingTarget, setSavingTarget] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
-  const [viewMode, setViewMode] = useState<'daily' | 'weekly' | 'mtd'>('daily');
   const [agentSearch, setAgentSearch] = useState('');
   const [sortBy, setSortBy] = useState<'seat' | 'booked' | 'name'>('booked');
-  const [totalAgentsCount, setTotalAgentsCount] = useState(0);
-  const pagination = usePagination(1, 25, totalAgentsCount);
-  
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
+  const [deletingCampaignData, setDeletingCampaignData] = useState(false);
+  const [deletingAllAgents, setDeletingAllAgents] = useState(false);
+
   // Date range filter
   const today = new Date().toISOString().split('T')[0];
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [datePreset, setDatePreset] = useState<'today' | 'week' | 'month' | 'custom'>('today');
-  const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
 
-  // Date preset handler
   const handleDatePreset = (preset: 'today' | 'week' | 'month' | 'custom') => {
     setDatePreset(preset);
     const now = new Date();
@@ -142,151 +202,115 @@ export default function CollectorDashboard() {
     }
   };
 
-  // Check if user is COLLECTOR for their campaign
+  const fetcher = (url: string) => fetch(url).then((r) => r.json());
+
+  // Single aggregate request: all assigned campaigns + production + attendance,
+  // grouped by campaign. Avoids per-campaign round-trips (no N+1, no duplicate
+  // requests) and returns only campaigns assigned to this collector.
+  const { data: dashboardData, isLoading: loadingDashboard, mutate: mutateDashboard } = useSWR(
+    session?.user && dateFrom && dateTo
+      ? `/api/collectors/dashboard?dateFrom=${dateFrom}&dateTo=${dateTo}&attendanceDate=${dateTo}`
+      : null,
+    fetcher,
+    { refreshInterval: 30000 }
+  );
+
+  const allCampaigns: CampaignBlock[] = useMemo(
+    () => (Array.isArray(dashboardData?.campaigns) ? dashboardData.campaigns : []),
+    [dashboardData]
+  );
+
+  // Filter campaigns based on selected campaign
+  const campaigns: CampaignBlock[] = useMemo(
+    () => selectedCampaignId ? allCampaigns.filter(c => c.id === selectedCampaignId) : allCampaigns,
+    [allCampaigns, selectedCampaignId]
+  );
+
+  // Default the Add-Agent campaign selector to the first assigned campaign.
   useEffect(() => {
-    if (status === 'unauthenticated') {
-      router.push('/login');
-    } else if (status === 'authenticated') {
-      const user = session?.user as any;
-      if (user?.role !== 'COLLECTOR') {
-        router.push('/dashboard');
-      }
+    if (allCampaigns.length > 0 && !allCampaigns.some((c) => c.id === addAgentCampaignId)) {
+      setAddAgentCampaignId(allCampaigns[0].id);
     }
-  }, [status, session, router]);
+  }, [allCampaigns, addAgentCampaignId]);
 
-  const campaignId = (session?.user as any)?.campaignId;
-  const campaignName = (session?.user as any)?.campaignName;
+  // Default the selected campaign to the first one
+  useEffect(() => {
+    if (allCampaigns.length > 0 && !selectedCampaignId) {
+      setSelectedCampaignId(allCampaigns[0].id);
+    }
+  }, [allCampaigns, selectedCampaignId]);
 
-  const fetcher = (url: string) => fetch(url).then(r => r.json());
-
-  // Fetch campaign data (goal and kpiMetric)
-  const { data: campaignData } = useSWR(
-    campaignId ? `/api/campaigns/${campaignId}` : null,
-    fetcher
-  );
-
-  // Fetch campaign agents
-  const { data: agentsData, mutate: mutateAgents, isLoading: loadingAgents } = useSWR(
-    campaignId ? `/api/campaigns/${campaignId}/agents` : null,
-    fetcher
-  );
-
-  // Fetch production data for date range
-  const { data: productionData, isLoading: loadingProduction, mutate: mutateProduction } = useSWR(
-    session?.user && dateFrom && dateTo ? `/api/collectors/production?dateFrom=${dateFrom}&dateTo=${dateTo}` : null,
-    fetcher,
-    { refreshInterval: 30000 }
-  );
-
-  // Fetch attendance for selected date (use dateTo for today's view)
-  const { data: attendanceData, isLoading: loadingAttendance, mutate: mutateAttendance } = useSWR(
-    session?.user && dateTo ? `/api/collectors/attendance?date=${dateTo}` : null,
-    fetcher,
-    { refreshInterval: 30000 }
-  );
-
-  const agents = Array.isArray(agentsData) ? agentsData : (agentsData?.data || []);
-  const savedEntries = productionData?.entries || [];
-
-  // Calculate KPIs
+  // Global KPI roll-up across every assigned campaign.
   const kpis = useMemo(() => {
-    const totalAgents = agents.length;
-    
-    // Attendance count
-    const attendanceMap = attendanceData?.attendance || {};
-    let presentCount = 0;
-    let absentCount = 0;
-    agents.forEach((agent: any) => {
-      const record = attendanceMap[agent.id];
-      if (record?.status === 'ABSENT') {
-        absentCount++;
-      } else {
-        presentCount++;
+    let totalAgents = 0, presentCount = 0, absentCount = 0;
+    let totalTransmittals = 0, totalActivations = 0, totalApprovals = 0, totalBooked = 0;
+    let totalGoal = 0, kpiValue = 0, totalTarget = 0, entriesCount = 0;
+
+    for (const c of campaigns) {
+      totalAgents += c.agents.length;
+      totalGoal += c.goal || 0;
+      entriesCount += c.entriesCount || 0;
+      let campaignKpi = 0;
+      for (const a of c.agents) {
+        const p = c.production[a.id] || ZERO_PROD;
+        totalTransmittals += p.transmittals;
+        totalActivations += p.activations;
+        totalApprovals += p.approvals;
+        totalBooked += p.booked;
+        totalTarget += a.monthlyTarget || 0;
+        campaignKpi += kpiValueFor(c.kpiMetric, p);
+        const record = c.attendance[a.id];
+        if (record?.status === 'ABSENT') absentCount++;
+        else presentCount++;
       }
-    });
-
-    // Production totals from saved entries
-    let totalTransmittals = 0;
-    let totalActivations = 0;
-    let totalApprovals = 0;
-    let totalBooked = 0;
-    savedEntries.forEach((entry: any) => {
-      entry.details?.forEach((detail: any) => {
-        totalTransmittals += detail.transmittals || 0;
-        totalActivations += detail.activations || 0;
-        totalApprovals += detail.approvals || 0;
-        totalBooked += detail.booked || 0;
-      });
-    });
-
-    // Calculate target progress using campaign's KPI metric
-    const totalTarget = agents.reduce((sum: number, a: any) => sum + (a.monthlyTarget || 0), 0);
-    const kpiMetric = campaignData?.campaign?.kpiMetric || 'booked';
-    const kpiValue = kpiMetric === 'booked' ? totalBooked :
-                     kpiMetric === 'transmittals' ? totalTransmittals :
-                     kpiMetric === 'activations' ? totalActivations :
-                     kpiMetric === 'approvals' ? totalApprovals : totalBooked;
-    
-    // Use campaign's monthly goal if set, otherwise use sum of agents' targets
-    let campaignGoal = campaignData?.kpis?.goal || 0;
-    if (campaignGoal === 0 && totalTarget > 0) {
-      campaignGoal = totalTarget;
+      kpiValue += campaignKpi;
     }
-    
-    const targetProgress = campaignGoal > 0 ? ((kpiValue / campaignGoal) * 100).toFixed(1) : '0';
-    const remainingGoal = Math.max(0, campaignGoal - kpiValue);
+
+    let goal = totalGoal;
+    if (goal === 0 && totalTarget > 0) goal = totalTarget;
+    const targetProgress = goal > 0 ? ((kpiValue / goal) * 100).toFixed(1) : '0';
+    const remainingGoal = Math.max(0, goal - kpiValue);
 
     return {
-      totalAgents,
-      presentCount,
-      absentCount,
-      totalTransmittals,
-      totalActivations,
-      totalApprovals,
-      totalBooked,
-      entriesCount: savedEntries.length,
-      totalTarget,
-      targetProgress,
-      campaignGoal,
-      remainingGoal,
-      kpiMetric,
-      kpiValue,
+      totalAgents, presentCount, absentCount,
+      totalTransmittals, totalActivations, totalApprovals, totalBooked,
+      goal, kpiValue, targetProgress, remainingGoal, totalTarget, entriesCount,
     };
-  }, [agents, attendanceData, savedEntries, campaignData]);
+  }, [campaigns]);
 
-  // Per-agent production summary
-  const agentProduction = useMemo(() => {
-    const production: Record<string, { transmittals: number; activations: number; approvals: number; booked: number }> = {};
-    savedEntries.forEach((entry: any) => {
-      entry.details?.forEach((detail: any) => {
-        if (!production[detail.agentId]) {
-          production[detail.agentId] = { transmittals: 0, activations: 0, approvals: 0, booked: 0 };
-        }
-        production[detail.agentId].transmittals += detail.transmittals || 0;
-        production[detail.agentId].activations += detail.activations || 0;
-        production[detail.agentId].approvals += detail.approvals || 0;
-        production[detail.agentId].booked += detail.booked || 0;
-      });
-    });
-    return production;
-  }, [savedEntries]);
-
-  // Calculate next seat number
+  // Next seat is per selected campaign (seats are unique within a campaign).
   useEffect(() => {
-    if (agents && agents.length > 0) {
-      const maxSeat = Math.max(...agents.map((a: Agent) => a.seatNumber || 0));
-      setNextSeat(maxSeat + 1);
+    const block = allCampaigns.find((c) => c.id === addAgentCampaignId);
+    if (block && block.agents.length > 0) {
+      setNextSeat(Math.max(...block.agents.map((a) => a.seatNumber || 0)) + 1);
     } else {
       setNextSeat(1);
     }
-  }, [agents]);
+  }, [allCampaigns, addAgentCampaignId]);
+
+  // Low performers across selected campaigns (below 25% of overall present average).
+  const lowPerformers = useMemo(() => {
+    if (kpis.totalAgents === 0) return [];
+    const avgBooked = kpis.totalBooked / Math.max(kpis.presentCount, 1);
+    const result: Agent[] = [];
+    for (const c of campaigns) {
+      for (const a of c.agents) {
+        const prod = c.production[a.id] || ZERO_PROD;
+        const record = c.attendance[a.id];
+        const isPresent = !record || record.status !== 'ABSENT';
+        if (isPresent && prod.booked < avgBooked * 0.25) result.push(a);
+      }
+    }
+    return result;
+  }, [campaigns, kpis]);
 
   const handleAddAgent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!agentName.trim() || !campaignId) {
-      setMessage('Please enter agent name');
+    if (!agentName.trim() || !addAgentCampaignId) {
+      setMessage('Please enter an agent name and select a campaign');
       return;
     }
+    const block = campaigns.find((c) => c.id === addAgentCampaignId);
 
     setLoading(true);
     setMessage('');
@@ -298,7 +322,7 @@ export default function CollectorDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: agentName,
-          campaignId,
+          campaignId: addAgentCampaignId,
           seatNumber: nextSeat,
           role: 'AGENT',
         }),
@@ -310,25 +334,17 @@ export default function CollectorDashboard() {
         return;
       }
 
-      const createdAgentData = await res.json();
-      
-      // Store created agent credentials
+      const created = await res.json();
       setCreatedAgent({
-        name: createdAgentData.name,
-        email: createdAgentData.email,
-        password: 'system-agent', // System agents don't use password login
-        seatNumber: createdAgentData.seatNumber,
+        name: created.name,
+        email: created.email,
+        seatNumber: created.seatNumber,
+        campaignName: block?.campaignName || '',
       });
-      
-      // Show detailed success message
-      setMessage(
-        `✅ Agent "${createdAgentData.name}" (Seat ${createdAgentData.seatNumber}) added successfully to ${campaignName}!`
-      );
-      
+      setMessage(`✅ Agent "${created.name}" (Seat ${created.seatNumber}) added successfully to ${block?.campaignName}!`);
       setAgentName('');
-      setNextSeat(nextSeat + 1);
       setShowAddAgent(false);
-      mutateAgents();
+      mutateDashboard();
     } catch (error) {
       setMessage(`Error: ${(error as Error).message}`);
     } finally {
@@ -338,33 +354,39 @@ export default function CollectorDashboard() {
 
   const handleDeleteAgent = async (agentId: string) => {
     if (!confirm('Are you sure you want to remove this agent?')) return;
-
     try {
       const res = await fetch(`/api/collectors/agents/${agentId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to delete agent');
-      mutateAgents();
+      mutateDashboard();
       setMessage('✅ Agent removed successfully!');
     } catch (error) {
       setMessage(`Error: ${(error as Error).message}`);
     }
   };
 
-  const handleSaveTarget = async (target: number) => {
+  const handleSaveTarget = async (target: number, setForAll?: boolean) => {
     if (!targetModal) return;
-
     setSavingTarget(true);
     try {
-      const res = await fetch(`/api/collectors/agents/${targetModal.agentId}/targets`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target }),
-      });
-
-      if (!res.ok) throw new Error('Failed to save target');
-
-      setMessage(`✅ Target updated for ${targetModal.agentName}!`);
+      if (setForAll) {
+        const res = await fetch(`/api/collectors/campaigns/${targetModal.campaignId}/agents/targets`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target }),
+        });
+        if (!res.ok) throw new Error('Failed to save targets');
+        setMessage(`✅ Target updated for all ${targetModal.agentCount} agents!`);
+      } else {
+        const res = await fetch(`/api/collectors/agents/${targetModal.agentId}/targets`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target }),
+        });
+        if (!res.ok) throw new Error('Failed to save target');
+        setMessage(`✅ Target updated for ${targetModal.agentName}!`);
+      }
       setTargetModal(null);
-      mutateAgents();
+      mutateDashboard();
     } catch (error) {
       setMessage(`Error: ${(error as Error).message}`);
     } finally {
@@ -372,52 +394,99 @@ export default function CollectorDashboard() {
     }
   };
 
-  // Toggle attendance status
-  const handleToggleAttendance = async (agentId: string) => {
-    const attendanceMap = attendanceData?.attendance || {};
-    const currentStatus = attendanceMap[agentId]?.status || 'PRESENT';
+  const handleToggleAttendance = async (agentId: string, currentStatus: string) => {
     const newStatus = currentStatus === 'ABSENT' ? 'PRESENT' : 'ABSENT';
-
     try {
       await fetch('/api/collectors/attendance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agentId, date: today, status: newStatus }),
       });
-      mutateAttendance();
+      mutateDashboard();
     } catch (error) {
       console.error('Failed to toggle attendance', error);
     }
   };
 
-  // Export to Excel/CSV
-  const handleExport = () => {
-    const attendanceMap = attendanceData?.attendance || {};
-    const rows = agents.map((agent: Agent, index: number) => {
-      const prod = agentProduction[agent.id] || { transmittals: 0, activations: 0, approvals: 0, booked: 0 };
-      const attendance = attendanceMap[agent.id]?.status || 'PRESENT';
-      const target = agent.monthlyTarget || 0;
-      const progress = target > 0 ? ((prod.booked / target) * 100).toFixed(1) : '0';
-      return {
-        'Rank': index + 1,
-        'Seat': agent.seatNumber,
-        'Agent Name': agent.name,
-        'Status': attendance,
-        'Transmittals': prod.transmittals,
-        'Activations': prod.activations,
-        'Approvals': prod.approvals,
-        'Booked': prod.booked,
-        'Target': target,
-        'Progress %': progress,
-      };
-    });
+  const handleDeleteCampaignData = async () => {
+    const selectedCampaign = allCampaigns.find(c => c.id === selectedCampaignId);
+    if (!selectedCampaign) return;
 
-    // Convert to CSV
+    const confirmMessage = `Are you sure you want to delete all production data for "${selectedCampaign.campaignName}"? This action cannot be undone.`;
+    if (!confirm(confirmMessage)) return;
+
+    setDeletingCampaignData(true);
+    try {
+      const res = await fetch(`/api/collectors/campaigns/${selectedCampaignId}/data`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('Failed to delete campaign data');
+      setMessage(`✅ All data deleted for ${selectedCampaign.campaignName}`);
+      mutateDashboard();
+    } catch (error) {
+      setMessage(`Error: ${(error as Error).message}`);
+    } finally {
+      setDeletingCampaignData(false);
+    }
+  };
+
+  const handleDeleteAllAgents = async () => {
+    const selectedCampaign = allCampaigns.find(c => c.id === selectedCampaignId);
+    if (!selectedCampaign) return;
+
+    const agentCount = selectedCampaign.agents.length;
+    const confirmMessage = `Are you sure you want to delete all ${agentCount} agents in "${selectedCampaign.campaignName}"? This action cannot be undone.`;
+    if (!confirm(confirmMessage)) return;
+
+    setDeletingAllAgents(true);
+    try {
+      const res = await fetch(`/api/collectors/campaigns/${selectedCampaignId}/agents`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('Failed to delete agents');
+      setMessage(`✅ All agents deleted from ${selectedCampaign.campaignName}`);
+      mutateDashboard();
+    } catch (error) {
+      setMessage(`Error: ${(error as Error).message}`);
+    } finally {
+      setDeletingAllAgents(false);
+    }
+  };
+
+  // Export every assigned campaign's agents to a single CSV (Campaign column
+  // disambiguates the grouped data).
+  const handleExport = () => {
+    const rows: Record<string, string | number>[] = [];
+    for (const c of campaigns) {
+      const sorted = [...c.agents].sort(
+        (a, b) => (c.production[b.id]?.booked || 0) - (c.production[a.id]?.booked || 0)
+      );
+      sorted.forEach((agent, index) => {
+        const prod = c.production[agent.id] || ZERO_PROD;
+        const record = c.attendance[agent.id];
+        const attendance = record?.status || 'PRESENT';
+        const target = agent.monthlyTarget || 0;
+        const progress = target > 0 ? ((prod.booked / target) * 100).toFixed(1) : '0';
+        rows.push({
+          Campaign: c.campaignName,
+          Rank: index + 1,
+          Seat: agent.seatNumber ?? '',
+          'Agent Name': agent.name,
+          Status: attendance,
+          Transmittals: prod.transmittals,
+          Approvals: prod.approvals,
+          Booked: prod.booked,
+          Target: target,
+          'Progress %': progress,
+        });
+      });
+    }
+
     if (rows.length === 0) return;
     const headers = Object.keys(rows[0]);
     const csvContent = [
       headers.join(','),
-      ...rows.map((row: Record<string, string | number>) => headers.map(h => `"${row[h]}"`).join(','))
+      ...rows.map((row) => headers.map((h) => `"${row[h]}"`).join(',')),
     ].join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -429,73 +498,8 @@ export default function CollectorDashboard() {
     URL.revokeObjectURL(url);
   };
 
-  // Filtered and sorted agents
-  const sortedAgents = useMemo(() => {
-    const attendanceMap = attendanceData?.attendance || {};
-    
-    let filtered = agents.filter((agent: Agent) => 
-      agent.name.toLowerCase().includes(agentSearch.toLowerCase())
-    );
-
-    // Sort by booked (descending) for leaderboard
-    filtered = filtered.sort((a: Agent, b: Agent) => {
-      if (sortBy === 'booked') {
-        const aProd = agentProduction[a.id]?.booked || 0;
-        const bProd = agentProduction[b.id]?.booked || 0;
-        return bProd - aProd;
-      } else if (sortBy === 'name') {
-        return a.name.localeCompare(b.name);
-      } else {
-        return (a.seatNumber || 0) - (b.seatNumber || 0);
-      }
-    });
-
-    return filtered;
-  }, [agents, agentSearch, sortBy, agentProduction, attendanceData]);
-
-  // Update pagination total when filtered agents change, and reset to page 1
-  // only when the filtered count actually changes (e.g. on search/sort), not
-  // on every render — otherwise paging forward would immediately snap back.
-  useEffect(() => {
-    setTotalAgentsCount(sortedAgents.length);
-    pagination.goToPage(1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortedAgents.length]);
-
-  // Get paginated agents
-  const paginatedAgents = sortedAgents.slice(
-    pagination.startIndex,
-    pagination.endIndex
-  );
-
-  // Get rank badge
-  const getRankBadge = (index: number) => {
-    if (index === 0) return <span className="text-yellow-500 text-lg">🥇</span>;
-    if (index === 1) return <span className="text-gray-400 text-lg">🥈</span>;
-    if (index === 2) return <span className="text-amber-600 text-lg">🥉</span>;
-    return <span className="text-muted-foreground text-sm">{index + 1}</span>;
-  };
-
-  // Get progress color based on percentage
-  const getProgressColor = (progress: number) => {
-    if (progress >= 100) return 'bg-green-500';
-    if (progress >= 75) return 'bg-blue-500';
-    if (progress >= 50) return 'bg-yellow-500';
-    if (progress >= 25) return 'bg-orange-500';
-    return 'bg-red-500';
-  };
-
-  // Find low performers (below 25% of average)
-  const lowPerformers = useMemo(() => {
-    if (agents.length === 0) return [];
-    const avgBooked = kpis.totalBooked / Math.max(kpis.presentCount, 1);
-    return agents.filter((agent: Agent) => {
-      const prod = agentProduction[agent.id]?.booked || 0;
-      const attendanceMap = attendanceData?.attendance || {};
-      const isPresent = attendanceMap[agent.id]?.status !== 'ABSENT';
-      return isPresent && prod < avgBooked * 0.25;
-    });
-  }, [agents, kpis, agentProduction, attendanceData]);
+  // Only campaigns that actually have collectors appear in the leaderboard.
+  const nonEmptyCampaigns = campaigns.filter((c) => c.agents.length > 0);
 
   if (status === 'loading') {
     return (
@@ -505,6 +509,13 @@ export default function CollectorDashboard() {
     );
   }
 
+  const campaignLabel =
+    allCampaigns.length === 0
+      ? 'No campaigns assigned'
+      : allCampaigns.length === 1
+      ? allCampaigns[0].campaignName
+      : `${allCampaigns.length} campaigns`;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -512,10 +523,42 @@ export default function CollectorDashboard() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Collector Dashboard</h1>
           <p className="text-muted-foreground mt-1">
-            Campaign: <span className="font-semibold text-foreground">{campaignName}</span>
+            Campaign{allCampaigns.length > 1 ? 's' : ''}:{' '}
+            <span className="font-semibold text-foreground">{campaignLabel}</span>
           </p>
         </div>
       </div>
+
+      {/* Campaign Selector */}
+      {allCampaigns.length > 0 && (
+        <Card>
+          <CardContent className="py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <label className="text-sm font-medium text-muted-foreground">Select Campaign:</label>
+                <Select value={selectedCampaignId || ''} onValueChange={setSelectedCampaignId}>
+                  <SelectTrigger className="w-64">
+                    <SelectValue placeholder="Choose a campaign..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {allCampaigns.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>{c.campaignName}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleDeleteCampaignData}
+                disabled={deletingCampaignData}
+              >
+                {deletingCampaignData ? 'Deleting...' : 'Delete All Data'}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Date Range Filter */}
       <Card>
@@ -526,41 +569,13 @@ export default function CollectorDashboard() {
               <span className="text-sm font-medium">Date Range:</span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                variant={datePreset === 'today' ? 'default' : 'outline'}
-                onClick={() => handleDatePreset('today')}
-              >
-                Today
-              </Button>
-              <Button
-                size="sm"
-                variant={datePreset === 'week' ? 'default' : 'outline'}
-                onClick={() => handleDatePreset('week')}
-              >
-                Last 7 Days
-              </Button>
-              <Button
-                size="sm"
-                variant={datePreset === 'month' ? 'default' : 'outline'}
-                onClick={() => handleDatePreset('month')}
-              >
-                MTD
-              </Button>
+              <Button size="sm" variant={datePreset === 'today' ? 'default' : 'outline'} onClick={() => handleDatePreset('today')}>Today</Button>
+              <Button size="sm" variant={datePreset === 'week' ? 'default' : 'outline'} onClick={() => handleDatePreset('week')}>Last 7 Days</Button>
+              <Button size="sm" variant={datePreset === 'month' ? 'default' : 'outline'} onClick={() => handleDatePreset('month')}>MTD</Button>
               <div className="flex items-center gap-2 ml-2">
-                <Input
-                  type="date"
-                  value={dateFrom}
-                  onChange={(e) => { setDateFrom(e.target.value); setDatePreset('custom'); }}
-                  className="w-36 h-8"
-                />
+                <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setDatePreset('custom'); }} className="w-36 h-8" />
                 <span className="text-muted-foreground">to</span>
-                <Input
-                  type="date"
-                  value={dateTo}
-                  onChange={(e) => { setDateTo(e.target.value); setDatePreset('custom'); }}
-                  className="w-36 h-8"
-                />
+                <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setDatePreset('custom'); }} className="w-36 h-8" />
               </div>
             </div>
             <div className="ml-auto text-sm text-muted-foreground">
@@ -578,8 +593,8 @@ export default function CollectorDashboard() {
       {message && (
         <div
           className={`p-4 rounded-lg text-sm flex items-start gap-3 border ${
-            message.startsWith('Error') || message.startsWith('❌') 
-              ? 'bg-red-50 text-red-900 border-red-200' 
+            message.startsWith('Error') || message.startsWith('❌')
+              ? 'bg-red-50 text-red-900 border-red-200'
               : 'bg-green-50 text-green-900 border-green-200'
           }`}
         >
@@ -589,9 +604,7 @@ export default function CollectorDashboard() {
             <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
           )}
           <div className="flex-1">
-            <p className="font-semibold">
-              {message.startsWith('Error') ? 'Error' : 'Success'}
-            </p>
+            <p className="font-semibold">{message.startsWith('Error') ? 'Error' : 'Success'}</p>
             <p className="text-sm mt-1">{message.replace('Error: ', '').replace('✅ ', '')}</p>
           </div>
         </div>
@@ -605,9 +618,7 @@ export default function CollectorDashboard() {
               <UserCheck className="w-5 h-5 text-green-600" />
               Agent Account Created
             </CardTitle>
-            <CardDescription className="text-green-700">
-              New agent has been successfully registered
-            </CardDescription>
+            <CardDescription className="text-green-700">New agent has been successfully registered</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -627,28 +638,22 @@ export default function CollectorDashboard() {
             <div className="p-3 bg-blue-50 rounded border border-blue-200">
               <p className="text-xs text-blue-700 font-semibold">💡 Info:</p>
               <p className="text-xs text-blue-700 mt-1">
-                This agent is automatically assigned to <span className="font-semibold">{campaignName}</span>. 
+                This agent is automatically assigned to <span className="font-semibold">{createdAgent.campaignName}</span>.
                 They will access the system through the data entry interface.
               </p>
             </div>
-            <Button 
-              onClick={() => setCreatedAgent(null)}
-              variant="outline"
-              className="w-full border-green-200"
-            >
-              Close
-            </Button>
+            <Button onClick={() => setCreatedAgent(null)} variant="outline" className="w-full border-green-200">Close</Button>
           </CardContent>
         </Card>
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card className="bg-gradient-to-br from-indigo-500/10 to-indigo-600/5 border-indigo-500/20">
           <CardContent className="pt-4">
             <div className="flex flex-col gap-2">
-              <p className="text-xs text-muted-foreground uppercase tracking-wide">Campaign Goal ({kpis.kpiMetric})</p>
-              <p className="text-3xl font-bold text-indigo-500">{kpis.campaignGoal.toLocaleString()}</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Total Goal</p>
+              <p className="text-3xl font-bold text-indigo-500">{kpis.goal.toLocaleString()}</p>
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted-foreground">Progress: {kpis.kpiValue.toLocaleString()}</span>
                 <span className="font-semibold text-indigo-500">{kpis.targetProgress}%</span>
@@ -670,22 +675,6 @@ export default function CollectorDashboard() {
             </div>
           </CardContent>
         </Card>
-
-        <Card className="bg-gradient-to-br from-green-500/10 to-green-600/5 border-green-500/20">
-          <CardContent className="pt-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Present Today</p>
-                <p className="text-3xl font-bold mt-1 text-green-500">{kpis.presentCount}</p>
-                {kpis.absentCount > 0 && (
-                  <p className="text-xs text-red-400">{kpis.absentCount} absent</p>
-                )}
-              </div>
-              <UserCheck className="w-8 h-8 text-green-500 opacity-80" />
-            </div>
-          </CardContent>
-        </Card>
-
         <Card className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/20">
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
@@ -697,7 +686,6 @@ export default function CollectorDashboard() {
             </div>
           </CardContent>
         </Card>
-
         <Card className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border-orange-500/20">
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
@@ -718,9 +706,7 @@ export default function CollectorDashboard() {
             <CardContent className="pt-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-primary/10">
-                    <ClipboardList className="w-6 h-6 text-primary" />
-                  </div>
+                  <div className="p-2 rounded-lg bg-primary/10"><ClipboardList className="w-6 h-6 text-primary" /></div>
                   <div>
                     <p className="font-semibold">Data Entry</p>
                     <p className="text-sm text-muted-foreground">Enter production metrics</p>
@@ -732,16 +718,11 @@ export default function CollectorDashboard() {
           </Card>
         </Link>
 
-        <Card 
-          className="hover:border-primary/50 transition-colors cursor-pointer group"
-          onClick={() => setShowAddAgent(!showAddAgent)}
-        >
+        <Card className="hover:border-primary/50 transition-colors cursor-pointer group" onClick={() => setShowAddAgent(!showAddAgent)}>
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-blue-500/10">
-                  <Plus className="w-6 h-6 text-blue-500" />
-                </div>
+                <div className="p-2 rounded-lg bg-blue-500/10"><Plus className="w-6 h-6 text-blue-500" /></div>
                 <div>
                   <p className="font-semibold">Add Agent</p>
                   <p className="text-sm text-muted-foreground">Register new member</p>
@@ -752,16 +733,11 @@ export default function CollectorDashboard() {
           </CardContent>
         </Card>
 
-        <Card 
-          className="hover:border-green-500/50 transition-colors cursor-pointer group"
-          onClick={handleExport}
-        >
+        <Card className="hover:border-green-500/50 transition-colors cursor-pointer group" onClick={handleExport}>
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-green-500/10">
-                  <Download className="w-6 h-6 text-green-500" />
-                </div>
+                <div className="p-2 rounded-lg bg-green-500/10"><Download className="w-6 h-6 text-green-500" /></div>
                 <div>
                   <p className="font-semibold">Export Report</p>
                   <p className="text-sm text-muted-foreground">Download CSV</p>
@@ -784,7 +760,7 @@ export default function CollectorDashboard() {
                 <p className="text-sm text-muted-foreground">
                   {lowPerformers.length} agent{lowPerformers.length > 1 ? 's' : ''} performing below 25% of team average:
                   <span className="font-medium text-foreground ml-1">
-                    {lowPerformers.slice(0, 3).map((a: Agent) => a.name).join(', ')}
+                    {lowPerformers.slice(0, 3).map((a) => a.name).join(', ')}
                     {lowPerformers.length > 3 && ` +${lowPerformers.length - 3} more`}
                   </span>
                 </p>
@@ -798,29 +774,25 @@ export default function CollectorDashboard() {
       {showAddAgent && (
         <Card className="border-blue-200 bg-blue-50/30">
           <CardHeader className="pb-3">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Plus className="w-5 h-5 text-blue-600" />
-              Add New Agent
-            </CardTitle>
-            <CardDescription>Register a new agent for your campaign</CardDescription>
+            <CardTitle className="text-lg flex items-center gap-2"><Plus className="w-5 h-5 text-blue-600" />Add New Agent</CardTitle>
+            <CardDescription>Register a new agent for one of your campaigns</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleAddAgent} className="space-y-4">
-              {/* Campaign Info Box */}
-              <div className="p-4 bg-white border border-blue-200 rounded-lg mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
-                    <Users className="w-5 h-5 text-blue-600" />
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Assigning to Campaign</p>
-                    <p className="font-semibold text-lg">{campaignName || 'Loading...'}</p>
-                  </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="addCampaign">Campaign *</Label>
+                  <Select value={addAgentCampaignId} onValueChange={setAddAgentCampaignId}>
+                    <SelectTrigger id="addCampaign" className="border-blue-200">
+                      <SelectValue placeholder="Select campaign" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {campaigns.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>{c.campaignName}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
-              </div>
-
-              {/* Form Fields */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="agentName">Agent Name *</Label>
                   <Input
@@ -835,264 +807,301 @@ export default function CollectorDashboard() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="seatNumber">Seat Number (Auto)</Label>
-                  <Input
-                    id="seatNumber"
-                    type="number"
-                    value={nextSeat}
-                    disabled
-                    className="bg-muted text-muted-foreground"
-                  />
+                  <Input id="seatNumber" type="number" value={nextSeat} disabled className="bg-muted text-muted-foreground" />
                 </div>
               </div>
 
-              {/* Auto-Generated Credentials Info */}
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
                 <p className="text-sm text-amber-900">
                   <span className="font-semibold">ℹ️ Auto-Generated:</span> A unique system email and credentials will be created for this agent upon submission.
                 </p>
               </div>
 
-              {/* Buttons */}
               <div className="flex gap-2 pt-2">
-                <Button type="submit" disabled={loading} className="bg-blue-600 hover:bg-blue-700">
+                <Button type="submit" disabled={loading || campaigns.length === 0} className="bg-blue-600 hover:bg-blue-700">
                   <Plus className="h-4 w-4 mr-2" />
                   {loading ? 'Adding Agent...' : 'Add Agent'}
                 </Button>
-                <Button 
-                  type="button" 
-                  variant="outline" 
-                  onClick={() => setShowAddAgent(false)}
-                  disabled={loading}
-                >
-                  Cancel
-                </Button>
+                <Button type="button" variant="outline" onClick={() => setShowAddAgent(false)} disabled={loading}>Cancel</Button>
               </div>
             </form>
           </CardContent>
         </Card>
       )}
 
-      {/* Today's Production Summary */}
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <Trophy className="w-5 h-5 text-yellow-500" />
-                Production Leaderboard
-              </CardTitle>
-              <CardDescription>Live ranking by today's booked sales</CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              {(loadingProduction || loadingAttendance) && (
-                <RefreshCw className="w-4 h-4 animate-spin text-muted-foreground" />
-              )}
-              <div className="relative">
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search agents..."
-                  value={agentSearch}
-                  onChange={(e) => setAgentSearch(e.target.value)}
-                  className="pl-8 w-48"
-                />
-              </div>
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as 'seat' | 'booked' | 'name')}
-                className="h-9 px-3 rounded-md border bg-background text-sm"
-              >
-                <option value="booked">Sort by Booked</option>
-                <option value="seat">Sort by Seat</option>
-                <option value="name">Sort by Name</option>
-              </select>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {/* Production Totals */}
-          <div className="grid grid-cols-4 gap-3 mb-4 p-3 bg-muted/50 rounded-lg">
-            <div className="text-center">
-              <p className="text-xs text-muted-foreground">Transmittals</p>
-              <p className="text-xl font-bold">{kpis.totalTransmittals}</p>
-            </div>
-            <div className="text-center">
-              <p className="text-xs text-muted-foreground">Activations</p>
-              <p className="text-xl font-bold">{kpis.totalActivations}</p>
-            </div>
-            <div className="text-center">
-              <p className="text-xs text-muted-foreground">Approvals</p>
-              <p className="text-xl font-bold">{kpis.totalApprovals}</p>
-            </div>
-            <div className="text-center">
-              <p className="text-xs text-muted-foreground">Booked</p>
-              <p className="text-xl font-bold text-primary">{kpis.totalBooked}</p>
-            </div>
-          </div>
+      {/* Per-Campaign Summary Cards */}
+      {nonEmptyCampaigns.length > 0 && (
+        <div>
+          <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+            <Target className="w-5 h-5 text-blue-500" />
+            Campaign Overview
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {nonEmptyCampaigns.map((campaign) => {
+              const campaignAgents = campaign.agents;
+              const campaignGoal = campaign.goal;
+              const campaignKpi = campaign.kpiMetric;
+              const presentCount = campaignAgents.filter(a => {
+                const record = campaign.attendance[a.id];
+                return !record || record.status === 'PRESENT';
+              }).length;
+              const totalKpiValue = campaignAgents.reduce((sum, agent) => {
+                const prod = campaign.production[agent.id] || ZERO_PROD;
+                return sum + kpiValueFor(campaignKpi, prod);
+              }, 0);
+              const goalProgress = campaignGoal > 0 ? ((totalKpiValue / campaignGoal) * 100).toFixed(1) : '0';
 
-          {/* MTD Target Progress */}
-          {kpis.totalTarget > 0 && (
-            <div className="mb-4 p-3 bg-muted/30 rounded-lg">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium flex items-center gap-2">
-                  <Target className="w-4 h-4" />
-                  Team Target Progress
-                </span>
-                <span className="text-sm">
-                  <span className="font-bold text-primary">{kpis.totalBooked}</span>
-                  <span className="text-muted-foreground"> / {kpis.totalTarget}</span>
-                  <span className="ml-2 text-xs">({kpis.targetProgress}%)</span>
-                </span>
-              </div>
-              <div className="w-full h-3 bg-muted rounded-full overflow-hidden">
-                <div
-                  className={`h-full transition-all ${getProgressColor(Number(kpis.targetProgress))}`}
-                  style={{ width: `${Math.min(Number(kpis.targetProgress), 100)}%` }}
-                />
-              </div>
-            </div>
-          )}
+              return (
+                <Card key={campaign.id} className="relative overflow-hidden hover:shadow-md transition-shadow">
+                  {/* Background accent */}
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-blue-500/5 to-blue-600/5 rounded-bl-full" />
 
-          {/* Agent List with Production */}
-          {sortedAgents.length > 0 ? (
-            <div className="max-h-[400px] overflow-y-auto">
-              <Table>
-                <TableHeader className="sticky top-0 bg-card z-10">
-                  <TableRow>
-                    <TableHead className="w-12">Rank</TableHead>
-                    <TableHead className="w-12">Seat</TableHead>
-                    <TableHead>Agent</TableHead>
-                    <TableHead className="text-center w-20">Attendance</TableHead>
-                    <TableHead className="text-center">Trans</TableHead>
-                    <TableHead className="text-center">Act</TableHead>
-                    <TableHead className="text-center">Appr</TableHead>
-                    <TableHead className="text-center">Booked</TableHead>
-                    <TableHead className="w-32">Progress</TableHead>
-                    <TableHead className="text-right w-20">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {paginatedAgents.map((agent: Agent, index: number) => {
-                    const prod = agentProduction[agent.id] || { transmittals: 0, activations: 0, approvals: 0, booked: 0 };
-                    const attendanceRecord = attendanceData?.attendance?.[agent.id];
-                    const isPresent = !attendanceRecord || attendanceRecord.status === 'PRESENT';
-                    
-                    // Use campaign's KPI metric for progress
-                    const kpiValue = kpis.kpiMetric === 'booked' ? prod.booked :
-                                     kpis.kpiMetric === 'transmittals' ? prod.transmittals :
-                                     kpis.kpiMetric === 'activations' ? prod.activations :
-                                     kpis.kpiMetric === 'approvals' ? prod.approvals : prod.booked;
-                    
-                    const progressNum = agent.monthlyTarget ? (kpiValue / agent.monthlyTarget) * 100 : 0;
-                    const progressStr = progressNum.toFixed(0);
-                    
-                    return (
-                      <TableRow key={agent.id} className={!isPresent ? 'opacity-50 bg-muted/30' : ''}>
-                        <TableCell className="text-center">
-                          {sortBy === 'booked' ? getRankBadge(index) : <span className="text-muted-foreground text-sm">-</span>}
-                        </TableCell>
-                        <TableCell className="font-semibold text-muted-foreground">{agent.seatNumber}</TableCell>
-                        <TableCell className="font-medium">{agent.name}</TableCell>
-                        <TableCell className="text-center">
-                          <button
-                            onClick={() => handleToggleAttendance(agent.id)}
-                            className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors cursor-pointer ${
-                              isPresent 
-                                ? 'text-green-500 bg-green-500/10 hover:bg-green-500/20' 
-                                : 'text-red-500 bg-red-500/10 hover:bg-red-500/20'
-                            }`}
-                            title="Click to toggle"
-                          >
-                            {isPresent ? <UserCheck className="w-3 h-3" /> : <UserX className="w-3 h-3" />}
-                            <span>{isPresent ? 'P' : 'A'}</span>
-                          </button>
-                        </TableCell>
-                        <TableCell className="text-center">{prod.transmittals}</TableCell>
-                        <TableCell className="text-center">{prod.activations}</TableCell>
-                        <TableCell className="text-center">{prod.approvals}</TableCell>
-                        <TableCell className="text-center font-semibold text-primary">{prod.booked}</TableCell>
-                        <TableCell>
-                          {agent.monthlyTarget ? (
-                            <div className="flex items-center gap-2">
-                              <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-                                <div
-                                  className={`h-full transition-all ${getProgressColor(progressNum)}`}
-                                  style={{ width: `${Math.min(progressNum, 100)}%` }}
-                                />
-                              </div>
-                              <span className={`text-xs w-10 text-right ${
-                                progressNum >= 100 ? 'text-green-500 font-bold' : 
-                                progressNum >= 75 ? 'text-blue-500' :
-                                progressNum >= 50 ? 'text-yellow-500' :
-                                'text-muted-foreground'
-                              }`}>
-                                {progressStr}%
-                              </span>
-                            </div>
-                          ) : (
-                            <span className="text-muted-foreground text-xs">No target</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex gap-1 justify-end">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7"
-                              onClick={() => setTargetModal({
-                                agentId: agent.id,
-                                agentName: agent.name,
-                                currentTarget: agent.monthlyTarget,
-                              })}
-                              title="Set Target"
-                            >
-                              <Target className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-destructive hover:text-destructive"
-                              onClick={() => handleDeleteAgent(agent.id)}
-                              title="Remove Agent"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                  <CardContent className="pt-6 relative">
+                    <div className="space-y-4">
+                      {/* Campaign Header */}
+                      <div>
+                        <h3 className="font-bold text-lg text-foreground">{campaign.campaignName}</h3>
+                        <p className="text-xs text-muted-foreground capitalize mt-1">
+                          {campaignKpi.replace(/([A-Z])/g, ' $1').trim()}
+                        </p>
+                      </div>
+
+                      {/* Goal and Progress */}
+                      <div className="space-y-2">
+                        <div className="flex items-baseline justify-between">
+                          <span className="text-xs text-muted-foreground uppercase tracking-wide">Campaign Goal</span>
+                          <span className="text-xl font-bold text-blue-600">{campaignGoal.toLocaleString()}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                            <div
+                              className={`h-full transition-all ${
+                                Number(goalProgress) >= 100 ? 'bg-green-500' :
+                                Number(goalProgress) >= 75 ? 'bg-blue-500' :
+                                Number(goalProgress) >= 50 ? 'bg-yellow-500' :
+                                'bg-red-500'
+                              }`}
+                              style={{ width: `${Math.min(Number(goalProgress), 100)}%` }}
+                            />
                           </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-              <div className="mt-4 flex justify-center">
-                <PaginationControls pagination={pagination} />
-              </div>
+                          <span className="text-sm font-semibold text-foreground w-12 text-right">{goalProgress}%</span>
+                        </div>
+                      </div>
+
+                      {/* Stats Grid */}
+                      <div className="grid grid-cols-2 gap-3 pt-2 border-t">
+                        <div className="text-center">
+                          <p className="text-2xl font-bold text-foreground">{campaignAgents.length}</p>
+                          <p className="text-xs text-muted-foreground mt-1">Agents</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-2xl font-bold text-primary">{totalKpiValue.toLocaleString()}</p>
+                          <p className="text-xs text-muted-foreground mt-1 capitalize">{campaignKpi}</p>
+                        </div>
+                      </div>
+
+                      {/* Entries */}
+                      <div className="pt-2 border-t">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-muted-foreground">Entries Today</span>
+                          <span className="text-sm font-semibold text-orange-500">{campaign.entriesCount}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Production Leaderboard — grouped by campaign */}
+      <div className="space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              <Trophy className="w-5 h-5 text-yellow-500" />
+              Production Leaderboard
+            </h2>
+            <p className="text-sm text-muted-foreground">Ranked by booked sales, grouped by campaign</p>
+          </div>
+          <div className="flex items-center gap-2">
+            {loadingDashboard && <RefreshCw className="w-4 h-4 animate-spin text-muted-foreground" />}
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input placeholder="Search agents..." value={agentSearch} onChange={(e) => setAgentSearch(e.target.value)} className="pl-8 w-48" />
             </div>
-          ) : agents.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as 'seat' | 'booked' | 'name')}
+              className="h-9 px-3 rounded-md border bg-background text-sm"
+            >
+              <option value="booked">Sort by Booked</option>
+              <option value="seat">Sort by Seat</option>
+              <option value="name">Sort by Name</option>
+            </select>
+          </div>
+        </div>
+
+        {nonEmptyCampaigns.length > 0 ? (
+          <div className="space-y-4">
+            {nonEmptyCampaigns.map((block) => {
+              const prodFor = (agentId: string) => block.production[agentId] || ZERO_PROD;
+              const q = agentSearch.trim().toLowerCase();
+              let filtered = block.agents.filter((a) => a.name.toLowerCase().includes(q));
+              filtered = [...filtered].sort((a, b) => {
+                if (sortBy === 'booked') return prodFor(b.id).booked - prodFor(a.id).booked;
+                if (sortBy === 'name') return a.name.localeCompare(b.name);
+                return (a.seatNumber || 0) - (b.seatNumber || 0);
+              });
+
+              return (
+                <CampaignSummaryCard
+                  key={block.id}
+                  id={block.id}
+                  campaignName={block.campaignName}
+                  kpiMetric={block.kpiMetric}
+                  goal={block.goal}
+                  agents={block.agents}
+                  production={block.production}
+                  attendance={block.attendance}
+                  entriesCount={block.entriesCount}
+                  onDeleteAllAgents={() => handleDeleteAllAgents()}
+                  isDeletingAgents={deletingAllAgents}
+                >
+                  {/* Collector Table */}
+                  {filtered.length > 0 ? (
+                    <div className="max-h-[420px] overflow-y-auto">
+                      <Table>
+                        <TableHeader className="sticky top-0 bg-card z-10">
+                          <TableRow>
+                            <TableHead className="w-12">Rank</TableHead>
+                            <TableHead className="w-12">Seat</TableHead>
+                            <TableHead>Collector</TableHead>
+                            <TableHead className="text-center w-20">Attendance</TableHead>
+                            <TableHead className="text-center">Transmitted</TableHead>
+                            <TableHead className="text-center">Approved</TableHead>
+                            <TableHead className="text-center">Booked</TableHead>
+                            <TableHead className="w-32">Progress</TableHead>
+                            <TableHead className="text-right w-20">Actions</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {filtered.map((agent, index) => {
+                            const prod = prodFor(agent.id);
+                            const record = block.attendance[agent.id];
+                            const isPresent = !record || record.status === 'PRESENT';
+                            const value = kpiValueFor(block.kpiMetric, prod);
+                            const progressNum = agent.monthlyTarget ? (value / agent.monthlyTarget) * 100 : 0;
+
+                            return (
+                              <TableRow key={agent.id} className={!isPresent ? 'opacity-50 bg-muted/30' : ''}>
+                                <TableCell className="text-center">
+                                  {sortBy === 'booked' ? getRankBadge(index) : <span className="text-muted-foreground text-sm">-</span>}
+                                </TableCell>
+                                <TableCell className="font-semibold text-muted-foreground">{agent.seatNumber}</TableCell>
+                                <TableCell className="font-medium">{agent.name}</TableCell>
+                                <TableCell className="text-center">
+                                  <button
+                                    onClick={() => handleToggleAttendance(agent.id, record?.status || 'PRESENT')}
+                                    className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors cursor-pointer ${
+                                      isPresent
+                                        ? 'text-green-500 bg-green-500/10 hover:bg-green-500/20'
+                                        : 'text-red-500 bg-red-500/10 hover:bg-red-500/20'
+                                    }`}
+                                    title="Click to toggle"
+                                  >
+                                    {isPresent ? <UserCheck className="w-3 h-3" /> : <UserX className="w-3 h-3" />}
+                                    <span>{isPresent ? 'P' : 'A'}</span>
+                                  </button>
+                                </TableCell>
+                                <TableCell className="text-center">{prod.transmittals}</TableCell>
+                                <TableCell className="text-center">{prod.approvals}</TableCell>
+                                <TableCell className="text-center font-semibold text-primary">{prod.booked}</TableCell>
+                                <TableCell>
+                                  {agent.monthlyTarget ? (
+                                    <div className="flex items-center gap-2">
+                                      <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                                        <div
+                                          className={`h-full transition-all ${getProgressColor(progressNum)}`}
+                                          style={{ width: `${Math.min(progressNum, 100)}%` }}
+                                        />
+                                      </div>
+                                      <span className={`text-xs w-10 text-right ${
+                                        progressNum >= 100 ? 'text-green-500 font-bold' :
+                                        progressNum >= 75 ? 'text-blue-500' :
+                                        progressNum >= 50 ? 'text-yellow-500' :
+                                        'text-muted-foreground'
+                                      }`}>
+                                        {progressNum.toFixed(0)}%
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <span className="text-muted-foreground text-xs">No target</span>
+                                  )}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <div className="flex gap-1 justify-end">
+                                    <Button
+                                      variant="ghost" size="icon" className="h-7 w-7"
+                                      onClick={() => setTargetModal({ agentId: agent.id, agentName: agent.name, currentTarget: agent.monthlyTarget, campaignId: block.id, agentCount: block.agents.length })}
+                                      title="Set Target"
+                                    >
+                                      <Target className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost" size="icon"
+                                      className="h-7 w-7 text-destructive hover:text-destructive"
+                                      onClick={() => handleDeleteAgent(agent.id)}
+                                      title="Remove Agent"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  ) : (
+                    <div className="text-center py-6 text-muted-foreground text-sm">
+                      <Search className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                      <p>No collectors match &quot;{agentSearch}&quot;</p>
+                    </div>
+                  )}
+                </CampaignSummaryCard>
+              );
+            })}
+          </div>
+        ) : (
+          <Card>
+            <CardContent className="text-center py-10 text-muted-foreground">
               <Users className="w-12 h-12 mx-auto mb-3 opacity-50" />
-              <p>No agents added yet.</p>
-              <Button variant="link" onClick={() => setShowAddAgent(true)} className="mt-2">
-                Add your first agent
-              </Button>
-            </div>
-          ) : (
-            <div className="text-center py-8 text-muted-foreground">
-              <Search className="w-12 h-12 mx-auto mb-3 opacity-50" />
-              <p>No agents match "{agentSearch}"</p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+              {campaigns.length === 0 ? (
+                <p>No campaigns are assigned to your account yet.</p>
+              ) : (
+                <>
+                  <p>No agents added yet.</p>
+                  <Button variant="link" onClick={() => setShowAddAgent(true)} className="mt-2">Add your first agent</Button>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
 
       {/* Target Modal */}
       {targetModal && (
         <TargetModal
-          agentId={targetModal.agentId}
           agentName={targetModal.agentName}
           currentTarget={targetModal.currentTarget}
           onClose={() => setTargetModal(null)}
           onSave={handleSaveTarget}
           loading={savingTarget}
+          agentCount={targetModal.agentCount}
         />
       )}
     </div>

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import bcrypt from "bcryptjs";
+import { setUserCampaigns } from "@/lib/user-campaigns";
 
 export async function GET(
   req: NextRequest,
@@ -24,6 +24,11 @@ export async function GET(
             campaignName: true,
           },
         },
+        campaignAssignments: {
+          select: {
+            campaign: { select: { id: true, campaignName: true } },
+          },
+        },
         createdAt: true,
       },
     });
@@ -32,7 +37,22 @@ export async function GET(
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    return NextResponse.json(user);
+    // Merge primary + join-table campaigns into a single de-duped set.
+    const { campaignAssignments, ...rest } = user;
+    const map = new Map<string, { id: string; campaignName: string }>();
+    if (rest.campaign) map.set(rest.campaign.id, rest.campaign);
+    for (const a of campaignAssignments) {
+      if (a.campaign) map.set(a.campaign.id, a.campaign);
+    }
+    const campaigns = Array.from(map.values()).sort((a, b) =>
+      a.campaignName.localeCompare(b.campaignName)
+    );
+
+    return NextResponse.json({
+      ...rest,
+      campaigns,
+      campaignIds: campaigns.map((c) => c.id),
+    });
   } catch (error) {
     console.error("Get user error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
@@ -54,8 +74,16 @@ export async function PATCH(
     if (body.email) updateData.email = body.email;
     if (body.role) updateData.role = body.role;
     if (body.seatNumber !== undefined) updateData.seatNumber = body.seatNumber || null;
-    if (body.campaignId !== undefined) updateData.campaignId = body.campaignId || null;
     if (body.monthlyTarget !== undefined) updateData.monthlyTarget = body.monthlyTarget || null;
+
+    // Multi-campaign assignment. When `campaignIds` is present it is the source
+    // of truth and also resets the legacy primary `campaignId` (handled by
+    // setUserCampaigns), so we must NOT also set campaignId directly here.
+    // Falls back to the legacy single `campaignId` when the array is absent.
+    const hasCampaignIds = Array.isArray(body.campaignIds);
+    if (!hasCampaignIds && body.campaignId !== undefined) {
+      updateData.campaignId = body.campaignId || null;
+    }
 
     const updated = await prisma.user.update({
       where: { id },
@@ -64,6 +92,10 @@ export async function PATCH(
         campaign: true,
       },
     });
+
+    if (hasCampaignIds) {
+      await setUserCampaigns(id, body.campaignIds);
+    }
 
     return NextResponse.json(updated);
   } catch (error: any) {
