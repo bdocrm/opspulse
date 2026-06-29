@@ -142,6 +142,7 @@ export default function CollectorDashboard() {
   const [sortBy, setSortBy] = useState<'seat' | 'booked' | 'name'>('booked');
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
   const [deletingCampaignData, setDeletingCampaignData] = useState(false);
+  const [deletingAllAgents, setDeletingAllAgents] = useState(false);
 
   // Date range filter
   const today = new Date().toISOString().split('T')[0];
@@ -382,6 +383,29 @@ export default function CollectorDashboard() {
       setMessage(`Error: ${(error as Error).message}`);
     } finally {
       setDeletingCampaignData(false);
+    }
+  };
+
+  const handleDeleteAllAgents = async () => {
+    const selectedCampaign = allCampaigns.find(c => c.id === selectedCampaignId);
+    if (!selectedCampaign) return;
+
+    const agentCount = selectedCampaign.agents.length;
+    const confirmMessage = `Are you sure you want to delete all ${agentCount} agents in "${selectedCampaign.campaignName}"? This action cannot be undone.`;
+    if (!confirm(confirmMessage)) return;
+
+    setDeletingAllAgents(true);
+    try {
+      const res = await fetch(`/api/collectors/campaigns/${selectedCampaignId}/agents`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('Failed to delete agents');
+      setMessage(`✅ All agents deleted from ${selectedCampaign.campaignName}`);
+      mutateDashboard();
+    } catch (error) {
+      setMessage(`Error: ${(error as Error).message}`);
+    } finally {
+      setDeletingAllAgents(false);
     }
   };
 
@@ -899,6 +923,8 @@ export default function CollectorDashboard() {
                   production={block.production}
                   attendance={block.attendance}
                   entriesCount={block.entriesCount}
+                  onDeleteAllAgents={() => handleDeleteAllAgents()}
+                  isDeletingAgents={deletingAllAgents}
                 >
                   {/* Collector Table */}
                   {filtered.length > 0 ? (
