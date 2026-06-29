@@ -26,10 +26,10 @@ interface NewAgent {
 }
 
 const METRIC_LABELS: Record<string, string> = {
-  transmittals: 'Transmittals',
+  transmittals: 'Transmitted',
   approvals: 'Approvals',
   booked: 'Booked',
-  all_metrics: 'All (Transmittals, Approvals, Booked)',
+  all_metrics: 'All (Transmitted, Approvals, Booked)',
 };
 
 export default function BulkImportPage() {
@@ -180,7 +180,7 @@ export default function BulkImportPage() {
     if (metricType === 'all_metrics') {
       // Format with separate columns for each metric type
       csv = [
-        `,BPI,LEVEL,TRANSMITTALS,APPROVALS,BOOKED,VOLUME`,
+        `,BPI,LEVEL,TRANSMITTED,APPROVALS,BOOKED,VOLUME`,
         `,FULL NAME`,
         `1,DELA CRUZ JUAN SANTOS,CORE,50,45,30,1234567.00`,
         `2,REYES MARIA GRACE SANTOS,CORE,35,32,20,987654.00`,
@@ -224,7 +224,7 @@ export default function BulkImportPage() {
           </CardHeader>
           <CardContent className="text-sm text-slate-600 space-y-2">
             <p><span className="font-medium text-slate-800">Single Metric (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/COUNT/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Count | Volume</p>
-            <p><span className="font-medium text-slate-800">All Metrics (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/TRANSMITTALS/APPROVALS/BOOKED/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Transmittals | Approvals | Booked | Volume</p>
+            <p><span className="font-medium text-slate-800">All Metrics (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/TRANSMITTED/APPROVALS/BOOKED/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Transmitted | Approvals | Booked | Volume</p>
             <p className="text-xs text-slate-400">For single metric mode, the COUNT column is stored as the selected type. For all metrics mode, each column is stored separately. Use the Report Month picker to set the period.</p>
             <Button onClick={downloadTemplate} variant="outline" size="sm" className="gap-2 mt-1">
               <Download className="h-4 w-4" /> Download CSV Template
@@ -254,21 +254,21 @@ export default function BulkImportPage() {
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">
-                Metric Type {metricType === 'all_metrics' ? '(TRANSMITTALS/APPROVALS/BOOKED columns)' : '(COUNT column)'}
+                Metric Type {metricType === 'all_metrics' ? '(TRANSMITTED/APPROVALS/BOOKED columns)' : '(COUNT column)'}
               </label>
               <select
                 value={metricType}
                 onChange={e => setMetricType(e.target.value)}
                 className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                <option value="transmittals">Transmittals</option>
+                <option value="transmittals">Transmitted</option>
                 <option value="approvals">Approvals</option>
                 <option value="booked">Booked</option>
-                <option value="all_metrics">All (Transmittals, Approvals, Booked)</option>
+                <option value="all_metrics">All (Transmitted, Approvals, Booked)</option>
               </select>
               <p className="text-xs text-slate-500">
                 {metricType === 'all_metrics'
-                  ? 'Transmittals, Approvals, and Booked columns will be stored separately'
+                  ? 'Transmitted, Approvals, and Booked columns will be stored separately'
                   : `The COUNT column will be stored as ${METRIC_LABELS[metricType]}`}
               </p>
             </div>

@@ -21,7 +21,7 @@ function parseExcelRows(rows: any[], metricType: string): { name: string; count:
       if (cell.includes('full name')) nameCol = j;
       if (cell === 'count') countCol = j;
       if (cell === 'volume') volumeCol = j;
-      if (cell === 'transmittals') transmittalsCol = j;
+      if (cell === 'transmitted') transmittalsCol = j;
       if (cell === 'approvals') approvalsCol = j;
       if (cell === 'booked') bookedCol = j;
     }
