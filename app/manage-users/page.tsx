@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { useToast } from "@/components/toast-provider";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CampaignMultiSelect } from "@/components/campaign-multi-select";
-import { Trash2, Edit2, Plus, Search, AlertTriangle } from "lucide-react";
+import { Trash2, Edit2, Plus, Search, AlertTriangle, Key } from "lucide-react";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -115,6 +115,13 @@ export default function ManageUsersPage() {
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
+  const [passwordUserId, setPasswordUserId] = useState<string | null>(null);
+  const [passwordUserName, setPasswordUserName] = useState<string>("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [passwordErrors, setPasswordErrors] = useState<{ [key: string]: string }>({});
 
   const [formData, setFormData] = useState<FormData>({
     name: "",
@@ -258,6 +265,67 @@ export default function ManageUsersPage() {
       console.error(error);
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const handleChangePasswordClick = (user: User) => {
+    setPasswordUserId(user.id);
+    setPasswordUserName(user.name);
+    setNewPassword("");
+    setConfirmPassword("");
+    setPasswordErrors({});
+    setPasswordDialogOpen(true);
+  };
+
+  const handleChangePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordErrors({});
+
+    const errors: { [key: string]: string } = {};
+    if (!newPassword) {
+      errors.newPassword = "Password is required";
+    } else if (newPassword.length < 6) {
+      errors.newPassword = "Password must be at least 6 characters";
+    }
+
+    if (!confirmPassword) {
+      errors.confirmPassword = "Confirm password is required";
+    }
+
+    if (newPassword && confirmPassword && newPassword !== confirmPassword) {
+      errors.confirmPassword = "Passwords do not match";
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setPasswordErrors(errors);
+      return;
+    }
+
+    setPasswordLoading(true);
+    try {
+      const res = await fetch(`/api/users/${passwordUserId}/password`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: newPassword }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || "Failed to update password");
+      }
+
+      addToast("success", `✅ Password for "${passwordUserName}" updated successfully!`);
+      setPasswordDialogOpen(false);
+      setPasswordUserId(null);
+      setPasswordUserName("");
+      setNewPassword("");
+      setConfirmPassword("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Error updating password";
+      addToast("error", message);
+      console.error(error);
+    } finally {
+      setPasswordLoading(false);
     }
   };
 
@@ -648,6 +716,18 @@ export default function ManageUsersPage() {
                             <Edit2 className="h-4 w-4" />
                             Edit
                           </Button>
+                          {(user.role === "COLLECTOR" || user.role === "CEO") && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleChangePasswordClick(user)}
+                              className="gap-1 text-blue-600 hover:text-blue-700"
+                              title="Change password"
+                            >
+                              <Key className="h-4 w-4" />
+                              Password
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="sm"
@@ -689,6 +769,50 @@ export default function ManageUsersPage() {
         isDangerous={true}
         onCancel={() => setBulkDeleteOpen(false)}
       />
+
+      <Dialog open={passwordDialogOpen} onOpenChange={setPasswordDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Change Password - {passwordUserName}</DialogTitle>
+          </DialogHeader>
+
+          <form onSubmit={handleChangePasswordSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="newPassword">New Password *</Label>
+              <Input
+                id="newPassword"
+                type="password"
+                placeholder="Min 6 characters"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className={passwordErrors.newPassword ? "border-red-500" : ""}
+              />
+              {passwordErrors.newPassword && (
+                <p className="text-xs text-red-500">{passwordErrors.newPassword}</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="confirmPassword">Confirm Password *</Label>
+              <Input
+                id="confirmPassword"
+                type="password"
+                placeholder="Re-enter password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className={passwordErrors.confirmPassword ? "border-red-500" : ""}
+              />
+              {passwordErrors.confirmPassword && (
+                <p className="text-xs text-red-500">{passwordErrors.confirmPassword}</p>
+              )}
+            </div>
+
+            <Button type="submit" className="w-full" disabled={passwordLoading}>
+              {passwordLoading ? "Updating..." : "Update Password"}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
