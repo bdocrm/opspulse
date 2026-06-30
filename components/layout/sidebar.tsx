@@ -18,6 +18,7 @@ import {
   Zap,
   Gauge,
   Projector,
+  UserCircle,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
@@ -32,6 +33,7 @@ const defaultLinks = [
   { href: "/reports/campaign-performance", label: "Agent Performance", icon: Zap, roles: ['CEO', 'OM'] },
   { href: "/om-dashboard", label: "OM Dashboard", icon: Gauge, roles: ['OM'] },
   { href: "/presentation", label: "OpsView Deck", icon: Projector, roles: ['CEO', 'OM'] },
+  { href: "/my-account", label: "My Account", icon: UserCircle },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
