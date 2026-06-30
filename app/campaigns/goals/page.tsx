@@ -9,14 +9,10 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { PageTitle } from '@/components/layout/page-title';
-<<<<<<< HEAD
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { useToast } from '@/components/toast-provider';
 import { AlertCircle, ArchiveRestore, ArrowUpDown, CheckCircle, ChevronDown, ChevronUp, Download, Eye, Loader2, Pencil, Search, Trash2 } from 'lucide-react';
-=======
-import { AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
-import { formatNumberWithCommas, parseFormattedNumber } from '@/lib/number-format';
->>>>>>> 0d58bd7b19bff43227ff3d81f835a15b6cb3a085
+import { formatNumberWithCommas } from '@/lib/number-format';
 
 interface Campaign {
   id: string;
@@ -26,6 +22,7 @@ interface Campaign {
   workingDays: number;
   daysLapsed: number;
   mtd: number;
+  bookedVolume: number;
   achievement: number;
   runRate: number;
   rrAchievement: number;
@@ -40,7 +37,7 @@ interface Campaign {
 }
 
 type AchievementStatus = 'all' | 'above' | 'below' | 'at-risk';
-type SortKey = 'campaignName' | 'kpiMetric' | 'monthlyGoal' | 'mtd' | 'achievement' | 'runRate' | 'rrAchievement';
+type SortKey = 'campaignName' | 'kpiMetric' | 'monthlyGoal' | 'bookedVolume' | 'achievement' | 'runRate' | 'rrAchievement';
 type SortDirection = 'asc' | 'desc';
 
 interface SavedGoal {
@@ -132,6 +129,7 @@ const dashboardExportRows = (rows: Campaign[]) =>
     Campaign: row.campaignName,
     'KPI Metric': metricLabel(row.kpiMetric),
     Goal: Number(row.monthlyGoal || 0),
+    'Booked Volume': Number(row.bookedVolume || 0),
     MTD: Number(row.mtd || 0),
     'Achievement %': Number(row.achievement || 0).toFixed(1),
     'Run Rate': Number(row.runRate || 0),
@@ -325,12 +323,8 @@ export default function GoalsManagement() {
 
   function applySelectedCampaign(campaign: Campaign) {
     setSelectedCampaign(campaign);
-<<<<<<< HEAD
-    setMonthlyGoal(formatInputNumber(campaign.monthlyGoal, 2));
-=======
     selectedCampaignIdRef.current = campaign.id;
-    setMonthlyGoal(Number(campaign.monthlyGoal).toFixed(2));
->>>>>>> 0d58bd7b19bff43227ff3d81f835a15b6cb3a085
+    setMonthlyGoal(formatInputNumber(campaign.monthlyGoal, 2));
     setKpiMetric(campaign.kpiMetric || 'transmittals');
     setWorkingDays((campaign.workingDays ?? 22).toString());
     setDaysLapsed((campaign.daysLapsed ?? 0).toString());
@@ -576,7 +570,7 @@ export default function GoalsManagement() {
   const summary = useMemo(() => {
     const totalCampaigns = sortedFilteredCampaigns.length;
     const totalGoal = sortedFilteredCampaigns.reduce((sum, c) => sum + (c.monthlyGoal || 0), 0);
-    const totalMTD = sortedFilteredCampaigns.reduce((sum, c) => sum + (c.mtd || 0), 0);
+    const totalMTD = sortedFilteredCampaigns.reduce((sum, c) => sum + (c.bookedVolume || 0), 0);
     const avgAchievement =
       totalCampaigns > 0
         ? sortedFilteredCampaigns.reduce((sum, c) => sum + (c.achievement || 0), 0) / totalCampaigns
@@ -804,7 +798,7 @@ export default function GoalsManagement() {
                   ['campaignName', 'Campaign'],
                   ['kpiMetric', 'KPI Metric'],
                   ['monthlyGoal', 'Goal'],
-                  ['mtd', 'MTD'],
+                  ['bookedVolume', 'Booked Volume'],
                   ['achievement', 'Achievement'],
                   ['runRate', 'Run Rate'],
                   ['rrAchievement', 'RR Achievement %'],
@@ -834,7 +828,7 @@ export default function GoalsManagement() {
                       <td className="px-3 py-3 font-medium text-gray-900">{campaign.campaignName}</td>
                       <td className="px-3 py-3">{metricLabel(campaign.kpiMetric)}</td>
                       <td className="px-3 py-3 text-right">{formatNumber(campaign.monthlyGoal)}</td>
-                      <td className="px-3 py-3 text-right">{formatNumber(campaign.mtd)}</td>
+                      <td className="px-3 py-3 text-right">{formatNumber(campaign.bookedVolume)}</td>
                       <td className="px-3 py-3 text-right">{formatPct(campaign.achievement)}</td>
                       <td className="px-3 py-3 text-right">{formatNumber(campaign.runRate)}</td>
                       <td className="px-3 py-3 text-right">{formatPct(campaign.rrAchievement)}</td>

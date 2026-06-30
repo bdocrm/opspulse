@@ -6,20 +6,18 @@ const prisma = new PrismaClient();
 async function main() {
   console.log("🔄 Seeding database...");
 
-  // Clean existing data - FORCE DELETE ALL
+  // Clean existing data - preserve production data and attendance (user-entered data)
   await prisma.dailySales.deleteMany();
-  await prisma.attendance.deleteMany().catch(() => {}); // Ignore if table doesn't exist
-  await prisma.productionDetail.deleteMany().catch(() => {});
-  await prisma.productionEntry.deleteMany().catch(() => {});
   await prisma.agentTarget.deleteMany().catch(() => {});
-  await prisma.user.deleteMany();
-  await prisma.campaign.deleteMany();
+  // DO NOT DELETE: productionDetail, productionEntry, attendance, user, campaign (preserve user-entered data)
 
-  // Create users
+  // Create users only if they don't exist (idempotent)
   const passwordHash = await bcrypt.hash("password123", 12);
 
-  const admin = await prisma.user.create({
-    data: {
+  const admin = await prisma.user.upsert({
+    where: { email: "admin@opsview.com" },
+    update: {},
+    create: {
       name: "Admin User",
       email: "admin@opsview.com",
       password: passwordHash,
@@ -27,8 +25,10 @@ async function main() {
     },
   });
 
-  const manager = await prisma.user.create({
-    data: {
+  const manager = await prisma.user.upsert({
+    where: { email: "manager@opsview.com" },
+    update: {},
+    create: {
       name: "Sarah Manager",
       email: "manager@opsview.com",
       password: passwordHash,
@@ -36,153 +36,44 @@ async function main() {
     },
   });
 
-  // Create campaigns
-  const campaigns = await Promise.all([
-    prisma.campaign.create({
-      data: {
-        campaignName: "BPI PA OUTBOUND",
-        goalType: "sales",
-        monthlyGoal: 500,
-        kpiMetric: "transmittals",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "BPI PA INBOUND",
-        goalType: "sales",
-        monthlyGoal: 450,
-        kpiMetric: "transmittals",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "BPI PL",
-        goalType: "sales",
-        monthlyGoal: 400,
-        kpiMetric: "activations",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "BPI BL",
-        goalType: "sales",
-        monthlyGoal: 350,
-        kpiMetric: "activations",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "BPI FF",
-        goalType: "sales",
-        monthlyGoal: 300,
-        kpiMetric: "booked",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "MB ACQ",
-        goalType: "sales",
-        monthlyGoal: 480,
-        kpiMetric: "transmittals",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "MB PL",
-        goalType: "sales",
-        monthlyGoal: 420,
-        kpiMetric: "activations",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "MB PA",
-        goalType: "sales",
-        monthlyGoal: 380,
-        kpiMetric: "booked",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "BDO SGM",
-        goalType: "sales",
-        monthlyGoal: 500,
-        kpiMetric: "transmittals",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "BDO CIE",
-        goalType: "sales",
-        monthlyGoal: 450,
-        kpiMetric: "activations",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "BDO SUPPLE",
-        goalType: "sales",
-        monthlyGoal: 350,
-        kpiMetric: "booked",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "BDO VC",
-        goalType: "sales",
-        monthlyGoal: 400,
-        kpiMetric: "transmittals",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "BDO NTH CARD",
-        goalType: "sales",
-        monthlyGoal: 380,
-        kpiMetric: "activations",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "AXA",
-        goalType: "sales",
-        monthlyGoal: 420,
-        kpiMetric: "booked",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "AXA CLP",
-        goalType: "sales",
-        monthlyGoal: 390,
-        kpiMetric: "transmittals",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "CBC",
-        goalType: "sales",
-        monthlyGoal: 450,
-        kpiMetric: "activations",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "CBC HPL",
-        goalType: "sales",
-        monthlyGoal: 380,
-        kpiMetric: "booked",
-      },
-    }),
-    prisma.campaign.create({
-      data: {
-        campaignName: "MEDICARD",
-        goalType: "sales",
-        monthlyGoal: 360,
-        kpiMetric: "transmittals",
-      },
-    }),
-  ]);
+  // Create campaigns (idempotent - only if they don't exist)
+  const campaignData = [
+    { name: "BPI PA OUTBOUND", goal: 500, metric: "transmittals" },
+    { name: "BPI PA INBOUND", goal: 450, metric: "transmittals" },
+    { name: "BPI PL", goal: 400, metric: "activations" },
+    { name: "BPI BL", goal: 350, metric: "activations" },
+    { name: "BPI FF", goal: 300, metric: "booked" },
+    { name: "MB ACQ", goal: 480, metric: "transmittals" },
+    { name: "MB PL", goal: 420, metric: "activations" },
+    { name: "MB PA", goal: 380, metric: "booked" },
+    { name: "BDO SGM", goal: 500, metric: "transmittals" },
+    { name: "BDO CIE", goal: 450, metric: "activations" },
+    { name: "BDO SUPPLE", goal: 350, metric: "booked" },
+    { name: "BDO VC", goal: 400, metric: "transmittals" },
+    { name: "BDO NTH CARD", goal: 380, metric: "activations" },
+    { name: "AXA", goal: 420, metric: "booked" },
+    { name: "AXA CLP", goal: 390, metric: "transmittals" },
+    { name: "CBC", goal: 450, metric: "activations" },
+    { name: "CBC HPL", goal: 380, metric: "booked" },
+    { name: "MEDICARD", goal: 360, metric: "transmittals" },
+  ];
+
+  const campaigns = await Promise.all(
+    campaignData.map(async (c) => {
+      const existing = await prisma.campaign.findFirst({
+        where: { campaignName: c.name }
+      });
+      if (existing) return existing;
+      return prisma.campaign.create({
+        data: {
+          campaignName: c.name,
+          goalType: "sales",
+          monthlyGoal: c.goal,
+          kpiMetric: c.metric,
+        },
+      });
+    })
+  );
 
   // Agent configuration: Each agent with their assigned campaigns
   const agentConfigs = [
@@ -196,59 +87,74 @@ async function main() {
     { name: "Lisa Chen", seat: 8, campaignIndices: [1, 7, 13] }, // Mixed
   ];
 
-  // Create agents and assign to campaigns
+  // Create agents and assign to campaigns (idempotent)
   const agents = await Promise.all(
-    agentConfigs.map((config) =>
-      prisma.user.create({
-        data: {
+    agentConfigs.map((config) => {
+      const email = `${config.name.toLowerCase().replace(" ", ".")}@opsview.com`;
+      return prisma.user.upsert({
+        where: { email },
+        update: {},
+        create: {
           name: config.name,
-          email: `${config.name.toLowerCase().replace(" ", ".")}@opsview.com`,
+          email,
           password: passwordHash,
           role: Role.AGENT,
           seatNumber: config.seat,
-          // Assign to first campaign as default
           campaignId: campaigns[config.campaignIndices[0]].id,
         },
-      })
-    )
+      });
+    })
   );
 
-  // Create collectors dynamically - one collector per campaign
+  // Create collectors dynamically - one collector per campaign (idempotent)
   const collectors = await Promise.all(
-    campaigns.map((campaign, index) =>
-      prisma.user.create({
-        data: {
+    campaigns.map((campaign, index) => {
+      const email = `collector.${index + 1}@opsview.com`;
+      return prisma.user.upsert({
+        where: { email },
+        update: {},
+        create: {
           name: `Collector - ${campaign.campaignName}`,
-          email: `collector.${index + 1}@opsview.com`,
+          email,
           password: passwordHash,
           role: Role.COLLECTOR,
-          // Assign to specific campaign
+          campaignId: campaign.id,
+        },
+      });
+    })
+  );
+
+  // Create Timothy Germedia - Collector with all campaigns (idempotent)
+  const timothy = await prisma.user.upsert({
+    where: { email: "allianzsynergia.tgermedia@gmail.com" },
+    update: {},
+    create: {
+      name: "Timothy Germedia",
+      email: "allianzsynergia.tgermedia@gmail.com",
+      password: passwordHash,
+      role: Role.COLLECTOR,
+      campaignId: campaigns[0].id,
+    },
+  });
+
+  // Assign Timothy to all campaigns (idempotent - avoid duplicates)
+  await Promise.all(
+    campaigns.map((campaign) =>
+      prisma.userCampaign.upsert({
+        where: {
+          userId_campaignId: {
+            userId: timothy.id,
+            campaignId: campaign.id,
+          },
+        },
+        update: {},
+        create: {
+          userId: timothy.id,
           campaignId: campaign.id,
         },
       })
     )
   );
-
-  // Create Timothy Germedia - Collector with all campaigns
-  const timothy = await prisma.user.create({
-    data: {
-      name: "Timothy Germedia",
-      email: "allianzsynergia.tigermedia@gmail.com",
-      password: passwordHash,
-      role: Role.COLLECTOR,
-      // Assign to first campaign as default
-      campaignId: campaigns[0].id,
-    },
-  });
-
-  // Assign Timothy to all campaigns
-  const timothyAssignments = campaigns.map((campaign) => ({
-    userId: timothy.id,
-    campaignId: campaign.id,
-  }));
-  await prisma.userCampaignAssignment.createMany({
-    data: timothyAssignments,
-  });
 
   // Generate daily sales data for current month - ONLY for assigned campaigns
   const now = new Date();
@@ -295,7 +201,7 @@ async function main() {
   console.log("   Admin:     admin@opsview.com / password123");
   console.log("   Manager:   manager@opsview.com / password123");
   console.log("   Agent:     john.smith@opsview.com / password123");
-  console.log("   Collector: allianzsynergia.tigermedia@gmail.com / password123 (all campaigns)");
+  console.log("   Collector: allianzsynergia.tgermedia@gmail.com / password123 (all 18 campaigns)");
   console.log("");
   console.log("📊 Agent-Campaign Assignments:");
   agentConfigs.forEach((config, idx) => {

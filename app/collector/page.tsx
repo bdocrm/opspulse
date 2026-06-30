@@ -243,7 +243,7 @@ export default function CollectorDashboard() {
   // Global KPI roll-up across every assigned campaign.
   const kpis = useMemo(() => {
     let totalAgents = 0, presentCount = 0, absentCount = 0;
-    let totalTransmittals = 0, totalActivations = 0, totalApprovals = 0, totalBooked = 0;
+    let totalTransmittals = 0, totalActivations = 0, totalApprovals = 0, totalBooked = 0, totalVolume = 0;
     let totalGoal = 0, kpiValue = 0, totalTarget = 0, entriesCount = 0;
 
     for (const c of campaigns) {
@@ -257,6 +257,7 @@ export default function CollectorDashboard() {
         totalActivations += p.activations;
         totalApprovals += p.approvals;
         totalBooked += p.booked;
+        totalVolume += p.volume || 0;
         totalTarget += a.monthlyTarget || 0;
         campaignKpi += kpiValueFor(c.kpiMetric, p);
         const record = c.attendance[a.id];
@@ -268,12 +269,12 @@ export default function CollectorDashboard() {
 
     let goal = totalGoal;
     if (goal === 0 && totalTarget > 0) goal = totalTarget;
-    const targetProgress = goal > 0 ? ((kpiValue / goal) * 100).toFixed(1) : '0';
-    const remainingGoal = Math.max(0, goal - kpiValue);
+    const targetProgress = goal > 0 ? ((totalVolume / goal) * 100).toFixed(1) : '0';
+    const remainingGoal = Math.max(0, goal - totalVolume);
 
     return {
       totalAgents, presentCount, absentCount,
-      totalTransmittals, totalActivations, totalApprovals, totalBooked,
+      totalTransmittals, totalActivations, totalApprovals, totalBooked, totalVolume,
       goal, kpiValue, targetProgress, remainingGoal, totalTarget, entriesCount,
     };
   }, [campaigns]);
@@ -459,7 +460,7 @@ export default function CollectorDashboard() {
     const rows: Record<string, string | number>[] = [];
     for (const c of campaigns) {
       const sorted = [...c.agents].sort(
-        (a, b) => (c.production[b.id]?.booked || 0) - (c.production[a.id]?.booked || 0)
+        (a, b) => (c.production[b.id]?.volume || 0) - (c.production[a.id]?.volume || 0)
       );
       sorted.forEach((agent, index) => {
         const prod = c.production[agent.id] || ZERO_PROD;
@@ -476,6 +477,7 @@ export default function CollectorDashboard() {
           Transmittals: prod.transmittals,
           Approvals: prod.approvals,
           Booked: prod.booked,
+          'Booked Volume (₱)': Number(prod.volume || 0),
           Target: target,
           'Progress %': progress,
         });
@@ -560,30 +562,24 @@ export default function CollectorDashboard() {
         </Card>
       )}
 
-      {/* Date Range Filter */}
+      {/* Date Filter */}
       <Card>
         <CardContent className="py-3">
           <div className="flex flex-col md:flex-row md:items-center gap-3">
             <div className="flex items-center gap-2">
               <CalendarDays className="w-4 h-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Date Range:</span>
+              <span className="text-sm font-medium">Date:</span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Button size="sm" variant={datePreset === 'today' ? 'default' : 'outline'} onClick={() => handleDatePreset('today')}>Today</Button>
               <Button size="sm" variant={datePreset === 'week' ? 'default' : 'outline'} onClick={() => handleDatePreset('week')}>Last 7 Days</Button>
               <Button size="sm" variant={datePreset === 'month' ? 'default' : 'outline'} onClick={() => handleDatePreset('month')}>MTD</Button>
               <div className="flex items-center gap-2 ml-2">
-                <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setDatePreset('custom'); }} className="w-36 h-8" />
-                <span className="text-muted-foreground">to</span>
-                <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setDatePreset('custom'); }} className="w-36 h-8" />
+                <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setDateTo(e.target.value); setDatePreset('custom'); }} className="w-36 h-8" />
               </div>
             </div>
             <div className="ml-auto text-sm text-muted-foreground">
-              {dateFrom === dateTo ? (
-                <span>{new Date(dateFrom).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
-              ) : (
-                <span>{new Date(dateFrom).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(dateTo).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-              )}
+              <span>{new Date(dateFrom).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
             </div>
           </div>
         </CardContent>
@@ -652,14 +648,14 @@ export default function CollectorDashboard() {
         <Card className="bg-gradient-to-br from-indigo-500/10 to-indigo-600/5 border-indigo-500/20">
           <CardContent className="pt-4">
             <div className="flex flex-col gap-2">
-              <p className="text-xs text-muted-foreground uppercase tracking-wide">Total Goal</p>
-              <p className="text-3xl font-bold text-indigo-500">{kpis.goal.toLocaleString()}</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Total Goal (Booked Vol)</p>
+              <p className="text-3xl font-bold text-indigo-500">₱{kpis.goal.toLocaleString()}</p>
               <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">Progress: {kpis.kpiValue.toLocaleString()}</span>
+                <span className="text-muted-foreground">Progress: ₱{kpis.totalVolume.toLocaleString()}</span>
                 <span className="font-semibold text-indigo-500">{kpis.targetProgress}%</span>
               </div>
               {kpis.remainingGoal > 0 && (
-                <p className="text-xs text-orange-500 font-semibold">To Go: {kpis.remainingGoal.toLocaleString()}</p>
+                <p className="text-xs text-orange-500 font-semibold">To Go: ₱{kpis.remainingGoal.toLocaleString()}</p>
               )}
             </div>
           </CardContent>
@@ -679,8 +675,9 @@ export default function CollectorDashboard() {
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Booked Today</p>
-                <p className="text-3xl font-bold mt-1 text-purple-500">{kpis.totalBooked}</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">Booked Volume (₱)</p>
+                <p className="text-3xl font-bold mt-1 text-purple-500">₱{kpis.totalVolume?.toLocaleString() || '0'}</p>
+                <p className="text-xs text-muted-foreground mt-1">from imported data</p>
               </div>
               <TrendingUp className="w-8 h-8 text-purple-500 opacity-80" />
             </div>
@@ -849,7 +846,22 @@ export default function CollectorDashboard() {
                 const prod = campaign.production[agent.id] || ZERO_PROD;
                 return sum + kpiValueFor(campaignKpi, prod);
               }, 0);
-              const goalProgress = campaignGoal > 0 ? ((totalKpiValue / campaignGoal) * 100).toFixed(1) : '0';
+              // Calculate total booked volume for the campaign
+              const totalBookedVolume = campaignAgents.reduce((sum, agent) => {
+                const prod = campaign.production[agent.id] || ZERO_PROD;
+                return sum + (prod.volume || 0);
+              }, 0);
+              const goalProgress = campaignGoal > 0 ? ((totalBookedVolume / campaignGoal) * 100).toFixed(1) : '0';
+
+              // Find top booked volume performer
+              const topPerformer = campaignAgents.length > 0
+                ? campaignAgents.reduce((max, agent) => {
+                    const currentVolume = (campaign.production[agent.id] || ZERO_PROD).volume || 0;
+                    const maxVolume = (campaign.production[max.id] || ZERO_PROD).volume || 0;
+                    return currentVolume > maxVolume ? agent : max;
+                  })
+                : null;
+              const topBookedVolume = topPerformer ? (campaign.production[topPerformer.id] || ZERO_PROD).volume || 0 : 0;
 
               return (
                 <Card key={campaign.id} className="relative overflow-hidden hover:shadow-md transition-shadow">
@@ -862,15 +874,15 @@ export default function CollectorDashboard() {
                       <div>
                         <h3 className="font-bold text-lg text-foreground">{campaign.campaignName}</h3>
                         <p className="text-xs text-muted-foreground capitalize mt-1">
-                          {campaignKpi.replace(/([A-Z])/g, ' $1').trim()}
+                          Booked Volume Goal (₱)
                         </p>
                       </div>
 
                       {/* Goal and Progress */}
                       <div className="space-y-2">
                         <div className="flex items-baseline justify-between">
-                          <span className="text-xs text-muted-foreground uppercase tracking-wide">Campaign Goal</span>
-                          <span className="text-xl font-bold text-blue-600">{campaignGoal.toLocaleString()}</span>
+                          <span className="text-xs text-muted-foreground uppercase tracking-wide">Goal</span>
+                          <span className="text-xl font-bold text-blue-600">₱{campaignGoal.toLocaleString()}</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
@@ -895,10 +907,21 @@ export default function CollectorDashboard() {
                           <p className="text-xs text-muted-foreground mt-1">Agents</p>
                         </div>
                         <div className="text-center">
-                          <p className="text-2xl font-bold text-primary">{totalKpiValue.toLocaleString()}</p>
-                          <p className="text-xs text-muted-foreground mt-1 capitalize">{campaignKpi}</p>
+                          <p className="text-2xl font-bold text-purple-600">₱{Number(totalBookedVolume).toLocaleString()}</p>
+                          <p className="text-xs text-muted-foreground mt-1">Booked Volume</p>
                         </div>
                       </div>
+
+                      {/* Top Booked Volume Performer */}
+                      {topPerformer && topBookedVolume > 0 && (
+                        <div className="pt-2 border-t bg-yellow-50/50 rounded-lg p-2 mx-[-0.75rem] px-3">
+                          <p className="text-xs text-muted-foreground uppercase tracking-wide font-semibold">🥇 Top Booked Volume</p>
+                          <div className="flex items-center justify-between mt-1">
+                            <span className="text-sm font-medium text-foreground truncate">{topPerformer.name}</span>
+                            <span className="text-sm font-bold text-yellow-600">₱{Number(topBookedVolume).toLocaleString()}</span>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Entries */}
                       <div className="pt-2 border-t">
@@ -951,7 +974,7 @@ export default function CollectorDashboard() {
               const q = agentSearch.trim().toLowerCase();
               let filtered = block.agents.filter((a) => a.name.toLowerCase().includes(q));
               filtered = [...filtered].sort((a, b) => {
-                if (sortBy === 'booked') return prodFor(b.id).booked - prodFor(a.id).booked;
+                if (sortBy === 'booked') return (prodFor(b.id).volume || 0) - (prodFor(a.id).volume || 0);
                 if (sortBy === 'name') return a.name.localeCompare(b.name);
                 return (a.seatNumber || 0) - (b.seatNumber || 0);
               });
@@ -983,6 +1006,7 @@ export default function CollectorDashboard() {
                             <TableHead className="text-center">Transmitted</TableHead>
                             <TableHead className="text-center">Approved</TableHead>
                             <TableHead className="text-center">Booked</TableHead>
+                            <TableHead className="text-right">Booked Volume (₱)</TableHead>
                             <TableHead className="w-32">Progress</TableHead>
                             <TableHead className="text-right w-20">Actions</TableHead>
                           </TableRow>
@@ -993,7 +1017,7 @@ export default function CollectorDashboard() {
                             const record = block.attendance[agent.id];
                             const isPresent = !record || record.status === 'PRESENT';
                             const value = kpiValueFor(block.kpiMetric, prod);
-                            const progressNum = agent.monthlyTarget ? (value / agent.monthlyTarget) * 100 : 0;
+                            const progressNum = agent.monthlyTarget ? ((prod.volume || 0) / agent.monthlyTarget) * 100 : 0;
 
                             return (
                               <TableRow key={agent.id} className={!isPresent ? 'opacity-50 bg-muted/30' : ''}>
@@ -1019,6 +1043,7 @@ export default function CollectorDashboard() {
                                 <TableCell className="text-center">{prod.transmittals}</TableCell>
                                 <TableCell className="text-center">{prod.approvals}</TableCell>
                                 <TableCell className="text-center font-semibold text-primary">{prod.booked}</TableCell>
+                                <TableCell className="text-right font-semibold text-purple-600">₱{Number(prod.volume || 0).toLocaleString()}</TableCell>
                                 <TableCell>
                                   {agent.monthlyTarget ? (
                                     <div className="flex items-center gap-2">

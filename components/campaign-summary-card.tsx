@@ -78,36 +78,44 @@ export function CampaignSummaryCard({
     return sum + kpiValueFor(kpiMetric, prod);
   }, 0);
 
-  const achievement = goal > 0 ? ((totalProduction / goal) * 100).toFixed(1) : '0';
-  const remainingGoal = Math.max(0, goal - totalProduction);
+  // Always calculate booked volume for display
+  const totalBookedVolume = agents.reduce((sum, agent) => {
+    const prod = production[agent.id] || ZERO_PROD;
+    return sum + (prod.volume || 0);
+  }, 0);
 
-  // Performance distribution
+  const achievement = goal > 0 ? ((totalBookedVolume / goal) * 100).toFixed(1) : '0';
+  const remainingGoal = Math.max(0, goal - totalBookedVolume);
+
+  // Performance distribution based on booked volume
   const performanceDistribution = useMemo(() => {
     const distribution = { excellent: 0, good: 0, average: 0, needsImprovement: 0 };
+    if (goal === 0) return distribution; // No distribution if no goal
     agents.forEach(agent => {
       const prod = production[agent.id] || ZERO_PROD;
-      const value = kpiValueFor(kpiMetric, prod);
-      const target = agent.monthlyTarget || 0;
-      if (target === 0) return;
-      const progress = (value / target) * 100;
+      const bookedVolume = prod.volume || 0;
+      // Calculate agent's share of total goal proportionally, or use their monthly target if set
+      const agentGoal = agent.monthlyTarget || (goal / Math.max(agents.length, 1));
+      if (agentGoal === 0) return;
+      const progress = (bookedVolume / agentGoal) * 100;
       if (progress >= 100) distribution.excellent++;
       else if (progress >= 80) distribution.good++;
       else if (progress >= 50) distribution.average++;
       else distribution.needsImprovement++;
     });
     return distribution;
-  }, [agents, production, kpiMetric]);
+  }, [agents, production, goal]);
 
-  // Top and bottom performers
+  // Top and bottom performers based on booked volume
   const performerStats = useMemo(() => {
     const performers = agents
       .map(agent => {
         const prod = production[agent.id] || ZERO_PROD;
-        const value = kpiValueFor(kpiMetric, prod);
-        const target = agent.monthlyTarget || 0;
-        return { agent, value, target, progress: target > 0 ? (value / target) * 100 : 0 };
+        const bookedVolume = prod.volume || 0;
+        const agentGoal = agent.monthlyTarget || (goal / Math.max(agents.length, 1));
+        return { agent, value: bookedVolume, target: agentGoal, progress: agentGoal > 0 ? (bookedVolume / agentGoal) * 100 : 0 };
       })
-      .sort((a, b) => b.progress - a.progress);
+      .sort((a, b) => b.value - a.value); // Sort by booked volume, not progress
 
     return {
       topPerformer: performers[0],
@@ -117,7 +125,7 @@ export function CampaignSummaryCard({
       withProduction: performers.filter(p => p.value > 0).length,
       zeroProduction: performers.filter(p => p.value === 0).length,
     };
-  }, [agents, production, kpiMetric]);
+  }, [agents, production, goal]);
 
   const filteredAgents = useMemo(() => {
     if (!searchQuery.trim()) return agents;
@@ -158,16 +166,16 @@ export function CampaignSummaryCard({
           {/* KPI Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
-              <p className="text-xs text-muted-foreground mb-1">Monthly Goal</p>
-              <p className="text-xl font-bold text-blue-600">{goal.toLocaleString()}</p>
+              <p className="text-xs text-muted-foreground mb-1">Monthly Goal (Booked Vol)</p>
+              <p className="text-xl font-bold text-blue-600">₱{goal.toLocaleString()}</p>
             </div>
             <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
-              <p className="text-xs text-muted-foreground mb-1">Current Prod.</p>
-              <p className="text-xl font-bold text-purple-600">{totalProduction.toLocaleString()}</p>
+              <p className="text-xs text-muted-foreground mb-1">Current Prod. (Booked Vol)</p>
+              <p className="text-xl font-bold text-purple-600">₱{Number(totalBookedVolume).toLocaleString()}</p>
             </div>
             <div className="bg-gradient-to-br from-orange-50 to-orange-100/50 rounded-lg p-3">
-              <p className="text-xs text-muted-foreground mb-1">Remaining</p>
-              <p className="text-xl font-bold text-orange-600">{remainingGoal.toLocaleString()}</p>
+              <p className="text-xs text-muted-foreground mb-1">Remaining to Goal</p>
+              <p className="text-xl font-bold text-orange-600">₱{Number(remainingGoal).toLocaleString()}</p>
             </div>
             <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
               <p className="text-xs text-muted-foreground mb-1">Entries</p>

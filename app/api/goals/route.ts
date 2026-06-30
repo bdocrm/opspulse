@@ -111,6 +111,7 @@ export async function GET(req: NextRequest) {
         transaction: Number(s.transaction),
       }));
       const mtd = computeMTD(rows, kpiMetric);
+      const bookedVolume = rows.reduce((sum, row) => sum + row.volume, 0);
       const elapsed = configuredDaysLapsed > 0 ? configuredDaysLapsed : computeDaysLapsed(rows);
       const rr = runRate(mtd, elapsed, workingDays);
 
@@ -124,6 +125,7 @@ export async function GET(req: NextRequest) {
         workingDays,
         daysLapsed: configuredDaysLapsed,
         mtd,
+        bookedVolume,
         achievement: achievementPct(mtd, monthlyGoal),
         runRate: rr,
         rrAchievement: rrAchievementPct(rr, monthlyGoal),
@@ -185,6 +187,14 @@ export async function PUT(req: NextRequest) {
     const dLapsed = daysLapsed !== undefined ? Number(daysLapsed) : 0;
 
     await ensureCampaignGoalTable();
+
+    // Check if goal already exists to determine if this is an update or create
+    const existingGoal = await prisma.$queryRaw<any[]>`
+      SELECT id FROM "CampaignGoal"
+      WHERE "campaignId" = ${campaignId} AND "month" = ${month} AND "year" = ${year}
+    `;
+    const isUpdate = existingGoal && existingGoal.length > 0;
+    const previousGoal = isUpdate && existingGoal[0] ? existingGoal[0].monthlyGoal : null;
 
     // Upsert the per-(campaign, month, year) goal configuration. Creates a new
     // record or updates the existing one for this exact combination.
