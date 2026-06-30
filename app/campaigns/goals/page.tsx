@@ -23,6 +23,7 @@ interface Campaign {
   workingDays: number;
   daysLapsed: number;
   mtd: number;
+  bookedVolume: number;
   achievement: number;
   runRate: number;
   rrAchievement: number;
@@ -37,7 +38,7 @@ interface Campaign {
 }
 
 type AchievementStatus = 'all' | 'above' | 'on-track' | 'needs-attention' | 'at-risk';
-type SortKey = 'campaignName' | 'kpiMetric' | 'monthlyGoal' | 'mtd' | 'achievement' | 'runRate' | 'rrAchievement' | 'updatedAt';
+type SortKey = 'campaignName' | 'kpiMetric' | 'monthlyGoal' | 'bookedVolume' | 'mtd' | 'achievement' | 'runRate' | 'rrAchievement' | 'updatedAt';
 type SortDirection = 'asc' | 'desc';
 type DeletedDateSortKey = 'deletedAt' | 'restoredAt';
 
@@ -144,6 +145,7 @@ const dashboardExportRows = (rows: Campaign[]) =>
     Campaign: row.campaignName,
     'KPI Metric': metricLabel(row.kpiMetric),
     Goal: Number(row.monthlyGoal || 0),
+    'Booked Volume': Number(row.bookedVolume || 0),
     MTD: Number(row.mtd || 0),
     'Achievement %': Number(row.achievement || 0).toFixed(1),
     'Run Rate': Number(row.runRate || 0),
@@ -604,7 +606,7 @@ export default function GoalsManagement() {
   const summary = useMemo(() => {
     const totalCampaigns = sortedFilteredCampaigns.length;
     const totalGoal = sortedFilteredCampaigns.reduce((sum, c) => sum + (c.monthlyGoal || 0), 0);
-    const totalMTD = sortedFilteredCampaigns.reduce((sum, c) => sum + (c.mtd || 0), 0);
+    const totalMTD = sortedFilteredCampaigns.reduce((sum, c) => sum + (c.bookedVolume || 0), 0);
     const avgAchievement =
       totalCampaigns > 0
         ? sortedFilteredCampaigns.reduce((sum, c) => sum + (c.achievement || 0), 0) / totalCampaigns
@@ -994,7 +996,7 @@ export default function GoalsManagement() {
                   ['campaignName', 'Campaign'],
                   ['kpiMetric', 'KPI Metric'],
                   ['monthlyGoal', 'Goal'],
-                  ['mtd', 'MTD'],
+                  ['bookedVolume', 'Booked Volume'],
                   ['achievement', 'Achievement'],
                   ['runRate', 'Run Rate'],
                   ['rrAchievement', 'RR Achievement %'],
