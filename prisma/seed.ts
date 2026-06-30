@@ -229,6 +229,27 @@ async function main() {
     )
   );
 
+  // Create Timothy Germedia - Collector with all campaigns
+  const timothy = await prisma.user.create({
+    data: {
+      name: "Timothy Germedia",
+      email: "allianzsynergia.tigermedia@gmail.com",
+      password: passwordHash,
+      role: Role.COLLECTOR,
+      // Assign to first campaign as default
+      campaignId: campaigns[0].id,
+    },
+  });
+
+  // Assign Timothy to all campaigns
+  const timothyAssignments = campaigns.map((campaign) => ({
+    userId: timothy.id,
+    campaignId: campaign.id,
+  }));
+  await prisma.userCampaignAssignment.createMany({
+    data: timothyAssignments,
+  });
+
   // Generate daily sales data for current month - ONLY for assigned campaigns
   const now = new Date();
   const year = now.getFullYear();
@@ -266,14 +287,15 @@ async function main() {
   await prisma.dailySales.createMany({ data: salesData });
 
   console.log(`✅ Seeded:`);
-  console.log(`   - ${2 + agents.length} users (1 admin, 1 manager, ${agents.length} agents)`);
+  console.log(`   - ${3 + agents.length + collectors.length} users (1 admin, 1 manager, ${agents.length} agents, ${collectors.length} collectors, 1 multi-campaign collector)`);
   console.log(`   - ${campaigns.length} campaigns`);
   console.log(`   - ${salesData.length} daily sales records`);
   console.log("");
   console.log("📧 Login credentials:");
-  console.log("   Admin:   admin@opsview.com / password123");
-  console.log("   Manager: manager@opsview.com / password123");
-  console.log("   Agent:   john.smith@opsview.com / password123");
+  console.log("   Admin:     admin@opsview.com / password123");
+  console.log("   Manager:   manager@opsview.com / password123");
+  console.log("   Agent:     john.smith@opsview.com / password123");
+  console.log("   Collector: allianzsynergia.tigermedia@gmail.com / password123 (all campaigns)");
   console.log("");
   console.log("📊 Agent-Campaign Assignments:");
   agentConfigs.forEach((config, idx) => {

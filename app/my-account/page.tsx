@@ -47,7 +47,7 @@ export default function MyAccountPage() {
   useEffect(() => {
     if (status === "loading") return;
     if (!session?.user) {
-      router.push("/login");
+      router.push("/dashboard");
       return;
     }
     fetchProfile();
