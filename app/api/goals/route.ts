@@ -4,6 +4,7 @@ import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { getCampaignAgents, isAgentInCampaign } from '@/lib/campaign-agents';
 import { MONTH_NAMES, ensureCampaignGoalTable, resolveMonthYear } from '@/lib/campaign-goals';
+import { achievementPct, computeMTD, runRate, rrAchievementPct, daysLapsed as computeDaysLapsed } from '@/utils/kpi';
 
 export async function GET(req: NextRequest) {
   try {
@@ -60,12 +61,32 @@ export async function GET(req: NextRequest) {
         WHERE id = ANY(${campaignIds}::text[])
       `;
       monthlyRows = await prisma.$queryRaw<any[]>`
-        SELECT "campaignId", "monthlyGoal", "kpiMetric", "workingDays", "daysLapsed"
+        SELECT "campaignId", "monthlyGoal", "kpiMetric", "workingDays", "daysLapsed", "updatedAt"
         FROM "CampaignGoal"
         WHERE "campaignId" = ANY(${campaignIds}::text[])
           AND "month" = ${month} AND "year" = ${year}
+          AND "deletedAt" IS NULL
       `;
     }
+
+    const startDate = new Date(year, month - 1, 1);
+    const endDate = new Date(year, month, 0, 23, 59, 59);
+    const dailySales =
+      campaignIds.length > 0
+        ? await prisma.dailySales.findMany({
+            where: {
+              campaignId: { in: campaignIds },
+              date: { gte: startDate, lte: endDate },
+            },
+            orderBy: { date: 'asc' },
+          })
+        : [];
+
+    const salesByCampaign = dailySales.reduce((acc, row) => {
+      if (!acc[row.campaignId]) acc[row.campaignId] = [];
+      acc[row.campaignId].push(row);
+      return acc;
+    }, {} as Record<string, typeof dailySales>);
 
     const extrasById = Object.fromEntries(rawExtras.map((r) => [r.id, r]));
     const monthlyById = Object.fromEntries(monthlyRows.map((r) => [r.campaignId, r]));
@@ -74,15 +95,39 @@ export async function GET(req: NextRequest) {
       const m = monthlyById[c.id];
       // Per-month config takes precedence; otherwise fall back to the campaign's
       // legacy values so existing (pre-month) data keeps showing unchanged.
+      const monthlyGoal = Number(m ? m.monthlyGoal : c.monthlyGoal);
+      const kpiMetric = (m ? m.kpiMetric : c.kpiMetric) as any;
+      const workingDays = Number(m ? m.workingDays : extrasById[c.id]?.workingDays ?? 22);
+      const configuredDaysLapsed = Number(m ? m.daysLapsed : extrasById[c.id]?.daysLapsed ?? 0);
+      const rows = (salesByCampaign[c.id] || []).map((s) => ({
+        date: s.date,
+        transmittals: Number(s.transmittals),
+        activations: Number(s.activations),
+        approvals: Number(s.approvals),
+        booked: Number(s.booked),
+        qualityRate: s.qualityRate,
+        conversionRate: s.conversionRate,
+        volume: Number(s.volume),
+        transaction: Number(s.transaction),
+      }));
+      const mtd = computeMTD(rows, kpiMetric);
+      const elapsed = configuredDaysLapsed > 0 ? configuredDaysLapsed : computeDaysLapsed(rows);
+      const rr = runRate(mtd, elapsed, workingDays);
+
       return {
         ...c,
         month,
         year,
         hasMonthlyConfig: Boolean(m),
-        monthlyGoal: Number(m ? m.monthlyGoal : c.monthlyGoal),
-        kpiMetric: m ? m.kpiMetric : c.kpiMetric,
-        workingDays: Number(m ? m.workingDays : extrasById[c.id]?.workingDays ?? 22),
-        daysLapsed: Number(m ? m.daysLapsed : extrasById[c.id]?.daysLapsed ?? 0),
+        monthlyGoal,
+        kpiMetric,
+        workingDays,
+        daysLapsed: configuredDaysLapsed,
+        mtd,
+        achievement: achievementPct(mtd, monthlyGoal),
+        runRate: rr,
+        rrAchievement: rrAchievementPct(rr, monthlyGoal),
+        updatedAt: m?.updatedAt ?? c.createdAt,
       };
     });
 

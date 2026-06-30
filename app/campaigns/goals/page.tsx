@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Dispatch, SetStateAction, useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Button } from '@/components/ui/button';
@@ -8,8 +9,14 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { PageTitle } from '@/components/layout/page-title';
+<<<<<<< HEAD
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import { useToast } from '@/components/toast-provider';
+import { AlertCircle, ArchiveRestore, ArrowUpDown, CheckCircle, ChevronDown, ChevronUp, Download, Eye, Loader2, Pencil, Search, Trash2 } from 'lucide-react';
+=======
 import { AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import { formatNumberWithCommas, parseFormattedNumber } from '@/lib/number-format';
+>>>>>>> 0d58bd7b19bff43227ff3d81f835a15b6cb3a085
 
 interface Campaign {
   id: string;
@@ -18,6 +25,12 @@ interface Campaign {
   monthlyGoal: number;
   workingDays: number;
   daysLapsed: number;
+  mtd: number;
+  achievement: number;
+  runRate: number;
+  rrAchievement: number;
+  updatedAt?: string;
+  hasMonthlyConfig?: boolean;
   users: Array<{
     id: string;
     name: string;
@@ -25,6 +38,10 @@ interface Campaign {
     monthlyTarget: number | null;
   }>;
 }
+
+type AchievementStatus = 'all' | 'above' | 'below' | 'at-risk';
+type SortKey = 'campaignName' | 'kpiMetric' | 'monthlyGoal' | 'mtd' | 'achievement' | 'runRate' | 'rrAchievement';
+type SortDirection = 'asc' | 'desc';
 
 interface SavedGoal {
   campaignId: string;
@@ -36,7 +53,21 @@ interface SavedGoal {
   workingDays: number;
   daysLapsed: number;
   updatedAt: string;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+  restoredAt?: string | null;
+  restoredBy?: string | null;
 }
+
+type GoalKey = {
+  campaignId: string;
+  month: number;
+  year: number;
+};
+
+type ConfirmAction =
+  | { type: 'restore'; items: GoalKey[] }
+  | { type: 'permanent-delete'; items: GoalKey[] };
 
 const KPI_METRICS = [
   { value: 'transmittals', label: 'Transmittals' },
@@ -54,9 +85,75 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
+const metricLabel = (value: string) =>
+  KPI_METRICS.find((m) => m.value === value)?.label || value;
+
+const formatNumber = (value: number) =>
+  Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 1 });
+
+const stripNumberFormatting = (value: string) => value.replace(/,/g, '');
+
+const formatInputNumber = (value: string | number, fractionDigits?: number) => {
+  const raw = stripNumberFormatting(String(value ?? ''));
+  if (raw === '') return '';
+  const n = Number(raw);
+  if (Number.isNaN(n)) return String(value);
+  return n.toLocaleString(undefined, {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits ?? 2,
+  });
+};
+
+const normalizeNumericInput = (value: string) => value.replace(/[^\d.]/g, '');
+
+const formatPct = (value: number) => `${Number(value || 0).toFixed(1)}%`;
+
+const statusForCampaign = (campaign: Campaign): AchievementStatus => {
+  if (campaign.achievement >= 100) return 'above';
+  if (campaign.rrAchievement < 90 || campaign.achievement < 75) return 'at-risk';
+  return 'below';
+};
+
+const statusLabel = (status: AchievementStatus) => {
+  if (status === 'above') return 'Above Goal';
+  if (status === 'at-risk') return 'At Risk';
+  if (status === 'below') return 'Below Goal';
+  return 'All';
+};
+
+const statusClass = (status: AchievementStatus) => {
+  if (status === 'above') return 'bg-green-50 text-green-700 border-green-200';
+  if (status === 'at-risk') return 'bg-red-50 text-red-700 border-red-200';
+  return 'bg-amber-50 text-amber-700 border-amber-200';
+};
+
+const dashboardExportRows = (rows: Campaign[]) =>
+  rows.map((row) => ({
+    Campaign: row.campaignName,
+    'KPI Metric': metricLabel(row.kpiMetric),
+    Goal: Number(row.monthlyGoal || 0),
+    MTD: Number(row.mtd || 0),
+    'Achievement %': Number(row.achievement || 0).toFixed(1),
+    'Run Rate': Number(row.runRate || 0),
+    'RR Achievement %': Number(row.rrAchievement || 0).toFixed(1),
+    Status: statusLabel(statusForCampaign(row)),
+    'Last Updated': row.updatedAt ? new Date(row.updatedAt).toLocaleString() : '',
+  }));
+
+const goalKey = (item: GoalKey) => `${item.campaignId}:${item.year}:${item.month}`;
+
+const savedGoalKey = (row: SavedGoal) =>
+  goalKey({ campaignId: row.campaignId, month: row.month, year: row.year });
+
+const parseGoalKey = (key: string): GoalKey => {
+  const [campaignId, year, month] = key.split(':');
+  return { campaignId, year: Number(year), month: Number(month) };
+};
+
 export default function GoalsManagement() {
   const router = useRouter();
   const { data: session, status } = useSession();
+  const { addToast } = useToast();
   const user = session?.user as any;
 
   const now = new Date();
@@ -67,6 +164,7 @@ export default function GoalsManagement() {
   const [selectedMonth, setSelectedMonth] = useState<number>(now.getMonth() + 1); // 1-12, defaults to current month
   const [selectedYear] = useState<number>(now.getFullYear());
   const [savedGoals, setSavedGoals] = useState<SavedGoal[]>([]);
+  const [deletedGoals, setDeletedGoals] = useState<SavedGoal[]>([]);
   // When editing a saved row from another month, remember which campaign to
   // re-select after the month-change effect reloads the campaign list. Kept in a
   // ref (not state) so the data-loading effect can read it WITHOUT taking it as
@@ -89,6 +187,30 @@ export default function GoalsManagement() {
   const [agentTarget, setAgentTarget] = useState<Record<string, number>>({});
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [campaignFilter, setCampaignFilter] = useState('all');
+  const [metricFilter, setMetricFilter] = useState('all');
+  const [achievementStatus, setAchievementStatus] = useState<AchievementStatus>('all');
+  const [goalMin, setGoalMin] = useState('');
+  const [goalMax, setGoalMax] = useState('');
+  const [achievementMin, setAchievementMin] = useState('');
+  const [achievementMax, setAchievementMax] = useState('');
+  const [rrMin, setRrMin] = useState('');
+  const [rrMax, setRrMax] = useState('');
+  const [sortKey, setSortKey] = useState<SortKey>('campaignName');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [rowsPerPage, setRowsPerPage] = useState('25');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [dashboardExpanded, setDashboardExpanded] = useState(true);
+  const [selectCampaignExpanded, setSelectCampaignExpanded] = useState(true);
+  const [campaignGoalExpanded, setCampaignGoalExpanded] = useState(true);
+  const [agentTargetsExpanded, setAgentTargetsExpanded] = useState(false);
+  const [savedGoalsExpanded, setSavedGoalsExpanded] = useState(false);
+  const [trashExpanded, setTrashExpanded] = useState(false);
+  const [agentTargetSearch, setAgentTargetSearch] = useState('');
+  const [selectedDeletedGoalKeys, setSelectedDeletedGoalKeys] = useState<Set<string>>(new Set());
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
+  const [processingAction, setProcessingAction] = useState(false);
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -97,6 +219,44 @@ export default function GoalsManagement() {
       router.push('/dashboard');
     }
   }, [status, user?.role, router]);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem('goals-management-expanded-sections');
+    if (!stored) return;
+
+    try {
+      const parsed = JSON.parse(stored);
+      if (typeof parsed.dashboard === 'boolean') setDashboardExpanded(parsed.dashboard);
+      if (typeof parsed.selectCampaign === 'boolean') setSelectCampaignExpanded(parsed.selectCampaign);
+      if (typeof parsed.campaignGoal === 'boolean') setCampaignGoalExpanded(parsed.campaignGoal);
+      if (typeof parsed.agentTargets === 'boolean') setAgentTargetsExpanded(parsed.agentTargets);
+      if (typeof parsed.savedGoals === 'boolean') setSavedGoalsExpanded(parsed.savedGoals);
+      if (typeof parsed.trash === 'boolean') setTrashExpanded(parsed.trash);
+    } catch {
+      window.localStorage.removeItem('goals-management-expanded-sections');
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      'goals-management-expanded-sections',
+      JSON.stringify({
+        dashboard: dashboardExpanded,
+        selectCampaign: selectCampaignExpanded,
+        campaignGoal: campaignGoalExpanded,
+        agentTargets: agentTargetsExpanded,
+        savedGoals: savedGoalsExpanded,
+        trash: trashExpanded,
+      })
+    );
+  }, [
+    dashboardExpanded,
+    selectCampaignExpanded,
+    campaignGoalExpanded,
+    agentTargetsExpanded,
+    savedGoalsExpanded,
+    trashExpanded,
+  ]);
 
   const loadCampaigns = async (month: number, year: number, keepId?: string) => {
     try {
@@ -121,8 +281,12 @@ export default function GoalsManagement() {
 
   const loadSavedGoals = async () => {
     try {
-      const res = await fetch('/api/goals/saved');
-      if (res.ok) setSavedGoals(await res.json());
+      const [activeRes, trashRes] = await Promise.all([
+        fetch('/api/goals/saved'),
+        fetch('/api/goals/saved?trash=1'),
+      ]);
+      if (activeRes.ok) setSavedGoals(await activeRes.json());
+      if (trashRes.ok) setDeletedGoals(await trashRes.json());
     } catch {
       /* non-critical: the saved list is informational */
     }
@@ -161,8 +325,12 @@ export default function GoalsManagement() {
 
   function applySelectedCampaign(campaign: Campaign) {
     setSelectedCampaign(campaign);
+<<<<<<< HEAD
+    setMonthlyGoal(formatInputNumber(campaign.monthlyGoal, 2));
+=======
     selectedCampaignIdRef.current = campaign.id;
     setMonthlyGoal(Number(campaign.monthlyGoal).toFixed(2));
+>>>>>>> 0d58bd7b19bff43227ff3d81f835a15b6cb3a085
     setKpiMetric(campaign.kpiMetric || 'transmittals');
     setWorkingDays((campaign.workingDays ?? 22).toString());
     setDaysLapsed((campaign.daysLapsed ?? 0).toString());
@@ -197,7 +365,7 @@ export default function GoalsManagement() {
           campaignId: selectedCampaign.id,
           month: selectedMonth,
           year: selectedYear,
-          monthlyGoal: Number(monthlyGoal),
+          monthlyGoal: Number(stripNumberFormatting(monthlyGoal)),
           kpiMetric,
           workingDays: Number(workingDays) || 22,
           daysLapsed: Number(daysLapsed) || 0,
@@ -211,12 +379,15 @@ export default function GoalsManagement() {
         await loadCampaigns(selectedMonth, selectedYear, selectedCampaign.id);
         await loadSavedGoals();
         setMessage(`Goals for ${MONTHS[selectedMonth - 1]} ${selectedYear} saved successfully`);
+        addToast('success', `Goals for ${MONTHS[selectedMonth - 1]} ${selectedYear} saved successfully`);
       } else {
         const data = await res.json();
         setError(data.error || 'Failed to update goal');
+        addToast('error', data.error || 'Failed to update goal');
       }
     } catch {
       setError('Failed to save campaign settings');
+      addToast('error', 'Failed to save campaign settings');
     } finally {
       setSaving(false);
     }
@@ -250,6 +421,7 @@ export default function GoalsManagement() {
 
       if (res.ok) {
         setMessage('Agent target updated successfully');
+        addToast('success', 'Agent target updated successfully');
         if (selectedCampaign) {
           const updated = { ...selectedCampaign };
           const agent = updated.users.find((u) => u.id === userId);
@@ -259,12 +431,217 @@ export default function GoalsManagement() {
       } else {
         const data = await res.json();
         setError(data.error || 'Failed to update agent target');
+        addToast('error', data.error || 'Failed to update agent target');
       }
     } catch {
       setError('Failed to save agent target');
+      addToast('error', 'Failed to save agent target');
     } finally {
       setSaving(false);
     }
+  };
+
+  const refreshGoalData = async () => {
+    await Promise.all([
+      loadCampaigns(selectedMonth, selectedYear, selectedCampaign?.id),
+      loadSavedGoals(),
+    ]);
+  };
+
+  const toggleKey = (setState: Dispatch<SetStateAction<Set<string>>>, key: string) => {
+    setState((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const setAllKeys = (
+    setState: Dispatch<SetStateAction<Set<string>>>,
+    keys: string[],
+    checked: boolean
+  ) => {
+    setState((current) => {
+      const next = new Set(current);
+      keys.forEach((key) => {
+        if (checked) next.add(key);
+        else next.delete(key);
+      });
+      return next;
+    });
+  };
+
+  const executeConfirmAction = async () => {
+    if (!confirmAction) return;
+
+    setProcessingAction(true);
+    try {
+      const method = confirmAction.type === 'restore' ? 'PATCH' : 'DELETE';
+      const res = await fetch('/api/goals/saved', {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: confirmAction.items,
+          permanent: confirmAction.type === 'permanent-delete',
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Action failed');
+
+      const affected = Number(data.count || 0);
+      if (confirmAction.type === 'restore') {
+        addToast('success', `Restored ${affected} goal configuration(s)`);
+        setSelectedDeletedGoalKeys(new Set());
+      } else if (confirmAction.type === 'permanent-delete') {
+        addToast('success', `Permanently deleted ${affected} goal configuration(s)`);
+        setSelectedDeletedGoalKeys(new Set());
+      }
+
+      setConfirmAction(null);
+      await refreshGoalData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Action failed';
+      addToast('error', message);
+    } finally {
+      setProcessingAction(false);
+    }
+  };
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [
+    searchQuery,
+    campaignFilter,
+    metricFilter,
+    achievementStatus,
+    goalMin,
+    goalMax,
+    achievementMin,
+    achievementMax,
+    rrMin,
+    rrMax,
+    rowsPerPage,
+  ]);
+
+  const sortedFilteredCampaigns = useMemo(() => {
+    const search = searchQuery.trim().toLowerCase();
+    const minGoal = goalMin === '' ? null : Number(stripNumberFormatting(goalMin));
+    const maxGoal = goalMax === '' ? null : Number(stripNumberFormatting(goalMax));
+    const minAchievement = achievementMin === '' ? null : Number(stripNumberFormatting(achievementMin));
+    const maxAchievement = achievementMax === '' ? null : Number(stripNumberFormatting(achievementMax));
+    const minRunRate = rrMin === '' ? null : Number(stripNumberFormatting(rrMin));
+    const maxRunRate = rrMax === '' ? null : Number(stripNumberFormatting(rrMax));
+
+    return campaigns
+      .filter((campaign) => {
+        if (campaignFilter !== 'all' && campaign.id !== campaignFilter) return false;
+        if (metricFilter !== 'all' && campaign.kpiMetric !== metricFilter) return false;
+        if (achievementStatus !== 'all' && statusForCampaign(campaign) !== achievementStatus) return false;
+        if (search && !`${campaign.campaignName} ${metricLabel(campaign.kpiMetric)}`.toLowerCase().includes(search)) return false;
+        if (minGoal !== null && campaign.monthlyGoal < minGoal) return false;
+        if (maxGoal !== null && campaign.monthlyGoal > maxGoal) return false;
+        if (minAchievement !== null && campaign.achievement < minAchievement) return false;
+        if (maxAchievement !== null && campaign.achievement > maxAchievement) return false;
+        if (minRunRate !== null && campaign.rrAchievement < minRunRate) return false;
+        if (maxRunRate !== null && campaign.rrAchievement > maxRunRate) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const aValue = sortKey === 'kpiMetric' ? metricLabel(a.kpiMetric) : a[sortKey];
+        const bValue = sortKey === 'kpiMetric' ? metricLabel(b.kpiMetric) : b[sortKey];
+        const result =
+          typeof aValue === 'string' || typeof bValue === 'string'
+            ? String(aValue).localeCompare(String(bValue))
+            : Number(aValue) - Number(bValue);
+        return sortDirection === 'asc' ? result : -result;
+      });
+  }, [
+    campaigns,
+    searchQuery,
+    campaignFilter,
+    metricFilter,
+    achievementStatus,
+    goalMin,
+    goalMax,
+    achievementMin,
+    achievementMax,
+    rrMin,
+    rrMax,
+    sortKey,
+    sortDirection,
+  ]);
+
+  const summary = useMemo(() => {
+    const totalCampaigns = sortedFilteredCampaigns.length;
+    const totalGoal = sortedFilteredCampaigns.reduce((sum, c) => sum + (c.monthlyGoal || 0), 0);
+    const totalMTD = sortedFilteredCampaigns.reduce((sum, c) => sum + (c.mtd || 0), 0);
+    const avgAchievement =
+      totalCampaigns > 0
+        ? sortedFilteredCampaigns.reduce((sum, c) => sum + (c.achievement || 0), 0) / totalCampaigns
+        : 0;
+    const avgRunRate =
+      totalCampaigns > 0
+        ? sortedFilteredCampaigns.reduce((sum, c) => sum + (c.rrAchievement || 0), 0) / totalCampaigns
+        : 0;
+    const aboveGoal = sortedFilteredCampaigns.filter((c) => statusForCampaign(c) === 'above').length;
+    const belowGoal = sortedFilteredCampaigns.filter((c) => statusForCampaign(c) === 'below').length;
+
+    return { totalCampaigns, totalGoal, totalMTD, avgAchievement, avgRunRate, aboveGoal, belowGoal };
+  }, [sortedFilteredCampaigns]);
+
+  const totalPages =
+    rowsPerPage === 'all'
+      ? 1
+      : Math.max(1, Math.ceil(sortedFilteredCampaigns.length / Number(rowsPerPage)));
+  const paginatedCampaigns =
+    rowsPerPage === 'all'
+      ? sortedFilteredCampaigns
+      : sortedFilteredCampaigns.slice((currentPage - 1) * Number(rowsPerPage), currentPage * Number(rowsPerPage));
+
+  const deletedGoalKeys = deletedGoals.map(savedGoalKey);
+  const allDeletedSelected =
+    deletedGoalKeys.length > 0 && deletedGoalKeys.every((key) => selectedDeletedGoalKeys.has(key));
+
+  const filteredCampaignAgents = useMemo(() => {
+    if (!selectedCampaign) return [];
+    const search = agentTargetSearch.trim().toLowerCase();
+    if (!search) return selectedCampaign.users;
+    return selectedCampaign.users.filter((agent) =>
+      `${agent.name} ${agent.seatNumber ?? ''}`.toLowerCase().includes(search)
+    );
+  }, [agentTargetSearch, selectedCampaign]);
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDirection((direction) => (direction === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDirection('asc');
+    }
+  };
+
+  const exportCampaignRows = (rows: Campaign[], format: 'csv' | 'xlsx') => {
+    const exportRows = dashboardExportRows(rows);
+    const suffix = `${MONTHS[selectedMonth - 1]}-${selectedYear}`.replace(/\s+/g, '-').toLowerCase();
+    if (format === 'xlsx') {
+      const worksheet = XLSX.utils.json_to_sheet(exportRows);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Targets');
+      XLSX.writeFile(workbook, `target-dashboard-${suffix}.xlsx`);
+      return;
+    }
+
+    const worksheet = XLSX.utils.json_to_sheet(exportRows);
+    const csv = XLSX.utils.sheet_to_csv(worksheet);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `target-dashboard-${suffix}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   if (status === 'loading' || loading) {
@@ -277,7 +654,7 @@ export default function GoalsManagement() {
 
   const wDays = Number(workingDays) || 22;
   const dLapsed = Number(daysLapsed) || 0;
-  const goal = Number(monthlyGoal) || 0;
+  const goal = Number(stripNumberFormatting(monthlyGoal)) || 0;
   const weekGoal = goal > 0 ? Math.round(goal / 4) : 0;
 
   // Preview KPI formulas with placeholder MTD
@@ -303,9 +680,274 @@ export default function GoalsManagement() {
         </div>
       )}
 
+      {/* Executive Target Dashboard */}
+      <Card className="border-slate-200 bg-slate-50/80 p-6 shadow-sm">
+        <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-950">Executive Target Dashboard</h3>
+            <p className="text-sm text-slate-500">
+              All campaign targets and live performance for {MONTHS[selectedMonth - 1]} {selectedYear}.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setDashboardExpanded((expanded) => !expanded)}
+              className="gap-2 border-blue-200 bg-white text-blue-700 shadow-sm hover:bg-blue-50"
+              aria-expanded={dashboardExpanded}
+              aria-controls="executive-target-dashboard-panel"
+            >
+              {dashboardExpanded ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
+              {dashboardExpanded ? 'Collapse Dashboard' : 'Expand Dashboard'}
+            </Button>
+            <Button variant="outline" size="sm" className="gap-2" onClick={() => exportCampaignRows(campaigns, 'xlsx')}>
+              <Download className="h-4 w-4" />
+              All XLSX
+            </Button>
+            <Button variant="outline" size="sm" className="gap-2" onClick={() => exportCampaignRows(campaigns, 'csv')}>
+              <Download className="h-4 w-4" />
+              All CSV
+            </Button>
+            <Button variant="outline" size="sm" className="gap-2" onClick={() => exportCampaignRows(sortedFilteredCampaigns, 'xlsx')}>
+              <Download className="h-4 w-4" />
+              Filtered XLSX
+            </Button>
+            <Button variant="outline" size="sm" className="gap-2" onClick={() => exportCampaignRows(sortedFilteredCampaigns, 'csv')}>
+              <Download className="h-4 w-4" />
+              Filtered CSV
+            </Button>
+          </div>
+        </div>
+
+        <div
+          id="executive-target-dashboard-panel"
+          className={`grid transition-all duration-300 ease-in-out ${
+            dashboardExpanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+          }`}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-7">
+              {[
+                ['Total Campaigns', summary.totalCampaigns.toLocaleString()],
+                ['Total Goal', formatNumber(summary.totalGoal)],
+                ['Total MTD', formatNumber(summary.totalMTD)],
+                ['Avg Achievement', formatPct(summary.avgAchievement)],
+                ['Avg RR Ach.', formatPct(summary.avgRunRate)],
+                ['Above Goal', summary.aboveGoal.toLocaleString()],
+                ['Below Goal', summary.belowGoal.toLocaleString()],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+                  <p className="text-xs font-medium text-slate-500">{label}</p>
+                  <p className="mt-1 text-xl font-bold text-slate-950">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search campaign or KPI..."
+                  className="pl-8"
+                />
+              </div>
+              <select
+                value={campaignFilter}
+                onChange={(e) => setCampaignFilter(e.target.value)}
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm"
+              >
+                <option value="all">All Campaigns</option>
+                {campaigns.map((campaign) => (
+                  <option key={campaign.id} value={campaign.id}>{campaign.campaignName}</option>
+                ))}
+              </select>
+              <select
+                value={metricFilter}
+                onChange={(e) => setMetricFilter(e.target.value)}
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm"
+              >
+                <option value="all">All KPI Metrics</option>
+                {KPI_METRICS.map((metric) => (
+                  <option key={metric.value} value={metric.value}>{metric.label}</option>
+                ))}
+              </select>
+              <select
+                value={achievementStatus}
+                onChange={(e) => setAchievementStatus(e.target.value as AchievementStatus)}
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm"
+              >
+                <option value="all">All Statuses</option>
+                <option value="above">Above Goal</option>
+                <option value="below">Below Goal</option>
+                <option value="at-risk">At Risk</option>
+              </select>
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+              <Input inputMode="decimal" value={goalMin} onChange={(e) => setGoalMin(normalizeNumericInput(e.target.value))} onBlur={() => setGoalMin(formatInputNumber(goalMin))} placeholder="Goal min" />
+              <Input inputMode="decimal" value={goalMax} onChange={(e) => setGoalMax(normalizeNumericInput(e.target.value))} onBlur={() => setGoalMax(formatInputNumber(goalMax))} placeholder="Goal max" />
+              <Input inputMode="decimal" value={achievementMin} onChange={(e) => setAchievementMin(normalizeNumericInput(e.target.value))} onBlur={() => setAchievementMin(formatInputNumber(achievementMin))} placeholder="Achievement % min" />
+              <Input inputMode="decimal" value={achievementMax} onChange={(e) => setAchievementMax(normalizeNumericInput(e.target.value))} onBlur={() => setAchievementMax(formatInputNumber(achievementMax))} placeholder="Achievement % max" />
+              <Input inputMode="decimal" value={rrMin} onChange={(e) => setRrMin(normalizeNumericInput(e.target.value))} onBlur={() => setRrMin(formatInputNumber(rrMin))} placeholder="RR Achievement % min" />
+              <Input inputMode="decimal" value={rrMax} onChange={(e) => setRrMax(normalizeNumericInput(e.target.value))} onBlur={() => setRrMax(formatInputNumber(rrMax))} placeholder="RR Achievement % max" />
+            </div>
+
+            <div className="mt-5 overflow-x-auto rounded-lg border border-gray-200">
+              <table className="w-full min-w-[980px] text-sm">
+                <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
+                  <tr>
+                    {[
+                  ['campaignName', 'Campaign'],
+                  ['kpiMetric', 'KPI Metric'],
+                  ['monthlyGoal', 'Goal'],
+                  ['mtd', 'MTD'],
+                  ['achievement', 'Achievement'],
+                  ['runRate', 'Run Rate'],
+                  ['rrAchievement', 'RR Achievement %'],
+                ].map(([key, label]) => (
+                  <th key={key} className="px-3 py-3 font-semibold">
+                    <button className="inline-flex items-center gap-1" onClick={() => handleSort(key as SortKey)}>
+                      {label}
+                      <ArrowUpDown className="h-3.5 w-3.5" />
+                    </button>
+                  </th>
+                ))}
+                <th className="px-3 py-3 font-semibold">Status</th>
+                <th className="px-3 py-3 font-semibold">Last Updated</th>
+                <th className="px-3 py-3 text-right font-semibold">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paginatedCampaigns.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="px-3 py-8 text-center text-gray-500">No target records match the selected filters.</td>
+                </tr>
+              ) : (
+                paginatedCampaigns.map((campaign) => {
+                  const rowStatus = statusForCampaign(campaign);
+                  return (
+                    <tr key={campaign.id} className="border-t border-gray-100 hover:bg-gray-50">
+                      <td className="px-3 py-3 font-medium text-gray-900">{campaign.campaignName}</td>
+                      <td className="px-3 py-3">{metricLabel(campaign.kpiMetric)}</td>
+                      <td className="px-3 py-3 text-right">{formatNumber(campaign.monthlyGoal)}</td>
+                      <td className="px-3 py-3 text-right">{formatNumber(campaign.mtd)}</td>
+                      <td className="px-3 py-3 text-right">{formatPct(campaign.achievement)}</td>
+                      <td className="px-3 py-3 text-right">{formatNumber(campaign.runRate)}</td>
+                      <td className="px-3 py-3 text-right">{formatPct(campaign.rrAchievement)}</td>
+                      <td className="px-3 py-3">
+                        <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${statusClass(rowStatus)}`}>
+                          {statusLabel(rowStatus)}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 text-gray-500">
+                        {campaign.updatedAt ? new Date(campaign.updatedAt).toLocaleDateString() : '-'}
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="gap-1"
+                            onClick={() => applySelectedCampaign(campaign)}
+                          >
+                            <Eye className="h-4 w-4" />
+                            View
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1"
+                            onClick={() => {
+                              applySelectedCampaign(campaign);
+                              setTimeout(() => editorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+                            }}
+                          >
+                            <Pencil className="h-4 w-4" />
+                            Edit
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+              </table>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-gray-500">
+                Showing {paginatedCampaigns.length} of {sortedFilteredCampaigns.length} filtered records
+              </p>
+              <div className="flex items-center gap-2">
+                <select
+                  value={rowsPerPage}
+                  onChange={(e) => setRowsPerPage(e.target.value)}
+                  className="rounded-md border border-gray-300 px-3 py-2 text-sm"
+                >
+                  <option value="25">25 rows</option>
+                  <option value="50">50 rows</option>
+                  <option value="100">100 rows</option>
+                  <option value="all">Show all</option>
+                </select>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={currentPage <= 1}
+                  onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                >
+                  Previous
+                </Button>
+                <span className="text-sm text-gray-500">Page {Math.min(currentPage, totalPages)} of {totalPages}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={currentPage >= totalPages || rowsPerPage === 'all'}
+                  onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Card>
+
       {/* Campaign Selection */}
       <Card className="p-6">
-        <h3 className="text-lg font-semibold mb-4">Select Campaign</h3>
+        <button
+          type="button"
+          onClick={() => setSelectCampaignExpanded((expanded) => !expanded)}
+          className="flex w-full flex-col gap-2 text-left sm:flex-row sm:items-center sm:justify-between"
+          aria-expanded={selectCampaignExpanded}
+          aria-controls="select-campaign-panel"
+        >
+          <h3 className="text-lg font-semibold">Select Campaign</h3>
+          <span className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700">
+            {selectCampaignExpanded ? (
+              <>
+                <ChevronUp className="h-5 w-5" />
+                Collapse Campaigns
+              </>
+            ) : (
+              <>
+                <ChevronDown className="h-5 w-5" />
+                Expand Campaigns
+              </>
+            )}
+          </span>
+        </button>
+        <div
+          id="select-campaign-panel"
+          className={`grid transition-all duration-300 ease-in-out ${
+            selectCampaignExpanded ? 'mt-4 grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+          }`}
+        >
+          <div className="min-h-0 overflow-hidden">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {campaigns.map((campaign) => (
             <button
@@ -339,13 +981,43 @@ export default function GoalsManagement() {
             Each campaign keeps independent goals per month.
           </p>
         </div>
+          </div>
+        </div>
       </Card>
 
       {selectedCampaign && (
         <>
           {/* Campaign Goal & Run Rate Config */}
           <Card className="p-6">
-            <h3 className="text-lg font-semibold mb-4">Campaign Goal &amp; Run Rate Settings</h3>
+            <button
+              type="button"
+              onClick={() => setCampaignGoalExpanded((expanded) => !expanded)}
+              className="flex w-full flex-col gap-2 text-left sm:flex-row sm:items-center sm:justify-between"
+              aria-expanded={campaignGoalExpanded}
+              aria-controls="campaign-goal-panel"
+            >
+              <h3 className="text-lg font-semibold">Campaign Goal &amp; Run Rate Settings</h3>
+              <span className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700">
+                {campaignGoalExpanded ? (
+                  <>
+                    <ChevronUp className="h-5 w-5" />
+                    Collapse Settings
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="h-5 w-5" />
+                    Expand Settings
+                  </>
+                )}
+              </span>
+            </button>
+            <div
+              id="campaign-goal-panel"
+              className={`grid transition-all duration-300 ease-in-out ${
+                campaignGoalExpanded ? 'mt-4 grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+              }`}
+            >
+              <div className="min-h-0 overflow-hidden">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
 
               {/* KPI Metric */}
@@ -368,16 +1040,14 @@ export default function GoalsManagement() {
                 <Label htmlFor="monthly-goal">Monthly Goal</Label>
                 <Input
                   id="monthly-goal"
-                  type="number"
-                  min={0}
-                  step="0.01"
+                  inputMode="decimal"
                   value={monthlyGoal}
-                  onChange={(e) => setMonthlyGoal(e.target.value)}
+                  onChange={(e) => setMonthlyGoal(normalizeNumericInput(e.target.value))}
                   onBlur={(e) => {
-                    const n = Number(e.target.value);
-                    if (e.target.value !== '' && !Number.isNaN(n)) setMonthlyGoal(n.toFixed(2));
+                    const n = Number(stripNumberFormatting(e.target.value));
+                    if (e.target.value !== '' && !Number.isNaN(n)) setMonthlyGoal(formatInputNumber(n, 2));
                   }}
-                  placeholder="e.g. 220.00"
+                  placeholder="e.g. 1,000.00"
                   className="mt-1"
                 />
               </div>
@@ -486,50 +1156,100 @@ export default function GoalsManagement() {
             >
               {saving ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving...</> : 'Save Campaign Settings'}
             </Button>
+              </div>
+            </div>
           </Card>
 
           {/* Agent Targets */}
           <Card className="p-6">
-            <h3 className="text-lg font-semibold mb-4">
-              Agent Targets
-              <span className="ml-2 text-sm font-normal text-gray-500">({selectedCampaign.users.length} agents)</span>
-            </h3>
-            {selectedCampaign.users.length === 0 ? (
-              <p className="text-sm text-gray-500">No agents assigned to this campaign</p>
-            ) : (
-              <div className="space-y-3">
-                {selectedCampaign.users.map((agent) => (
-                  <div key={agent.id} className="flex items-end gap-3 p-4 bg-gray-50 rounded-lg border border-gray-200">
-                    <div className="flex-1">
-                      <Label className="text-xs text-gray-500">
-                        {agent.seatNumber ? `Seat ${agent.seatNumber}` : 'No seat'}
-                      </Label>
-                      <div className="font-semibold text-gray-900">{agent.name}</div>
-                    </div>
-                    <div className="w-36">
-                      <Label htmlFor={`agent-${agent.id}`} className="text-xs text-gray-500">Monthly Target</Label>
+            <button
+              type="button"
+              onClick={() => setAgentTargetsExpanded((expanded) => !expanded)}
+              className="flex w-full flex-col gap-2 text-left sm:flex-row sm:items-center sm:justify-between"
+              aria-expanded={agentTargetsExpanded}
+              aria-controls="agent-targets-panel"
+            >
+              <h3 className="text-lg font-semibold">
+                Agent Targets
+                <span className="ml-2 text-sm font-normal text-gray-500">({selectedCampaign.users.length} agents)</span>
+              </h3>
+              <span className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700">
+                {agentTargetsExpanded ? (
+                  <>
+                    <ChevronUp className="h-5 w-5" />
+                    Collapse Agents
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="h-5 w-5" />
+                    Expand Agents
+                  </>
+                )}
+              </span>
+            </button>
+
+            <div
+              id="agent-targets-panel"
+              className={`grid transition-all duration-300 ease-in-out ${
+                agentTargetsExpanded ? 'mt-4 grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+              }`}
+            >
+              <div className="min-h-0 overflow-hidden">
+                {selectedCampaign.users.length === 0 ? (
+                  <p className="text-sm text-gray-500">No agents assigned to this campaign</p>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
                       <Input
-                        id={`agent-${agent.id}`}
-                        type="number"
-                        min={0}
-                        value={agentTarget[agent.id] ?? 0}
-                        onChange={(e) => setAgentTarget({ ...agentTarget, [agent.id]: Number(e.target.value) })}
-                        className="mt-1"
+                        value={agentTargetSearch}
+                        onChange={(e) => setAgentTargetSearch(e.target.value)}
+                        placeholder="Search agent by name or seat..."
+                        className="pl-8"
                       />
                     </div>
-                    <Button
-                      onClick={() => handleSaveAgentTarget(agent.id)}
-                      disabled={saving}
-                      size="sm"
-                      variant="outline"
-                      className="h-10 shrink-0"
-                    >
-                      {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save'}
-                    </Button>
+                    {filteredCampaignAgents.length === 0 ? (
+                      <p className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-500">
+                        No agents match your search.
+                      </p>
+                    ) : (
+                      filteredCampaignAgents.map((agent) => (
+                        <div key={agent.id} className="flex flex-col gap-3 p-4 bg-gray-50 rounded-lg border border-gray-200 sm:flex-row sm:items-end">
+                          <div className="flex-1">
+                            <Label className="text-xs text-gray-500">
+                              {agent.seatNumber ? `Seat ${agent.seatNumber}` : 'No seat'}
+                            </Label>
+                            <div className="font-semibold text-gray-900">{agent.name}</div>
+                          </div>
+                          <div className="w-full sm:w-36">
+                            <Label htmlFor={`agent-${agent.id}`} className="text-xs text-gray-500">Monthly Target</Label>
+                            <Input
+                              id={`agent-${agent.id}`}
+                              inputMode="decimal"
+                              value={formatInputNumber(agentTarget[agent.id] ?? 0)}
+                              onChange={(e) => {
+                                const rawValue = normalizeNumericInput(e.target.value);
+                                setAgentTarget({ ...agentTarget, [agent.id]: rawValue === '' ? 0 : Number(rawValue) });
+                              }}
+                              className="mt-1"
+                            />
+                          </div>
+                          <Button
+                            onClick={() => handleSaveAgentTarget(agent.id)}
+                            disabled={saving}
+                            size="sm"
+                            variant="outline"
+                            className="h-10 w-full shrink-0 sm:w-auto"
+                          >
+                            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save'}
+                          </Button>
+                        </div>
+                      ))
+                    )}
                   </div>
-                ))}
+                )}
               </div>
-            )}
+            </div>
           </Card>
 
           {/* Summary */}
@@ -564,7 +1284,38 @@ export default function GoalsManagement() {
 
       {/* Saved Campaign Goals — view all saved per-month configurations */}
       <Card className="p-6">
-        <h3 className="text-lg font-semibold mb-1">Saved Campaign Goals</h3>
+        <button
+          type="button"
+          onClick={() => setSavedGoalsExpanded((expanded) => !expanded)}
+          className="flex w-full flex-col gap-2 text-left sm:flex-row sm:items-center sm:justify-between"
+          aria-expanded={savedGoalsExpanded}
+          aria-controls="saved-campaign-goals-panel"
+        >
+          <h3 className="text-lg font-semibold">
+            Saved Campaign Goals
+            <span className="ml-2 text-sm font-normal text-gray-500">({savedGoals.length})</span>
+          </h3>
+          <span className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700">
+            {savedGoalsExpanded ? (
+              <>
+                <ChevronUp className="h-5 w-5" />
+                Collapse Saved Goals
+              </>
+            ) : (
+              <>
+                <ChevronDown className="h-5 w-5" />
+                Expand Saved Goals
+              </>
+            )}
+          </span>
+        </button>
+        <div
+          id="saved-campaign-goals-panel"
+          className={`grid transition-all duration-300 ease-in-out ${
+            savedGoalsExpanded ? 'mt-3 grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+          }`}
+        >
+          <div className="min-h-0 overflow-hidden">
         <p className="text-sm text-gray-500 mb-4">
           All saved goal configurations by campaign and month. Click Edit to load one for changes.
         </p>
@@ -602,14 +1353,16 @@ export default function GoalsManagement() {
                       <td className="py-2 pr-4 text-center">{row.workingDays}</td>
                       <td className="py-2 pr-4 text-center">{row.daysLapsed}</td>
                       <td className="py-2 pr-4 text-right">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleEditSaved(row)}
-                          disabled={isCurrent}
-                        >
-                          {isCurrent ? 'Editing' : 'Edit'}
-                        </Button>
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleEditSaved(row)}
+                            disabled={isCurrent}
+                          >
+                            {isCurrent ? 'Editing' : 'Edit'}
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -618,7 +1371,181 @@ export default function GoalsManagement() {
             </table>
           </div>
         )}
+          </div>
+        </div>
       </Card>
+
+      <Card className="p-6 border-slate-200 bg-white shadow-sm">
+        <button
+          type="button"
+          onClick={() => setTrashExpanded((expanded) => !expanded)}
+          className="flex w-full flex-col gap-2 text-left sm:flex-row sm:items-center sm:justify-between"
+          aria-expanded={trashExpanded}
+          aria-controls="recently-deleted-goals-panel"
+        >
+          <h3 className="text-lg font-semibold text-red-600">
+            Recently Deleted
+            <span className="ml-2 text-sm font-normal text-red-600">({deletedGoals.length})</span>
+          </h3>
+          <span className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700">
+            {trashExpanded ? (
+              <>
+                <ChevronUp className="h-5 w-5" />
+                Collapse Trash
+              </>
+            ) : (
+              <>
+                <ChevronDown className="h-5 w-5" />
+                Expand Trash
+              </>
+            )}
+          </span>
+        </button>
+        <div
+          id="recently-deleted-goals-panel"
+          className={`grid transition-all duration-300 ease-in-out ${
+            trashExpanded ? 'mt-4 grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+          }`}
+        >
+          <div className="min-h-0 overflow-hidden">
+            {selectedDeletedGoalKeys.size > 0 && (
+              <div className="mb-4 flex flex-wrap justify-end gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  disabled={processingAction}
+                  onClick={() =>
+                    setConfirmAction({
+                      type: 'restore',
+                      items: Array.from(selectedDeletedGoalKeys).map(parseGoalKey),
+                    })
+                  }
+                >
+                  <ArchiveRestore className="h-4 w-4" />
+                  Restore Selected ({selectedDeletedGoalKeys.size})
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="gap-2"
+                  disabled={processingAction}
+                  onClick={() =>
+                    setConfirmAction({
+                      type: 'permanent-delete',
+                      items: Array.from(selectedDeletedGoalKeys).map(parseGoalKey),
+                    })
+                  }
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Permanently Delete Selected
+                </Button>
+              </div>
+            )}
+            {deletedGoals.length === 0 ? (
+              <p className="text-sm text-gray-500">No deleted goal configurations.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-gray-500">
+                      <th className="py-2 pr-4 font-medium">
+                        <input
+                          type="checkbox"
+                          checked={allDeletedSelected}
+                          onChange={(e) => setAllKeys(setSelectedDeletedGoalKeys, deletedGoalKeys, e.target.checked)}
+                          className="h-4 w-4 cursor-pointer"
+                        />
+                      </th>
+                      <th className="py-2 pr-4 font-medium">Campaign</th>
+                      <th className="py-2 pr-4 font-medium">Month</th>
+                      <th className="py-2 pr-4 font-medium">KPI Metric</th>
+                      <th className="py-2 pr-4 font-medium text-right">Monthly Goal</th>
+                      <th className="py-2 pr-4 font-medium">Deleted By</th>
+                      <th className="py-2 pr-4 font-medium">Deleted Date & Time</th>
+                      <th className="py-2 pr-4 font-medium">Restored By</th>
+                      <th className="py-2 pr-4 font-medium">Restored Date & Time</th>
+                      <th className="py-2 pr-4 font-medium text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deletedGoals.map((row) => {
+                      const rowKey = savedGoalKey(row);
+                      return (
+                        <tr key={rowKey} className="border-b hover:bg-gray-50">
+                          <td className="py-2 pr-4">
+                            <input
+                              type="checkbox"
+                              checked={selectedDeletedGoalKeys.has(rowKey)}
+                              onChange={() => toggleKey(setSelectedDeletedGoalKeys, rowKey)}
+                              className="h-4 w-4 cursor-pointer"
+                            />
+                          </td>
+                          <td className="py-2 pr-4 font-medium text-gray-900">{row.campaignName}</td>
+                          <td className="py-2 pr-4">{MONTHS[row.month - 1]} {row.year}</td>
+                          <td className="py-2 pr-4 capitalize">{row.kpiMetric}</td>
+                          <td className="py-2 pr-4 text-right">{row.monthlyGoal.toLocaleString()}</td>
+                          <td className="py-2 pr-4">{row.deletedBy || '-'}</td>
+                          <td className="py-2 pr-4">{row.deletedAt ? new Date(row.deletedAt).toLocaleString() : '-'}</td>
+                          <td className="py-2 pr-4">{row.restoredBy || '-'}</td>
+                          <td className="py-2 pr-4">{row.restoredAt ? new Date(row.restoredAt).toLocaleString() : '-'}</td>
+                          <td className="py-2 pr-4 text-right">
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="gap-1"
+                                disabled={processingAction}
+                                onClick={() => setConfirmAction({ type: 'restore', items: [parseGoalKey(rowKey)] })}
+                              >
+                                <ArchiveRestore className="h-4 w-4" />
+                                Restore
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="gap-1 text-red-600 hover:text-red-700"
+                                disabled={processingAction}
+                                onClick={() => setConfirmAction({ type: 'permanent-delete', items: [parseGoalKey(rowKey)] })}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                Delete Forever
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      </Card>
+
+      <ConfirmDialog
+        open={Boolean(confirmAction)}
+        title={
+          confirmAction?.type === 'restore'
+            ? 'Restore Goal Configuration'
+            : 'Permanently Delete Goal Configuration'
+        }
+        description={
+          confirmAction?.type === 'restore'
+            ? `Restore ${confirmAction.items.length} selected goal configuration(s)?`
+            : `Permanently delete ${confirmAction?.items.length || 0} selected goal configuration(s)? This cannot be undone.`
+        }
+        actionLabel={
+          confirmAction?.type === 'restore'
+            ? 'Restore'
+            : 'Delete Forever'
+        }
+        isDangerous={confirmAction?.type !== 'restore'}
+        isLoading={processingAction}
+        onConfirm={executeConfirmAction}
+        onCancel={() => setConfirmAction(null)}
+      />
     </div>
   );
 }
