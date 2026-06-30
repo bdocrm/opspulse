@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ import { useSession } from "next-auth/react";
 import { useToast } from "@/components/toast-provider";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { PageTitle } from "@/components/layout/page-title";
+import { SortableDateHeader, compareDateValues, type DateSortDirection } from "@/components/sortable-date-header";
 import { Trash2, Edit2, Plus } from "lucide-react";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -86,6 +87,15 @@ export default function ManageCampaignsPage() {
     name: "",
   });
   const [deleting, setDeleting] = useState(false);
+  const [createdDateSort, setCreatedDateSort] = useState<DateSortDirection>("desc");
+
+  const sortedCampaigns = useMemo(
+    () =>
+      [...campaigns].sort((a, b) =>
+        compareDateValues(a.createdAt, b.createdAt, createdDateSort)
+      ),
+    [campaigns, createdDateSort]
+  );
 
   // Check authorization
   useEffect(() => {
@@ -304,12 +314,20 @@ export default function ManageCampaignsPage() {
                     <th className="text-left py-3 px-4">Goal Type</th>
                     <th className="text-right py-3 px-4">Monthly Goal</th>
                     <th className="text-left py-3 px-4">KPI Metric</th>
-                    <th className="text-left py-3 px-4">Created</th>
+                    <th className="text-left py-3 px-4">
+                      <SortableDateHeader
+                        label="Created"
+                        direction={createdDateSort}
+                        onToggle={() =>
+                          setCreatedDateSort((direction) => (direction === "asc" ? "desc" : "asc"))
+                        }
+                      />
+                    </th>
                     <th className="text-right py-3 px-4">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {campaigns.map((campaign) => (
+                  {sortedCampaigns.map((campaign) => (
                     <tr key={campaign.id} className="border-b hover:bg-muted/50">
                       <td className="py-3 px-4 font-medium">{campaign.campaignName}</td>
                       <td className="py-3 px-4 capitalize">{campaign.goalType}</td>

@@ -12,7 +12,7 @@ export async function PATCH(
     const session = await getServerSession(authOptions);
 
     // Only allow CEO and Collector to change passwords
-    const userRole = (session.user as any)?.role;
+    const userRole = (session?.user as any)?.role;
     if (!session?.user || (userRole !== "CEO" && userRole !== "COLLECTOR")) {
       return NextResponse.json(
         { error: "Unauthorized: CEO or Collector access required" },

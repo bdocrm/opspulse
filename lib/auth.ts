@@ -2,6 +2,7 @@ import { AuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { normalizeEmail } from "@/lib/normalize-email";
 
 export const authOptions: AuthOptions = {
   providers: [
@@ -18,15 +19,16 @@ export const authOptions: AuthOptions = {
         }
 
         try {
-          console.log(`🔍 Looking up user: ${credentials.email}`);
+          const email = normalizeEmail(credentials.email);
+          console.log(`🔍 Looking up user: ${email}`);
           
           const user = await prisma.user.findUnique({
-            where: { email: credentials.email },
+            where: { email },
             include: { campaign: true, campaignAssignments: true },
           });
 
           if (!user) {
-            console.log(`❌ User not found: ${credentials.email}`);
+            console.log(`❌ User not found: ${email}`);
             return null;
           }
 
@@ -36,7 +38,7 @@ export const authOptions: AuthOptions = {
           console.log(`🔐 Password valid: ${isValid}`);
           
           if (!isValid) {
-            console.log(`❌ Password mismatch for ${credentials.email}`);
+            console.log(`❌ Password mismatch for ${email}`);
             return null;
           }
 
