@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { computeMTD, type DailySalesRow, type KpiMetricKey } from "@/utils/kpi";
 
 interface AgentPerformance {
   id: string;
@@ -57,9 +58,16 @@ export async function GET(req: NextRequest) {
     // Get current month
     const now = new Date();
     const year = now.getFullYear();
-    const month = now.getMonth();
-    const startOfMonth = new Date(year, month, 1);
-    const endOfMonth = new Date(year, month + 1, 0);
+    const month = now.getMonth() + 1;
+    const startOfMonth = new Date(year, month - 1, 1);
+    const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
+
+    const monthlyConfig = await prisma.campaignGoal.findFirst({
+      where: { campaignId, month, year },
+      select: { monthlyGoal: true, kpiMetric: true },
+    });
+    const campaignGoal = Number(monthlyConfig?.monthlyGoal ?? campaign.monthlyGoal ?? 0);
+    const campaignMetric = (monthlyConfig?.kpiMetric ?? campaign.kpiMetric) as KpiMetricKey;
 
     // Get all agents in the campaign
     const agents = await prisma.user.findMany({
@@ -69,57 +77,60 @@ export async function GET(req: NextRequest) {
       },
     });
 
-    // OPTIMIZATION: Fetch ALL daily sales for the campaign in ONE query instead of N queries
-    const allDailySales = await prisma.dailySales.findMany({
+    const productionDetails = await prisma.productionDetail.findMany({
       where: {
         campaignId: campaignId,
-        date: { gte: startOfMonth, lte: endOfMonth },
+        productionEntry: { date: { gte: startOfMonth, lte: endOfMonth } },
       },
+      include: { productionEntry: { select: { date: true } } },
     });
 
-    // Group daily sales by agent ID for easy lookup
-    const salesByAgent = new Map<string, typeof allDailySales>();
-    allDailySales.forEach((sale) => {
-      if (!salesByAgent.has(sale.userId)) {
-        salesByAgent.set(sale.userId, []);
+    const rowFromDetail = (detail: (typeof productionDetails)[number]): DailySalesRow => ({
+      date: detail.productionEntry.date,
+      transmittals: Number(detail.transmittals),
+      activations: Number(detail.activations),
+      approvals: Number(detail.approvals),
+      booked: Number(detail.booked),
+      qualityRate: detail.qualityRate,
+      conversionRate: detail.conversionRate,
+      volume: Number(detail.volume),
+      transaction: Number(detail.transaction),
+    });
+
+    // Group production by agent ID for easy lookup.
+    const rowsByAgent = new Map<string, DailySalesRow[]>();
+    const allRows: DailySalesRow[] = [];
+    productionDetails.forEach((detail) => {
+      const row = rowFromDetail(detail);
+      allRows.push(row);
+      if (!rowsByAgent.has(detail.agentId)) {
+        rowsByAgent.set(detail.agentId, []);
       }
-      salesByAgent.get(sale.userId)!.push(sale);
+      rowsByAgent.get(detail.agentId)!.push(row);
     });
 
     const agentPerformances: AgentPerformance[] = [];
-    let totalGoal = 0;
-    let totalActual: bigint = 0n;
+    const totalActual = computeMTD(allRows, campaignMetric);
     let coreTotal = 0;
     let coreMet = 0;
     let rookieTotal = 0;
     let rookieMet = 0;
+    const explicitTargetTotal = agents.reduce(
+      (sum, agent) => sum + (Number(agent.monthlyTarget) > 0 ? Number(agent.monthlyTarget) : 0),
+      0
+    );
+    const totalGoal = campaignGoal > 0 ? campaignGoal : explicitTargetTotal;
+    const agentsWithoutTargets = agents.filter((agent) => !agent.monthlyTarget || Number(agent.monthlyTarget) <= 0);
+    const fallbackGoal =
+      agentsWithoutTargets.length > 0
+        ? Math.max(campaignGoal - explicitTargetTotal, 0) / agentsWithoutTargets.length
+        : 0;
 
     // Calculate performance for each agent using pre-fetched data
     for (const agent of agents) {
-      const dailySales = salesByAgent.get(agent.id) || [];
-
-      // Sum based on campaign KPI metric
-      let actual: bigint = 0n;
-      dailySales.forEach((sale) => {
-        switch (campaign.kpiMetric) {
-          case "transmittals":
-            actual = actual + (sale.transmittals || 0n);
-            break;
-          case "activations":
-            actual = actual + (sale.activations || 0n);
-            break;
-          case "approvals":
-            actual = actual + (sale.approvals || 0n);
-            break;
-          case "booked":
-            actual = actual + (sale.booked || 0n);
-            break;
-          default:
-            actual = actual + (sale.transmittals || 0n);
-        }
-      });
-
-      const goal = agent.monthlyTarget || campaign.monthlyGoal;
+      const agentRows = rowsByAgent.get(agent.id) || [];
+      const actual = computeMTD(agentRows, campaignMetric);
+      const goal = Number(agent.monthlyTarget) > 0 ? Number(agent.monthlyTarget) : fallbackGoal;
       const achievement = goal > 0 ? Number(actual) / goal : 0;
       let status: "hit" | "near" | "missed";
 
@@ -132,13 +143,10 @@ export async function GET(req: NextRequest) {
         name: agent.name,
         level: getAgentLevel(agent.seatNumber),
         goal,
-        actual: Number(actual),
+        actual,
         achievement: Math.round(achievement * 10000) / 100, // 2 decimal places
         status,
       });
-
-      totalGoal += goal;
-      totalActual = totalActual + actual;
 
       // Group by level
       const agentLevel = getAgentLevel(agent.seatNumber);
@@ -153,7 +161,7 @@ export async function GET(req: NextRequest) {
 
     // Calculate overall achievement
     const overallAchievement =
-      totalGoal > 0 ? Math.round((Number(totalActual) / totalGoal) * 10000) / 100 : 0;
+      totalGoal > 0 ? Math.round((totalActual / totalGoal) * 10000) / 100 : 0;
     const campaignHitTarget = overallAchievement >= 100;
 
     // Get top 5 performers
@@ -181,11 +189,11 @@ export async function GET(req: NextRequest) {
       campaign: {
         id: campaign.id,
         name: campaign.campaignName,
-        kpiMetric: campaign.kpiMetric,
+        kpiMetric: campaignMetric,
       },
       overallPerformance: {
         totalGoal: totalGoal,
-        totalActual: Number(totalActual),
+        totalActual,
         achievementRate: overallAchievement,
         targetHit: campaignHitTarget,
       },
@@ -278,7 +286,9 @@ function generateCoachingRecommendations(
 
   // Recommendation 3: Overall team performance
   const avgAchievement =
-    agents.reduce((acc, a) => acc + a.achievement, 0) / agents.length;
+    agents.length > 0
+      ? agents.reduce((acc, a) => acc + a.achievement, 0) / agents.length
+      : 0;
   if (avgAchievement < 80) {
     recommendations.push(
       `📈 Team average is ${avgAchievement.toFixed(0)}%. Review campaign messaging, provide updated product training, or adjust targets if market conditions changed.`

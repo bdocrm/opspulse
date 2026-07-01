@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 import { setUserCampaigns } from "@/lib/user-campaigns";
+import { normalizeEmail } from "@/lib/normalize-email";
 
 export async function GET(req: NextRequest) {
   try {
@@ -73,6 +74,12 @@ export async function GET(req: NextRequest) {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+    const email = normalizeEmail(body.email ?? "");
+
+    if (!body.name?.trim() || !email || !body.password || !body.role) {
+      return NextResponse.json({ error: "Name, email, password, and role are required" }, { status: 400 });
+    }
+
     const hashed = await bcrypt.hash(body.password, 12);
 
     // Resolve the requested campaign assignment. Accept the new `campaignIds`
@@ -86,7 +93,7 @@ export async function POST(req: Request) {
     const user = await prisma.user.create({
       data: {
         name: body.name,
-        email: body.email,
+        email,
         password: hashed,
         role: body.role,
         seatNumber: body.seatNumber ?? null,

@@ -188,13 +188,18 @@ export async function PUT(req: NextRequest) {
 
     await ensureCampaignGoalTable();
 
-    // Check if goal already exists to determine if this is an update or create
-    const existingGoal = await prisma.$queryRaw<any[]>`
-      SELECT id FROM "CampaignGoal"
-      WHERE "campaignId" = ${campaignId} AND "month" = ${month} AND "year" = ${year}
+    const existingGoalRows = await prisma.$queryRaw<Array<{ monthlyGoal: number | string }>>`
+      SELECT "monthlyGoal"
+      FROM "CampaignGoal"
+      WHERE "campaignId" = ${campaignId}
+        AND "month" = ${month}
+        AND "year" = ${year}
+        AND "deletedAt" IS NULL
+      LIMIT 1
     `;
-    const isUpdate = existingGoal && existingGoal.length > 0;
-    const previousGoal = isUpdate && existingGoal[0] ? existingGoal[0].monthlyGoal : null;
+    const previousGoal =
+      existingGoalRows.length > 0 ? Number(existingGoalRows[0].monthlyGoal) : null;
+    const isUpdate = previousGoal !== null;
 
     // Upsert the per-(campaign, month, year) goal configuration. Creates a new
     // record or updates the existing one for this exact combination.

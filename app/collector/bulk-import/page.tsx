@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { PageTitle } from '@/components/layout/page-title';
+import { SortableDateHeader, compareDateValues, type DateSortDirection } from '@/components/sortable-date-header';
 import { Upload, AlertCircle, CheckCircle, Download, UserPlus, Users, ArrowLeft } from 'lucide-react';
 
 type Step = 'configure' | 'previewing' | 'confirm' | 'importing' | 'done';
@@ -95,6 +96,7 @@ export default function BulkImportPage() {
   const [newAgents, setNewAgents] = useState<NewAgent[]>([]);
   const [importResult, setImportResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [importDateSort, setImportDateSort] = useState<DateSortDirection>('desc');
 
   // Load campaigns for the picker and default to the collector's assigned one
   useEffect(() => {
@@ -108,6 +110,14 @@ export default function BulkImportPage() {
     const assigned = (session?.user as any)?.campaignId;
     if (assigned) setCampaignId(assigned);
   }, [session]);
+
+  const sortedImportDetails = useMemo(
+    () =>
+      [...(importResult?.details ?? [])].sort((a: any, b: any) =>
+        compareDateValues(a.date, b.date, importDateSort)
+      ),
+    [importResult?.details, importDateSort]
+  );
 
   if (status === 'unauthenticated') {
     router.push('/login');
@@ -620,7 +630,13 @@ export default function BulkImportPage() {
                 <thead className="bg-slate-100">
                   <tr>
                     <th className="text-left p-2">Agent</th>
-                    <th className="text-left p-2">Date</th>
+                    <th className="text-left p-2">
+                      <SortableDateHeader
+                        label="Date"
+                        direction={importDateSort}
+                        onToggle={() => setImportDateSort((direction) => (direction === 'asc' ? 'desc' : 'asc'))}
+                      />
+                    </th>
                     {metricType === 'all_metrics' ? (
                       <>
                         <th className="text-right p-2">Transmittals</th>
@@ -634,7 +650,7 @@ export default function BulkImportPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {importResult.details.slice(0, 15).map((d: any, i: number) => (
+                  {sortedImportDetails.slice(0, 15).map((d: any, i: number) => (
                     <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
                       <td className="p-2">{d.agent}</td>
                       <td className="p-2">{d.date}</td>

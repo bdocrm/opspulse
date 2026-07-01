@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { setUserCampaigns } from "@/lib/user-campaigns";
+import { normalizeEmail } from "@/lib/normalize-email";
 
 export async function GET(
   req: NextRequest,
@@ -71,7 +72,7 @@ export async function PATCH(
 
     // Allow updating name, email, role, seatNumber, campaignId, monthlyTarget
     if (body.name) updateData.name = body.name;
-    if (body.email) updateData.email = body.email;
+    if (body.email) updateData.email = normalizeEmail(body.email);
     if (body.role) updateData.role = body.role;
     if (body.seatNumber !== undefined) updateData.seatNumber = body.seatNumber || null;
     if (body.monthlyTarget !== undefined) updateData.monthlyTarget = body.monthlyTarget || null;

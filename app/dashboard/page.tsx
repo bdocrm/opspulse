@@ -84,19 +84,20 @@ export default function DashboardPage() {
     <>
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <PageTitle title="Dashboard" subtitle="Operational Performance Overview" />
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-end justify-end gap-3">
           {campaigns.length > 0 && (
             <CampaignSelector
               campaigns={campaigns}
               selectedCampaignId={selectedCampaignId}
               onCampaignChange={setSelectedCampaignId}
               placeholder="Select campaign"
-              className="w-48"
+              className="w-[220px]"
             />
           )}
           <PeriodFilter value={period} onChange={setPeriod} />
           <ExportButton
             endpoint={`/api/export/dashboard?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}`}
+            className="h-10"
           />
         </div>
       </div>

@@ -1,5 +1,6 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 
 interface Campaign {
   id: string;
@@ -24,8 +25,8 @@ export function CampaignSelector({
   className,
 }: CampaignSelectorProps) {
   return (
-    <div className={className}>
-      <Label htmlFor="campaign-select">{label}</Label>
+    <div className={cn("space-y-1", className)}>
+      <Label htmlFor="campaign-select" className="text-sm font-medium">{label}</Label>
       <Select value={selectedCampaignId || ""} onValueChange={onCampaignChange}>
         <SelectTrigger id="campaign-select">
           <SelectValue placeholder={placeholder} />

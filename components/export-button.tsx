@@ -6,9 +6,10 @@ import { Download } from "lucide-react";
 interface ExportButtonProps {
   endpoint: string;
   label?: string;
+  className?: string;
 }
 
-export function ExportButton({ endpoint, label = "Export CSV" }: ExportButtonProps) {
+export function ExportButton({ endpoint, label = "Export CSV", className }: ExportButtonProps) {
   const handleExport = async () => {
     const res = await fetch(endpoint);
     const blob = await res.blob();
@@ -23,7 +24,7 @@ export function ExportButton({ endpoint, label = "Export CSV" }: ExportButtonPro
   };
 
   return (
-    <Button variant="outline" size="sm" onClick={handleExport}>
+    <Button variant="outline" size="sm" onClick={handleExport} className={className}>
       <Download className="h-4 w-4 mr-2" />
       {label}
     </Button>
