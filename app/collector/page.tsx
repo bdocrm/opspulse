@@ -575,11 +575,17 @@ export default function CollectorDashboard() {
               <Button size="sm" variant={datePreset === 'week' ? 'default' : 'outline'} onClick={() => handleDatePreset('week')}>Last 7 Days</Button>
               <Button size="sm" variant={datePreset === 'month' ? 'default' : 'outline'} onClick={() => handleDatePreset('month')}>MTD</Button>
               <div className="flex items-center gap-2 ml-2">
-                <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setDateTo(e.target.value); setDatePreset('custom'); }} className="w-36 h-8" />
+                <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setDatePreset('custom'); }} className="w-36 h-8" />
+                <span className="text-muted-foreground">to</span>
+                <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setDatePreset('custom'); }} className="w-36 h-8" />
               </div>
             </div>
             <div className="ml-auto text-sm text-muted-foreground">
-              <span>{new Date(dateFrom).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+              {dateFrom === dateTo ? (
+                <span>{new Date(dateFrom).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+              ) : (
+                <span>{new Date(dateFrom).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(dateTo).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+              )}
             </div>
           </div>
         </CardContent>

@@ -19,6 +19,9 @@ interface MatchedAgent {
   transmittals?: number;
   approvals?: number;
   booked?: number;
+  ntb?: number;
+  supplementary?: number;
+  seatCategory?: string;
 }
 
 interface NewAgent {
@@ -29,6 +32,9 @@ interface NewAgent {
   transmittals?: number;
   approvals?: number;
   booked?: number;
+  ntb?: number;
+  supplementary?: number;
+  seatCategory?: string;
 }
 
 const METRIC_LABELS: Record<string, string> = {
@@ -37,6 +43,36 @@ const METRIC_LABELS: Record<string, string> = {
   booked: 'Booked',
   all_metrics: 'All (Transmitted, Approvals, Booked)',
 };
+
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+const MONTH_ABBR = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+const toYmd = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// BPI PA raw files carry the reporting period only in the filename
+// (e.g. "BPI PA - MAY 2026 MTD TRANSMITTAL RAW.xlsx"), not inside the sheet.
+// Detect the month/year and derive the MTD range: 1st of the month through the
+// last day (or today, if the file is for the current month).
+function detectMTDPeriod(filename: string): { label: string; startYmd: string; endYmd: string } | null {
+  const lower = filename.toLowerCase();
+  let monthIdx = -1;
+  for (let i = 0; i < 12; i++) {
+    if (new RegExp(`\\b(${MONTHS[i]}|${MONTH_ABBR[i]})\\b`).test(lower)) { monthIdx = i; break; }
+  }
+  if (monthIdx < 0) return null;
+
+  const yearMatch = lower.match(/\b(20\d{2})\b/);
+  const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
+
+  const start = new Date(year, monthIdx, 1);
+  const lastDay = new Date(year, monthIdx + 1, 0);
+  const now = new Date();
+  const end = year === now.getFullYear() && monthIdx === now.getMonth() ? now : lastDay;
+
+  const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return { label: `${fmt(start)} – ${fmt(end)}, ${year}`, startYmd: toYmd(start), endYmd: toYmd(end) };
+}
 
 export default function BulkImportPage() {
   const { data: session, status, update: updateSession } = useSession();
@@ -51,6 +87,7 @@ export default function BulkImportPage() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   });
+  const [detectedPeriod, setDetectedPeriod] = useState<{ label: string; startYmd: string; endYmd: string } | null>(null);
 
   // Flow state
   const [step, setStep] = useState<Step>('configure');
@@ -96,6 +133,12 @@ export default function BulkImportPage() {
     }
     setFile(selected);
     setError(null);
+
+    // Read the MTD reporting period straight from the filename and align the
+    // report date to it (period end), so the import is anchored to the file's month.
+    const period = detectMTDPeriod(selected.name);
+    setDetectedPeriod(period);
+    if (period) setReportDate(period.endYmd);
   };
 
   const handlePreview = async () => {
@@ -110,6 +153,10 @@ export default function BulkImportPage() {
       fd.append('metricType', metricType);
       fd.append('reportDate', reportDate);
       fd.append('campaignId', campaignId);
+      if (detectedPeriod) {
+        fd.append('periodStart', detectedPeriod.startYmd);
+        fd.append('periodEnd', detectedPeriod.endYmd);
+      }
 
       const res = await fetch('/api/collectors/bulk-import', { method: 'POST', body: fd });
       const data = await res.json();
@@ -136,6 +183,34 @@ export default function BulkImportPage() {
   const approvedNew = newAgents.filter(a => a.approved);
   const skippedNew = newAgents.filter(a => !a.approved);
 
+  // Right-side metric block for an agent row. ACQ imports carry NTB/supplementary
+  // and a seat category; everything else shows the transmittals/volume view.
+  const isAcq = (a: { seatCategory?: string; ntb?: number }) => a.seatCategory !== undefined || a.ntb !== undefined;
+  const renderMetrics = (a: MatchedAgent | NewAgent) => {
+    if (isAcq(a)) {
+      return (
+        <>
+          <p className="text-sm font-semibold text-slate-700">
+            NTB: {(a.ntb ?? 0).toLocaleString()} | SUPP: {(a.supplementary ?? 0).toLocaleString()}
+          </p>
+          {a.seatCategory ? <p className="text-xs text-slate-500">{a.seatCategory}</p> : null}
+        </>
+      );
+    }
+    return (
+      <>
+        {metricType === 'all_metrics' ? (
+          <p className="text-sm font-semibold text-slate-700">
+            T: {(a.transmittals ?? 0).toLocaleString()} | A: {(a.approvals ?? 0).toLocaleString()} | B: {(a.booked ?? 0).toLocaleString()}
+          </p>
+        ) : (
+          <p className="text-sm font-semibold text-slate-700">{a.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
+        )}
+        {a.volume > 0 && <p className="text-xs text-slate-500">₱{a.volume.toLocaleString()}</p>}
+      </>
+    );
+  };
+
   const handleConfirmImport = async () => {
     if (!file) return;
     setStep('importing');
@@ -147,6 +222,10 @@ export default function BulkImportPage() {
       fd.append('metricType', metricType);
       fd.append('reportDate', reportDate);
       fd.append('campaignId', campaignId);
+      if (detectedPeriod) {
+        fd.append('periodStart', detectedPeriod.startYmd);
+        fd.append('periodEnd', detectedPeriod.endYmd);
+      }
       fd.append('confirmedNewAgents', JSON.stringify(approvedNew.map(a => a.name)));
 
       const res = await fetch('/api/collectors/bulk-import', { method: 'POST', body: fd });
@@ -178,6 +257,7 @@ export default function BulkImportPage() {
     setNewAgents([]);
     setImportResult(null);
     setError(null);
+    setDetectedPeriod(null);
     setStep('configure');
   };
 
@@ -286,7 +366,11 @@ export default function BulkImportPage() {
                 onChange={e => setReportDate(e.target.value)}
                 className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
-              <p className="text-xs text-slate-500">Date this data is as-of (used in daily trends)</p>
+              {detectedPeriod ? (
+                <p className="text-xs text-blue-600">MTD period from file: <span className="font-medium">{detectedPeriod.label}</span></p>
+              ) : (
+                <p className="text-xs text-slate-500">Date this data is as-of (used in daily trends)</p>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -307,6 +391,13 @@ export default function BulkImportPage() {
                 <p className="text-xs text-slate-500 mt-1">.csv or .xlsx · max 10 MB</p>
               </label>
             </div>
+            {file && (
+              <div className="text-sm rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-blue-800">
+                {detectedPeriod
+                  ? <>Detected MTD period: <span className="font-semibold">{detectedPeriod.label}</span></>
+                  : <>Could not detect a month in the filename — set the Report Date manually above.</>}
+              </div>
+            )}
             <Button onClick={handlePreview} disabled={!file || !campaignId} className="w-full gap-2">
               <Upload className="h-4 w-4" />
               Preview Import
@@ -334,6 +425,13 @@ export default function BulkImportPage() {
     return (
       <div className="space-y-6 p-6">
         <PageTitle title="Review Before Import" subtitle="Confirm the agents and data before saving" />
+
+        {detectedPeriod && (
+          <div className="flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            <span>Importing as MTD period: <span className="font-semibold">{detectedPeriod.label}</span></span>
+            <span className="text-xs text-blue-600">Report date: {reportDate}</span>
+          </div>
+        )}
 
         {error && (
           <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
@@ -392,18 +490,7 @@ export default function BulkImportPage() {
                       <p className="text-xs text-slate-500">Will be created as Agent in this campaign</p>
                     </div>
                     <div className="text-right shrink-0">
-                      {metricType === 'all_metrics' ? (
-                        <>
-                          <p className="text-sm font-semibold text-slate-700">
-                            T: {(agent.transmittals ?? 0).toLocaleString()} | A: {(agent.approvals ?? 0).toLocaleString()} | B: {(agent.booked ?? 0).toLocaleString()}
-                          </p>
-                        </>
-                      ) : (
-                        <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
-                      )}
-                      {agent.volume > 0 && (
-                        <p className="text-xs text-slate-500">₱{agent.volume.toLocaleString()}</p>
-                      )}
+                      {renderMetrics(agent)}
                     </div>
                   </label>
                 ))}
@@ -440,18 +527,7 @@ export default function BulkImportPage() {
                       )}
                     </div>
                     <div className="text-right">
-                      {metricType === 'all_metrics' ? (
-                        <>
-                          <p className="text-sm font-semibold text-slate-700">
-                            T: {(agent.transmittals ?? 0).toLocaleString()} | A: {(agent.approvals ?? 0).toLocaleString()} | B: {(agent.booked ?? 0).toLocaleString()}
-                          </p>
-                        </>
-                      ) : (
-                        <p className="text-sm font-semibold text-slate-700">{agent.count.toLocaleString()} {METRIC_LABELS[metricType]}</p>
-                      )}
-                      {agent.volume > 0 && (
-                        <p className="text-xs text-slate-500">₱{agent.volume.toLocaleString()}</p>
-                      )}
+                      {renderMetrics(agent)}
                     </div>
                   </div>
                 ))}

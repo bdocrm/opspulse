@@ -5,8 +5,15 @@ import { prisma } from '@/lib/prisma';
 import * as XLSX from 'xlsx';
 import bcrypt from 'bcryptjs';
 
-// Parse BPI PA Raw Excel rows - handles both single COUNT and multiple metrics
-function parseExcelRows(rows: any[], metricType: string): { name: string; count: number; volume: number; transmittals?: number; approvals?: number; booked?: number; rowIdx: number }[] {
+type ParsedEntry = { name: string; count: number; volume: number; transmittals?: number; approvals?: number; booked?: number; ntb?: number; supplementary?: number; seatCategory?: string; rowIdx: number };
+
+// Parse BPI PA / ACQ raw Excel rows. Supports three layouts:
+//   1. Simple template: FULL NAME | COUNT/metric | VOLUME
+//   2. BPI wide report:  AGENT CODE | LAST NAME | FIRST NAME | repeating TRANSACTION/VOLUME pairs
+//      (per category: BAU Payroll, Depositor, Top Up, Open Market, …)
+//   3. ACQ report:       AGENT CODE | LAST NAME | FIRST NAME | DATE ONBOARD | SEAT CATEGORY |
+//      TOTAL + repeating NTB/SUPPLEMENTARY pairs per date
+function parseExcelRows(rows: any[], metricType: string): ParsedEntry[] {
   let nameCol  = 1;
   let countCol = 3;
   let volumeCol = 4;
@@ -14,19 +21,109 @@ function parseExcelRows(rows: any[], metricType: string): { name: string; count:
   let approvalsCol = -1;
   let bookedCol = -1;
 
-  for (let i = 0; i < Math.min(5, rows.length); i++) {
-    const row = rows[i];
+  // Wide/ACQ-format markers
+  let lastNameCol = -1;
+  let firstNameCol = -1;
+  let seatCategoryCol = -1;
+  const transactionCols: number[] = [];
+  const volumeCols: number[] = [];
+  const ntbCols: number[] = [];
+  const suppleCols: number[] = [];
+
+  // Headers can span several rows (labels like TRANSACTION/VOLUME/NTB sit on a lower row)
+  for (let i = 0; i < Math.min(6, rows.length); i++) {
+    const row = rows[i] || [];
     for (let j = 0; j < row.length; j++) {
       const cell = String(row[j] || '').toLowerCase().trim();
+      if (!cell) continue;
       if (cell.includes('full name')) nameCol = j;
+      if (cell.includes('last name')) lastNameCol = j;
+      if (cell.includes('first name')) firstNameCol = j;
+      if (cell.includes('seat cat')) seatCategoryCol = j;
       if (cell === 'count') countCol = j;
-      if (cell === 'volume') volumeCol = j;
+      if (cell === 'volume') { volumeCol = j; if (!volumeCols.includes(j)) volumeCols.push(j); }
+      if (cell === 'transaction' && !transactionCols.includes(j)) transactionCols.push(j);
+      if (cell === 'ntb' && !ntbCols.includes(j)) ntbCols.push(j);
+      if (cell.includes('supple') && !suppleCols.includes(j)) suppleCols.push(j);
       if (cell === 'transmitted') transmittalsCol = j;
       if (cell === 'approvals') approvalsCol = j;
       if (cell === 'booked') bookedCol = j;
     }
   }
 
+  // ─── ACQ FORMAT ─────────────────────────────────────────────────────────────
+  // Name from LAST + FIRST; detect SEAT CATEGORY and take the HIGHEST NTB and
+  // HIGHEST SUPPLEMENTARY across all columns (the TOTAL column is the max).
+  if (lastNameCol >= 0 && firstNameCol >= 0 && ntbCols.length > 0) {
+    ntbCols.sort((a, b) => a - b);
+    suppleCols.sort((a, b) => a - b);
+
+    let dataStartRow = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const v = String(rows[i]?.[lastNameCol] || '').trim().toLowerCase();
+      if (v && v !== 'last name') { dataStartRow = i; break; }
+    }
+    if (dataStartRow < 0) return [];
+
+    const entries: ParsedEntry[] = [];
+    for (let i = dataStartRow; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
+      const last = String(row[lastNameCol] || '').trim();
+      const first = String(row[firstNameCol] || '').trim();
+      if (!last || !first) continue; // skips the TOTAL row and any blank rows
+      const name = `${last}, ${first}`.toUpperCase();
+      const seatCategory = seatCategoryCol >= 0 ? String(row[seatCategoryCol] || '').trim() : '';
+
+      let ntb = 0;
+      for (const c of ntbCols) ntb = Math.max(ntb, Math.floor(Number(row[c]) || 0));
+      let supplementary = 0;
+      for (const c of suppleCols) supplementary = Math.max(supplementary, Math.floor(Number(row[c]) || 0));
+
+      entries.push({ name, count: ntb, volume: 0, ntb, supplementary, seatCategory, rowIdx: i + 1 });
+    }
+    return entries;
+  }
+
+  // ─── WIDE FORMAT ────────────────────────────────────────────────────────────
+  // Name comes from LAST NAME + FIRST NAME; per the report each agent has many
+  // TRANSACTION/VOLUME pairs across categories, so we take the HIGHEST of each.
+  if (lastNameCol >= 0 && firstNameCol >= 0 && transactionCols.length > 0) {
+    transactionCols.sort((a, b) => a - b);
+    volumeCols.sort((a, b) => a - b);
+
+    // First data row = first row with a real last name (not the header word)
+    let dataStartRow = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const v = String(rows[i]?.[lastNameCol] || '').trim().toLowerCase();
+      if (v && v !== 'last name') { dataStartRow = i; break; }
+    }
+    if (dataStartRow < 0) return [];
+
+    const entries: ParsedEntry[] = [];
+    for (let i = dataStartRow; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
+      const last = String(row[lastNameCol] || '').trim();
+      const first = String(row[firstNameCol] || '').trim();
+      if (!last || !first) continue; // skips the TOTAL row and any blank rows
+      const name = `${last}, ${first}`.toUpperCase();
+
+      let maxTx = 0;
+      for (const c of transactionCols) maxTx = Math.max(maxTx, Math.floor(Number(row[c]) || 0));
+      let maxVol = 0;
+      for (const c of volumeCols) maxVol = Math.max(maxVol, Math.round(Number(row[c]) || 0));
+
+      if (metricType === 'all_metrics') {
+        entries.push({ name, count: maxTx, volume: maxVol, transmittals: maxTx, approvals: 0, booked: 0, rowIdx: i + 1 });
+      } else {
+        entries.push({ name, count: maxTx, volume: maxVol, rowIdx: i + 1 });
+      }
+    }
+    return entries;
+  }
+
+  // ─── SIMPLE TEMPLATE ────────────────────────────────────────────────────────
   // First data row = first row where col 0 is a number
   let dataStartRow = 2;
   for (let i = 0; i < rows.length; i++) {
@@ -36,7 +133,7 @@ function parseExcelRows(rows: any[], metricType: string): { name: string; count:
     }
   }
 
-  const entries: { name: string; count: number; volume: number; transmittals?: number; approvals?: number; booked?: number; rowIdx: number }[] = [];
+  const entries: ParsedEntry[] = [];
   for (let i = dataStartRow; i < rows.length; i++) {
     const row = rows[i];
     if (!row || row.length === 0) continue;
@@ -76,6 +173,30 @@ function nameToEmail(name: string): string {
   return `${slug}-${Date.now()}@imported.local`;
 }
 
+// Build the ProductionDetail write payload from a parsed row, mapping the
+// selected metric plus any ACQ fields (NTB / supplementary / seat category).
+function buildDetailData(row: ParsedEntry, metricType: string): Record<string, any> {
+  const data: Record<string, any> = {
+    transmittals: BigInt(0),
+    approvals: BigInt(0),
+    booked: BigInt(0),
+    volume: BigInt(row.volume),
+  };
+  if (metricType === 'transmittals') data.transmittals = BigInt(row.count);
+  else if (metricType === 'approvals') data.approvals = BigInt(row.count);
+  else if (metricType === 'booked') data.booked = BigInt(row.count);
+  else if (metricType === 'all_metrics') {
+    data.transmittals = BigInt(row.transmittals || 0);
+    data.approvals = BigInt(row.approvals || 0);
+    data.booked = BigInt(row.booked || 0);
+  }
+  // ACQ acquisition metrics
+  if (row.ntb !== undefined) data.ntb = BigInt(row.ntb || 0);
+  if (row.supplementary !== undefined) data.supplementary = BigInt(row.supplementary || 0);
+  if (row.seatCategory) data.seatCategory = row.seatCategory;
+  return data;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -98,6 +219,8 @@ export async function POST(req: NextRequest) {
     const mode = (formData.get('mode') as string) || 'import';
     const metricType = (formData.get('metricType') as string) || 'transmittals';
     const reportDateStr = formData.get('reportDate') as string;
+    const periodStartStr = (formData.get('periodStart') as string) || '';
+    const periodEndStr = (formData.get('periodEnd') as string) || '';
     const selectedCampaignId = (formData.get('campaignId') as string) || '';
 
     // Resolve the target campaign: prefer the one chosen on the import page,
@@ -135,6 +258,17 @@ export async function POST(req: NextRequest) {
       const now = new Date();
       reportDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     }
+
+    // MTD reporting period detected from the file (YYYY-MM-DD). Persisted on the
+    // production entry so the imported batch carries its full range, not just a day.
+    const parseYmd = (s: string): Date | null => {
+      if (!s) return null;
+      const [y, m, d] = s.split('-').map(Number);
+      if (!y || !m || !d) return null;
+      return new Date(y, m - 1, d);
+    };
+    const periodStart = parseYmd(periodStartStr);
+    const periodEnd = parseYmd(periodEndStr);
 
     if (!file) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
@@ -179,6 +313,11 @@ export async function POST(req: NextRequest) {
             baseData.transmittals = entry.transmittals;
             baseData.approvals = entry.approvals;
             baseData.booked = entry.booked;
+          }
+          if (entry.ntb !== undefined || entry.seatCategory !== undefined) {
+            baseData.ntb = entry.ntb ?? 0;
+            baseData.supplementary = entry.supplementary ?? 0;
+            baseData.seatCategory = entry.seatCategory ?? '';
           }
 
           if (agent) {
@@ -246,6 +385,8 @@ export async function POST(req: NextRequest) {
           date: reportDate,
           time: new Date().toLocaleTimeString(),
           createdBy: user.id,
+          periodStart,
+          periodEnd,
         },
       });
 
@@ -272,20 +413,7 @@ export async function POST(req: NextRequest) {
             continue;
           }
 
-          const metricData: Record<string, bigint> = {
-            transmittals: BigInt(0),
-            approvals: BigInt(0),
-            booked: BigInt(0),
-            volume: BigInt(row.volume),
-          };
-          if (metricType === 'transmittals') metricData.transmittals = BigInt(row.count);
-          else if (metricType === 'approvals') metricData.approvals = BigInt(row.count);
-          else if (metricType === 'booked') metricData.booked = BigInt(row.count);
-          else if (metricType === 'all_metrics') {
-            metricData.transmittals = BigInt(row.transmittals || 0);
-            metricData.approvals = BigInt(row.approvals || 0);
-            metricData.booked = BigInt(row.booked || 0);
-          }
+          const metricData = buildDetailData(row, metricType);
 
           const existingDetail = await prisma.productionDetail.findUnique({
             where: {
@@ -386,6 +514,11 @@ export async function POST(req: NextRequest) {
           baseData.approvals = entry.approvals;
           baseData.booked = entry.booked;
         }
+        if (entry.ntb !== undefined || entry.seatCategory !== undefined) {
+          baseData.ntb = entry.ntb ?? 0;
+          baseData.supplementary = entry.supplementary ?? 0;
+          baseData.seatCategory = entry.seatCategory ?? '';
+        }
 
         if (agent) matched.push({ ...baseData, agentId: agent.id, agentName: agent.name });
         else notFound.push(baseData);
@@ -438,6 +571,8 @@ export async function POST(req: NextRequest) {
         date: reportDate,
         time: new Date().toLocaleTimeString(),
         createdBy: user.id,
+        periodStart,
+        periodEnd,
       },
     });
 
@@ -455,20 +590,7 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        const metricData: Record<string, bigint> = {
-          transmittals: BigInt(0),
-          approvals: BigInt(0),
-          booked: BigInt(0),
-          volume: BigInt(row.volume),
-        };
-        if (metricType === 'transmittals') metricData.transmittals = BigInt(row.count);
-        else if (metricType === 'approvals') metricData.approvals = BigInt(row.count);
-        else if (metricType === 'booked') metricData.booked = BigInt(row.count);
-        else if (metricType === 'all_metrics') {
-          metricData.transmittals = BigInt(row.transmittals || 0);
-          metricData.approvals = BigInt(row.approvals || 0);
-          metricData.booked = BigInt(row.booked || 0);
-        }
+        const metricData = buildDetailData(row, metricType);
 
         const existingDetail = await prisma.productionDetail.findUnique({
           where: { productionEntryId_agentId: { productionEntryId: csvProdEntry.id, agentId: agent.id } },

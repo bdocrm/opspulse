@@ -129,13 +129,15 @@ model DailySales {
 }
 
 model ProductionEntry {
-  id         String             @id @default(uuid())
-  campaignId String
-  date       DateTime // Date of entry (e.g., 2026-03-05)
-  time       String // Time string (e.g., "2:36 PM")
-  createdBy  String // Collector ID
-  details    ProductionDetail[]
-  createdAt  DateTime           @default(now())
+  id          String             @id @default(uuid())
+  campaignId  String
+  date        DateTime // Date of entry (e.g., 2026-03-05)
+  time        String // Time string (e.g., "2:36 PM")
+  createdBy   String // Collector ID
+  periodStart DateTime? // Start of the reporting period (e.g. MTD May 1) for bulk imports
+  periodEnd   DateTime? // End of the reporting period (e.g. MTD May 31) for bulk imports
+  details     ProductionDetail[]
+  createdAt   DateTime           @default(now())
 
   @@index([campaignId])
   @@index([date])
@@ -157,6 +159,9 @@ model ProductionDetail {
   conversionRate    Float?
   volume            BigInt          @default(0)
   transaction       BigInt          @default(0)
+  ntb               BigInt          @default(0) // ACQ: New-To-Bank accounts
+  supplementary     BigInt          @default(0) // ACQ: supplementary accounts
+  seatCategory      String? // ACQ: BILLABLE / BUFFER
   createdAt         DateTime        @default(now())
 
   @@unique([productionEntryId, agentId])
