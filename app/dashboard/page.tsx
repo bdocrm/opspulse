@@ -128,6 +128,7 @@ export default function DashboardPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="0">All Months</SelectItem>
               {MONTH_NAMES.map((name, i) => (
                 <SelectItem key={i} value={String(i + 1)}>{name}</SelectItem>
               ))}

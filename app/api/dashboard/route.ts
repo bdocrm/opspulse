@@ -28,12 +28,14 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const now        = new Date();
     const year       = parseInt(searchParams.get("year")       ?? String(now.getFullYear()));
+    // month = 0 means "All Months" → aggregate the entire selected year.
     const month      = parseInt(searchParams.get("month")      ?? String(now.getMonth() + 1));
     const campaignId = searchParams.get("campaignId") ?? null;
+    const allMonths  = month === 0;
 
-    const startDate = new Date(year, month - 1, 1);
+    const startDate = allMonths ? new Date(year, 0, 1)  : new Date(year, month - 1, 1);
     startDate.setHours(0, 0, 0, 0);
-    const endDate   = new Date(year, month, 0);
+    const endDate   = allMonths ? new Date(year, 11, 31) : new Date(year, month, 0);
     endDate.setHours(23, 59, 59, 999);
 
     // 1. Campaigns
@@ -93,7 +95,7 @@ export async function GET(req: NextRequest) {
     }
 
     // 5. Campaign-level KPIs
-    const campaignTable = campaigns.map((c) => {
+    const allCampaignRows = campaigns.map((c) => {
       const details = detailsByCampaign.get(c.id) ?? [];
       const wDays   = Number(extrasById[c.id]?.workingDays ?? 22);
       const dLapsed = Number(extrasById[c.id]?.daysLapsed  ?? 0);
@@ -118,6 +120,11 @@ export async function GET(req: NextRequest) {
         daysLapsed:   dLapsed,
       };
     });
+
+    // Only surface campaigns that actually have production for the selected period.
+    // Empty/zero campaigns are hidden everywhere (chart, table, distribution) and
+    // excluded from the KPI averages so the numbers reflect real activity only.
+    const campaignTable = allCampaignRows.filter((c) => c.mtd > 0);
 
     // 6. Aggregated KPI cards
     const n = campaignTable.length || 1;
