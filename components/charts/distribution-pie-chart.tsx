@@ -15,7 +15,38 @@ interface DistributionPieChartProps {
   data: {
     name: string;
     value: number;
+    goal?: number | null;
+    actual?: number;
+    achievement?: number | null;
+    contribution?: number | null;
+    rank?: number;
+    status?: string;
+    recommendation?: string;
   }[];
+}
+
+function formatNumber(value: number | null | undefined) {
+  return Number(value ?? 0).toLocaleString();
+}
+
+function ExecutiveTooltip({ active, payload }: any) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0].payload;
+
+  return (
+    <div className="min-w-[220px] rounded-md border bg-card p-3 text-xs shadow-sm">
+      <p className="mb-2 font-semibold text-foreground">{row.name}</p>
+      <div className="space-y-1 text-muted-foreground">
+        <p>Name: <span className="font-medium text-foreground">{row.name}</span></p>
+        <p>Goal: <span className="font-medium text-foreground">{row.goal == null ? "N/A" : formatNumber(row.goal)}</span></p>
+        <p>Actual: <span className="font-medium text-foreground">{formatNumber(row.actual ?? row.value)}</span></p>
+        <p>Achievement %: <span className="font-medium text-foreground">{row.achievement == null ? "N/A" : `${Number(row.achievement).toFixed(1)}%`}</span></p>
+        <p>Rank: <span className="font-medium text-foreground">{row.rank ?? "N/A"}</span></p>
+        <p>Status: <span className="font-medium text-foreground">{row.status ?? "N/A"}</span></p>
+        <p>Recommendation: <span className="font-medium text-foreground">{row.recommendation ?? "Review contribution share."}</span></p>
+      </div>
+    </div>
+  );
 }
 
 export function DistributionPieChart({ data }: DistributionPieChartProps) {
@@ -36,13 +67,7 @@ export function DistributionPieChart({ data }: DistributionPieChartProps) {
             <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
           ))}
         </Pie>
-        <Tooltip
-          contentStyle={{
-            backgroundColor: "hsl(var(--card))",
-            border: "1px solid hsl(var(--border))",
-            borderRadius: 8,
-          }}
-        />
+        <Tooltip content={<ExecutiveTooltip />} />
         <Legend />
       </PieChart>
     </ResponsiveContainer>

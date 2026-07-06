@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
-import { Trash2, Plus, Search, Clock, Users, ChevronLeft, ChevronRight, CheckCircle2, RefreshCw, Grid3X3, List, UserCheck, UserX } from 'lucide-react';
+import { AlertCircle, Trash2, Plus, Search, Clock, Users, ChevronLeft, ChevronRight, CheckCircle2, RefreshCw, Grid3X3, List, UserCheck, UserX } from 'lucide-react';
 
 interface AgentDetail {
   agentId: string;
@@ -37,6 +37,12 @@ interface SavedEntry {
   }>;
 }
 
+interface CampaignBlock {
+  id: string;
+  campaignName: string;
+  agents: any[];
+}
+
 const AGENTS_PER_PAGE = 12;
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -45,6 +51,7 @@ export default function DataEntryPage() {
   const { data: session } = useSession();
   const router = useRouter();
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [autoDateAdjustedForCampaign, setAutoDateAdjustedForCampaign] = useState('');
   const time = '00:00'; // Default time for entries
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -53,37 +60,92 @@ export default function DataEntryPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
   const [attendance, setAttendance] = useState<Record<string, boolean>>({});
+  const [selectedCampaignId, setSelectedCampaignId] = useState('');
 
-  // Fetch agents for this campaign
-  const { data: agentsData } = useSWR(
-    session?.user ? `/api/campaigns/${(session.user as any).campaignId}/agents` : null,
+  // Fetch assigned campaigns, agents, and selected-date production in one place.
+  const { data: collectorData, isLoading: loadingCampaigns } = useSWR(
+    session?.user && date
+      ? `/api/collectors/dashboard?dateFrom=${date}&dateTo=${date}&attendanceDate=${date}`
+      : null,
     fetcher
   );
 
+  const campaignBlocks: CampaignBlock[] = useMemo(
+    () => (Array.isArray(collectorData?.campaigns) ? collectorData.campaigns : []),
+    [collectorData]
+  );
+
+  useEffect(() => {
+    if (campaignBlocks.length === 0) {
+      setSelectedCampaignId('');
+      return;
+    }
+
+    setSelectedCampaignId((current) => {
+      if (current && campaignBlocks.some((campaign) => campaign.id === current)) return current;
+      const primary = (session?.user as any)?.campaignId;
+      if (primary && campaignBlocks.some((campaign) => campaign.id === primary)) return primary;
+      return campaignBlocks[0].id;
+    });
+  }, [campaignBlocks, session]);
+
+  const selectedCampaign = campaignBlocks.find((campaign) => campaign.id === selectedCampaignId);
+
   // Fetch saved production data for selected date
   const { data: savedData, mutate: mutateSaved, isLoading: loadingSaved } = useSWR(
-    session?.user && date ? `/api/collectors/production?date=${date}` : null,
+    session?.user && date && selectedCampaignId
+      ? `/api/collectors/production?date=${date}&campaignId=${selectedCampaignId}`
+      : null,
     fetcher,
     { refreshInterval: 0 }
   );
 
   // Fetch attendance for selected date
   const { data: attendanceData, mutate: mutateAttendance } = useSWR(
-    session?.user && date ? `/api/collectors/attendance?date=${date}` : null,
+    session?.user && date && selectedCampaignId
+      ? `/api/collectors/attendance?date=${date}&campaignId=${selectedCampaignId}`
+      : null,
     fetcher,
     { refreshInterval: 0 }
   );
 
-  const agents = Array.isArray(agentsData) ? agentsData : (agentsData?.data || []);
-  const savedEntries: SavedEntry[] = savedData?.entries || [];
+  const agents = useMemo(() => selectedCampaign?.agents || [], [selectedCampaign]);
+  const savedEntries: SavedEntry[] = useMemo(() => savedData?.entries || [], [savedData]);
+  const latestImportedDate: string | null = savedData?.latestDate || null;
 
-  // Initialize agent data when agents load
+  useEffect(() => {
+    setAutoDateAdjustedForCampaign('');
+  }, [selectedCampaignId]);
+
+  useEffect(() => {
+    if (!selectedCampaignId || loadingSaved) return;
+    if (savedEntries.length > 0) return;
+    if (!latestImportedDate || latestImportedDate === date) return;
+    if (autoDateAdjustedForCampaign === selectedCampaignId) return;
+
+    setAutoDateAdjustedForCampaign(selectedCampaignId);
+    setDate(latestImportedDate);
+    setMessage({
+      type: 'success',
+      text: `Showing latest imported data for ${selectedCampaign?.campaignName || 'this campaign'} on ${latestImportedDate}.`,
+    });
+  }, [
+    autoDateAdjustedForCampaign,
+    date,
+    latestImportedDate,
+    loadingSaved,
+    savedEntries.length,
+    selectedCampaign?.campaignName,
+    selectedCampaignId,
+  ]);
+
+  // Initialize/reset pending agent data when the selected campaign changes.
   useEffect(() => {
     if (agents.length > 0) {
-      const initialData: Record<string, AgentDetail> = {};
-      agents.forEach((agent: any) => {
-        if (!agentData[agent.id]) {
-          initialData[agent.id] = {
+      setAgentData((prev) => {
+        const next: Record<string, AgentDetail> = {};
+        agents.forEach((agent: any) => {
+          next[agent.id] = prev[agent.id] || {
             agentId: agent.id,
             transmittals: 0,
             activations: 0,
@@ -93,13 +155,19 @@ export default function DataEntryPage() {
             qualityRate: 0,
             conversionRate: 0,
           };
-        }
+        });
+        return next;
       });
-      if (Object.keys(initialData).length > 0) {
-        setAgentData(prev => ({ ...initialData, ...prev }));
-      }
+    } else {
+      setAgentData({});
     }
-  }, [agents]);
+  }, [agents, selectedCampaignId]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+    setMessage(null);
+  }, [selectedCampaignId, date]);
+
 
   // Load attendance from API when data arrives
   useEffect(() => {
@@ -133,6 +201,7 @@ export default function DataEntryPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           date,
+          campaignId: selectedCampaignId,
           attendance: {
             [agentId]: { status: newStatus ? 'PRESENT' : 'ABSENT' }
           }
@@ -240,7 +309,7 @@ export default function DataEntryPage() {
   // Check if form has data
   const hasData = useMemo(() => {
     return Object.values(agentData).some(
-      d => d.transmittals > 0 || d.activations > 0 || d.approvals > 0 || d.booked > 0
+      d => d.transmittals > 0 || d.activations > 0 || d.approvals > 0 || d.booked > 0 || d.volume > 0
     );
   }, [agentData]);
 
@@ -284,6 +353,10 @@ export default function DataEntryPage() {
       setMessage({ type: 'error', text: 'Please enter at least one metric value' });
       return;
     }
+    if (!selectedCampaignId) {
+      setMessage({ type: 'error', text: 'Please select a campaign before saving.' });
+      return;
+    }
 
     setLoading(true);
     setMessage(null);
@@ -291,6 +364,7 @@ export default function DataEntryPage() {
     try {
       const payload = {
         date,
+        campaignId: selectedCampaignId,
         entries: [{
           time,
           details: agentData,
@@ -341,7 +415,9 @@ export default function DataEntryPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Production Entry</h1>
-          <p className="text-sm text-muted-foreground">Enter metrics for each agent</p>
+          <p className="text-sm text-muted-foreground">
+            {selectedCampaign ? `Enter metrics for ${selectedCampaign.campaignName}` : 'Enter metrics for each agent'}
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1 border rounded-lg p-1">
@@ -398,6 +474,13 @@ export default function DataEntryPage() {
         </div>
       )}
 
+      {!loadingCampaigns && campaignBlocks.length === 0 && (
+        <div className="p-3 rounded-lg text-sm flex items-center gap-2 bg-red-900/20 text-red-400 border border-red-800">
+          <AlertCircle className="w-4 h-4" />
+          No assigned campaign found for this collector.
+        </div>
+      )}
+
       {/* Daily Summary - Always visible at top */}
       <Card className="p-4 bg-gradient-to-r from-primary/10 to-primary/5 border-primary/20">
         <div className="flex items-center justify-between mb-3">
@@ -443,6 +526,13 @@ export default function DataEntryPage() {
           </div>
         </div>
       </Card>
+
+      {!loadingSaved && selectedCampaignId && agents.length > 0 && savedEntries.length === 0 && (
+        <div className="p-3 rounded-lg text-sm flex items-center gap-2 bg-yellow-500/10 text-yellow-600 border border-yellow-500/20">
+          <AlertCircle className="w-4 h-4" />
+          No imported data found for {selectedCampaign?.campaignName || 'this campaign'} on {date}.
+        </div>
+      )}
 
       {/* Saved Entries Accordion */}
       {savedEntries.length > 0 && (
@@ -492,6 +582,23 @@ export default function DataEntryPage() {
         {/* Date & Search Row */}
         <Card className="p-4">
           <div className="flex flex-wrap gap-4 items-end">
+            {campaignBlocks.length > 1 && (
+              <div className="space-y-1.5">
+                <Label htmlFor="campaign" className="text-sm font-medium">Campaign</Label>
+                <select
+                  id="campaign"
+                  value={selectedCampaignId}
+                  onChange={(e) => setSelectedCampaignId(e.target.value)}
+                  className="h-10 min-w-[220px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  {campaignBlocks.map((campaign) => (
+                    <option key={campaign.id} value={campaign.id}>
+                      {campaign.campaignName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="date" className="text-sm font-medium">Date</Label>
               <Input
@@ -534,13 +641,14 @@ export default function DataEntryPage() {
         {viewMode === 'grid' ? (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
             {paginatedAgents.map((agent: any) => {
-              const saved = agentSavedTotals[agent.id] || { transmittals: 0, activations: 0, approvals: 0, booked: 0 };
-              const pending = agentData[agent.id] || { transmittals: 0, activations: 0, approvals: 0, booked: 0, qualityRate: 0, conversionRate: 0 };
+              const saved = agentSavedTotals[agent.id] || { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
+              const pending = agentData[agent.id] || { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0, qualityRate: 0, conversionRate: 0 };
               const total = {
                 transmittals: saved.transmittals + (pending.transmittals || 0),
                 activations: saved.activations + (pending.activations || 0),
                 approvals: saved.approvals + (pending.approvals || 0),
                 booked: saved.booked + (pending.booked || 0),
+                volume: saved.volume + (pending.volume || 0),
               };
               const convRate = total.transmittals > 0 ? ((total.booked / total.transmittals) * 100).toFixed(1) : '0.0';
               const isPresent = attendance[agent.id] !== false;
@@ -598,6 +706,12 @@ export default function DataEntryPage() {
                     <p className="text-[10px] text-muted-foreground">C%</p>
                     <p className="text-sm font-bold text-blue-500">{convRate}%</p>
                   </div>
+                </div>
+                <div className="mb-3 rounded-md bg-muted/30 px-2 py-1 text-center">
+                  <p className="text-[10px] text-muted-foreground">TOTAL VOLUME</p>
+                  <p className="text-sm font-semibold text-primary">
+                    {total.volume > 0 ? `₱${total.volume.toLocaleString()}` : '—'}
+                  </p>
                 </div>
 
                 {/* New Entry Section */}
@@ -720,8 +834,8 @@ export default function DataEntryPage() {
                 </thead>
                 <tbody>
                   {paginatedAgents.map((agent: any, idx: number) => {
-                    const saved = agentSavedTotals[agent.id] || { transmittals: 0, activations: 0, approvals: 0, booked: 0 };
-                    const hasSaved = saved.booked > 0 || saved.transmittals > 0 || saved.activations > 0 || saved.approvals > 0;
+                    const saved = agentSavedTotals[agent.id] || { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
+                    const hasSaved = saved.booked > 0 || saved.transmittals > 0 || saved.activations > 0 || saved.approvals > 0 || saved.volume > 0;
                     const isPresent = attendance[agent.id] !== false;
                     return (
                     <tr key={agent.id} className={`border-b hover:bg-muted/30 ${idx % 2 === 0 ? '' : 'bg-muted/10'} ${!isPresent ? 'opacity-50' : ''}`}>
@@ -747,6 +861,7 @@ export default function DataEntryPage() {
                         {hasSaved ? (
                           <div className="text-[10px] text-green-500 leading-tight">
                             <div>{saved.transmittals}/{saved.activations}/{saved.approvals}/{saved.booked}</div>
+                            {saved.volume > 0 && <div>₱{saved.volume.toLocaleString()}</div>}
                           </div>
                         ) : (
                           <span className="text-muted-foreground text-xs">-</span>

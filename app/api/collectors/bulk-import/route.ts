@@ -212,6 +212,23 @@ function nameToEmail(name: string): string {
   return `${slug}-${Date.now()}@imported.local`;
 }
 
+function normalizeAgentName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function agentNameMatches(savedName: string, importedName: string): boolean {
+  const saved = normalizeAgentName(savedName);
+  const imported = normalizeAgentName(importedName);
+  if (!saved || !imported) return false;
+  if (saved === imported || saved.includes(imported) || imported.includes(saved)) return true;
+  const importedTokens = imported.split(' ').filter((token) => token.length > 1);
+  return importedTokens.length > 0 && importedTokens.every((token) => saved.includes(token));
+}
+
 // Build the ProductionDetail write payload from a parsed row, mapping the
 // selected metric plus any ACQ fields (NTB / supplementary / seat category).
 function buildDetailData(row: ParsedEntry, metricType: string): Record<string, any> {
@@ -302,13 +319,38 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Selected campaign not found' }, { status: 400 });
     }
 
+    let campaignAgents = await prisma.user.findMany({
+      where: { campaignId: effectiveCampaignId, role: 'AGENT' },
+      select: { id: true, name: true },
+    });
+    const findExistingAgent = (importedName: string) =>
+      campaignAgents.find((agent) => agentNameMatches(agent.name, importedName)) || null;
+    const rememberAgent = (agent: { id: string; name: string }) => {
+      if (!campaignAgents.some((existing) => existing.id === agent.id)) campaignAgents.push(agent);
+    };
+
     // If the collector has no campaign assigned yet, bind them to the one they
     // are importing into. Without this, their dashboard (which keys off the
     // collector's own campaign) would never show the imported agents.
-    if (mode !== 'preview' && !collectorUser?.campaignId) {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { campaignId: effectiveCampaignId },
+    if (mode !== 'preview') {
+      if (!collectorUser?.campaignId) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { campaignId: effectiveCampaignId },
+        });
+      }
+      await prisma.userCampaign.upsert({
+        where: {
+          userId_campaignId: {
+            userId: user.id,
+            campaignId: effectiveCampaignId,
+          },
+        },
+        update: {},
+        create: {
+          userId: user.id,
+          campaignId: effectiveCampaignId,
+        },
       });
     }
 
@@ -357,6 +399,15 @@ export async function POST(req: NextRequest) {
       }
 
       const entries = parseExcelRows(rows, metricType, campaignName);
+      if (entries.length === 0) {
+        return NextResponse.json(
+          {
+            error:
+              'No production rows found. Check that required columns exist: FULL NAME or LAST NAME/FIRST NAME plus COUNT, TRANSMITTED, APPROVALS, BOOKED, VOLUME, NTB, or SUPPLEMENTARY.',
+          },
+          { status: 400 }
+        );
+      }
 
       // ── PREVIEW MODE: classify agents, no DB writes ──────────────────────
       if (mode === 'preview') {
@@ -364,13 +415,7 @@ export async function POST(req: NextRequest) {
         const notFound: any[] = [];
 
         for (const entry of entries) {
-          const agent = await prisma.user.findFirst({
-            where: {
-              name: { contains: entry.name, mode: 'insensitive' },
-              campaignId: effectiveCampaignId,
-            },
-            select: { id: true, name: true },
-          });
+          const agent = findExistingAgent(entry.name);
 
           const baseData: any = { name: entry.name, count: entry.count, volume: entry.volume };
           if (metricType === 'all_metrics') {
@@ -412,10 +457,7 @@ export async function POST(req: NextRequest) {
       // Create any confirmed new agents
       const createdAgents: Record<string, string> = {}; // name → id
       for (const name of confirmedNewAgents) {
-        const existing = await prisma.user.findFirst({
-          where: { name: { contains: name, mode: 'insensitive' }, campaignId: effectiveCampaignId },
-          select: { id: true },
-        });
+        const existing = findExistingAgent(name);
         if (existing) {
           createdAgents[name] = existing.id;
           continue;
@@ -433,6 +475,7 @@ export async function POST(req: NextRequest) {
           },
         });
         createdAgents[name] = newAgent.id;
+        rememberAgent({ id: newAgent.id, name: newAgent.name });
       }
 
       const results = {
@@ -456,13 +499,7 @@ export async function POST(req: NextRequest) {
 
       for (const row of entries) {
         try {
-          let agent = await prisma.user.findFirst({
-            where: {
-              name: { contains: row.name, mode: 'insensitive' },
-              campaignId: effectiveCampaignId,
-            },
-            select: { id: true, name: true },
-          });
+          let agent = findExistingAgent(row.name);
 
           // Use newly created agent if available
           if (!agent && createdAgents[row.name]) {
@@ -572,10 +609,7 @@ export async function POST(req: NextRequest) {
       const notFound: any[] = [];
 
       for (const entry of csvEntries) {
-        const agent = await prisma.user.findFirst({
-          where: { name: { contains: entry.name, mode: 'insensitive' }, campaignId: effectiveCampaignId },
-          select: { id: true, name: true },
-        });
+        const agent = findExistingAgent(entry.name);
 
         const baseData: any = { name: entry.name, count: entry.count, volume: entry.volume };
         if (metricType === 'all_metrics') {
@@ -613,10 +647,7 @@ export async function POST(req: NextRequest) {
 
     const createdAgentsCsv: Record<string, string> = {};
     for (const name of confirmedNewAgentsCsv) {
-      const existing = await prisma.user.findFirst({
-        where: { name: { contains: name, mode: 'insensitive' }, campaignId: effectiveCampaignId },
-        select: { id: true },
-      });
+      const existing = findExistingAgent(name);
       if (existing) { createdAgentsCsv[name] = existing.id; continue; }
 
       const email = nameToEmail(name);
@@ -625,6 +656,7 @@ export async function POST(req: NextRequest) {
         data: { name, email, password, role: 'AGENT', campaignId: effectiveCampaignId },
       });
       createdAgentsCsv[name] = newAgent.id;
+      rememberAgent({ id: newAgent.id, name: newAgent.name });
     }
 
     const csvResults = {
@@ -647,10 +679,7 @@ export async function POST(req: NextRequest) {
 
     for (const row of csvEntries) {
       try {
-        let agent = await prisma.user.findFirst({
-          where: { name: { contains: row.name, mode: 'insensitive' }, campaignId: effectiveCampaignId },
-          select: { id: true, name: true },
-        });
+        let agent = findExistingAgent(row.name);
         if (!agent && createdAgentsCsv[row.name]) {
           agent = await prisma.user.findUnique({ where: { id: createdAgentsCsv[row.name] }, select: { id: true, name: true } });
         }

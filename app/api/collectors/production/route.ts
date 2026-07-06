@@ -2,6 +2,29 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
+import { getAssignedCampaignIds } from "@/lib/user-campaigns";
+
+function parseDateOnly(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return new Date(value);
+  return new Date(year, month - 1, day);
+}
+
+function dayRange(value: string) {
+  const start = parseDateOnly(value);
+  start.setHours(0, 0, 0, 0);
+  const end = parseDateOnly(value);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+}
+
+function toYmd(value: Date) {
+  return [
+    value.getFullYear(),
+    String(value.getMonth() + 1).padStart(2, "0"),
+    String(value.getDate()).padStart(2, "0"),
+  ].join("-");
+}
 
 export async function POST(req: Request) {
   try {
@@ -17,15 +40,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const { date, entries } = await req.json();
+    const { date, entries, campaignId: requestedCampaignId } = await req.json();
 
     if (!date || !entries || !Array.isArray(entries)) {
       return NextResponse.json({ error: "Invalid data format" }, { status: 400 });
     }
 
-    const campaignId = user.campaignId;
+    const assignedCampaignIds = await getAssignedCampaignIds(user.id);
+    const campaignId = requestedCampaignId || user.campaignId || assignedCampaignIds[0];
     if (!campaignId) {
       return NextResponse.json({ error: "No campaign assigned" }, { status: 400 });
+    }
+    if (user.role !== "CEO" && !assignedCampaignIds.includes(campaignId)) {
+      return NextResponse.json({ error: "You are not assigned to this campaign" }, { status: 403 });
     }
 
     // Save each time entry with its agent details
@@ -33,25 +60,35 @@ export async function POST(req: Request) {
       entries.map(async (entry) => {
         const { time, details } = entry; // details = { agentId: value, ... }
 
+        const detailEntries = Object.entries(details) as Array<[string, any]>;
+        const agentIds = detailEntries.map(([agentId]) => agentId);
+        const validAgents = await prisma.user.findMany({
+          where: { id: { in: agentIds }, role: "AGENT", campaignId },
+          select: { id: true },
+        });
+        const validAgentIds = new Set(validAgents.map((agent) => agent.id));
+
         const productionEntry = await prisma.productionEntry.create({
           data: {
             campaignId,
-            date: new Date(date),
+            date: parseDateOnly(date),
             time,
             createdBy: user.id,
             details: {
-              create: Object.entries(details).map(([agentId, values]: any) => ({
-                agentId,
-                campaignId,
-                transmittals: values.transmittals || 0,
-                activations: values.activations || 0,
-                approvals: values.approvals || 0,
-                booked: values.booked || 0,
-                qualityRate: values.qualityRate,
-                conversionRate: values.conversionRate,
-                volume: values.volume || 0,
-                transaction: values.transaction || 0,
-              })),
+              create: detailEntries
+                .filter(([agentId]) => validAgentIds.has(agentId))
+                .map(([agentId, values]) => ({
+                  agentId,
+                  campaignId,
+                  transmittals: values.transmittals || 0,
+                  activations: values.activations || 0,
+                  approvals: values.approvals || 0,
+                  booked: values.booked || 0,
+                  qualityRate: values.qualityRate,
+                  conversionRate: values.conversionRate,
+                  volume: values.volume || 0,
+                  transaction: values.transaction || 0,
+                })),
             },
           },
           include: { details: true },
@@ -100,37 +137,75 @@ export async function GET(req: Request) {
     const date = searchParams.get("date");
     const dateFrom = searchParams.get("dateFrom");
     const dateTo = searchParams.get("dateTo");
+    const requestedCampaignId = searchParams.get("campaignId");
 
     let startDate: Date;
     let endDate: Date;
 
     if (dateFrom && dateTo) {
       // Date range filter
-      startDate = new Date(dateFrom);
-      startDate.setHours(0, 0, 0, 0);
-      endDate = new Date(dateTo);
-      endDate.setHours(23, 59, 59, 999);
+      const startRange = dayRange(dateFrom);
+      const endRange = dayRange(dateTo);
+      startDate = startRange.start;
+      endDate = endRange.end;
     } else if (date) {
       // Single date filter (backward compatibility)
-      startDate = new Date(date);
-      startDate.setHours(0, 0, 0, 0);
-      endDate = new Date(date);
-      endDate.setHours(23, 59, 59, 999);
+      const range = dayRange(date);
+      startDate = range.start;
+      endDate = range.end;
     } else {
       return NextResponse.json({ error: "Date or date range required" }, { status: 400 });
     }
 
-    const entries = await prisma.productionEntry.findMany({
-      where: {
-        campaignId: user.campaignId,
-        date: {
-          gte: startDate,
-          lte: endDate,
-        },
+    const assignedCampaignIds = await getAssignedCampaignIds(user.id);
+    const campaignIds = requestedCampaignId
+      ? [requestedCampaignId]
+      : user.campaignId
+        ? [user.campaignId]
+        : assignedCampaignIds;
+
+    if (campaignIds.length === 0) {
+      return NextResponse.json({
+        entries: [],
+        message: "No assigned campaign found for this collector.",
+      });
+    }
+
+    if (user.role !== "CEO") {
+      const unauthorized = campaignIds.find((campaignId) => !assignedCampaignIds.includes(campaignId));
+      if (unauthorized) {
+        return NextResponse.json({ error: "You are not assigned to this campaign" }, { status: 403 });
+      }
+    }
+
+    const where = {
+      campaignId: { in: campaignIds },
+      date: {
+        gte: startDate,
+        lte: endDate,
       },
-      include: { details: true },
-      orderBy: [{ date: "asc" }, { time: "asc" }],
-    });
+    };
+
+    const [entries, availableEntryDates] = await Promise.all([
+      prisma.productionEntry.findMany({
+        where,
+        include: { details: true },
+        orderBy: [{ date: "asc" }, { time: "asc" }],
+      }),
+      prisma.productionEntry.findMany({
+        where: {
+          campaignId: { in: campaignIds },
+          details: { some: {} },
+        },
+        select: { date: true },
+        distinct: ["date"],
+        orderBy: { date: "desc" },
+        take: 24,
+      }),
+    ]);
+
+    const availableDates = availableEntryDates.map((entry) => toYmd(entry.date));
+    const latestDate = availableDates[0] ?? null;
 
     // Convert BigInt fields to numbers for JSON serialization
     const serializedEntries = entries.map(entry => ({
@@ -146,7 +221,7 @@ export async function GET(req: Request) {
       })),
     }));
 
-    return NextResponse.json({ entries: serializedEntries });
+    return NextResponse.json({ entries: serializedEntries, availableDates, latestDate });
   } catch (error) {
     console.error("Error fetching entries:", error);
     return NextResponse.json(
