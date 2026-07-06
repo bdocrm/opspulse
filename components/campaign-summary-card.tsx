@@ -20,6 +20,8 @@ export interface Production {
   approvals: number;
   booked: number;
   volume?: number;
+  ntb?: number;
+  supplementary?: number;
 }
 
 export interface CampaignSummaryProps {
@@ -27,6 +29,7 @@ export interface CampaignSummaryProps {
   campaignName: string;
   kpiMetric: string;
   goal: number;
+  supplementaryGoal?: number;
   agents: Agent[];
   production: Record<string, Production>;
   attendance: Record<string, { status: string; remarks: string | null }>;
@@ -37,7 +40,10 @@ export interface CampaignSummaryProps {
   children?: React.ReactNode;
 }
 
-const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
+const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 };
+
+// ACQ campaigns (name contains "ACQ") report NTB + Supplementary instead of booked volume.
+const isAcqCampaign = (name?: string | null) => /\bacq\b/i.test(name || '');
 
 function kpiValueFor(metric: string, prod: Production): number {
   switch (metric) {
@@ -54,6 +60,7 @@ export function CampaignSummaryCard({
   campaignName,
   kpiMetric,
   goal,
+  supplementaryGoal = 0,
   agents,
   production,
   attendance,
@@ -84,7 +91,15 @@ export function CampaignSummaryCard({
     return sum + (prod.volume || 0);
   }, 0);
 
-  const achievement = goal > 0 ? ((totalBookedVolume / goal) * 100).toFixed(1) : '0';
+  // ACQ campaigns track NTB + Supplementary instead of booked volume.
+  const acq = isAcqCampaign(campaignName);
+  const totalNtb = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).ntb || 0), 0);
+  const totalSupplementary = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).supplementary || 0), 0);
+
+  // For ACQ the header %/achievement tracks NTB vs the NTB goal (legacy monthly goal).
+  const achievement = acq
+    ? (goal > 0 ? ((totalNtb / goal) * 100).toFixed(1) : '0')
+    : (goal > 0 ? ((totalBookedVolume / goal) * 100).toFixed(1) : '0');
   const remainingGoal = Math.max(0, goal - totalBookedVolume);
 
   // Performance distribution based on booked volume
@@ -106,16 +121,18 @@ export function CampaignSummaryCard({
     return distribution;
   }, [agents, production, goal]);
 
-  // Top and bottom performers based on booked volume
+  // Top and bottom performers. ACQ ranks by NTB (Supplementary as tiebreaker),
+  // matching the collector-details table; others rank by booked volume.
   const performerStats = useMemo(() => {
     const performers = agents
       .map(agent => {
         const prod = production[agent.id] || ZERO_PROD;
-        const bookedVolume = prod.volume || 0;
+        const value = acq ? (prod.ntb || 0) : (prod.volume || 0);
+        const secondary = acq ? (prod.supplementary || 0) : 0;
         const agentGoal = agent.monthlyTarget || (goal / Math.max(agents.length, 1));
-        return { agent, value: bookedVolume, target: agentGoal, progress: agentGoal > 0 ? (bookedVolume / agentGoal) * 100 : 0 };
+        return { agent, value, secondary, target: agentGoal, progress: agentGoal > 0 ? (value / agentGoal) * 100 : 0 };
       })
-      .sort((a, b) => b.value - a.value); // Sort by booked volume, not progress
+      .sort((a, b) => (b.value !== a.value ? b.value - a.value : b.secondary - a.secondary));
 
     return {
       topPerformer: performers[0],
@@ -125,7 +142,7 @@ export function CampaignSummaryCard({
       withProduction: performers.filter(p => p.value > 0).length,
       zeroProduction: performers.filter(p => p.value === 0).length,
     };
-  }, [agents, production, goal]);
+  }, [agents, production, goal, acq]);
 
   const filteredAgents = useMemo(() => {
     if (!searchQuery.trim()) return agents;
@@ -150,7 +167,7 @@ export function CampaignSummaryCard({
             />
             <div className="min-w-0 flex-1">
               <h3 className="font-bold text-lg text-foreground truncate">{campaignName}</h3>
-              <p className="text-xs text-muted-foreground capitalize mt-1">{kpiMetric}</p>
+              <p className="text-xs text-muted-foreground capitalize mt-1">{acq ? 'NTB & Supplementary' : kpiMetric}</p>
             </div>
           </div>
           <div className="text-right flex-shrink-0 ml-4">
@@ -164,24 +181,45 @@ export function CampaignSummaryCard({
       {expanded && (
         <CardContent className="pt-0 space-y-6">
           {/* KPI Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
-              <p className="text-xs text-muted-foreground mb-1">Monthly Goal (Booked Vol)</p>
-              <p className="text-xl font-bold text-blue-600">₱{goal.toLocaleString()}</p>
+          {acq ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Monthly Goal (NTB)</p>
+                <p className="text-xl font-bold text-blue-600">{goal.toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-indigo-50 to-indigo-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Monthly Goal (Supplementary)</p>
+                <p className="text-xl font-bold text-indigo-600">{Number(supplementaryGoal).toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Total NTB</p>
+                <p className="text-xl font-bold text-purple-600">{Number(totalNtb).toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Total Supplementary</p>
+                <p className="text-xl font-bold text-green-600">{Number(totalSupplementary).toLocaleString()}</p>
+              </div>
             </div>
-            <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
-              <p className="text-xs text-muted-foreground mb-1">Current Prod. (Booked Vol)</p>
-              <p className="text-xl font-bold text-purple-600">₱{Number(totalBookedVolume).toLocaleString()}</p>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Monthly Goal (Booked Vol)</p>
+                <p className="text-xl font-bold text-blue-600">₱{goal.toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Current Prod. (Booked Vol)</p>
+                <p className="text-xl font-bold text-purple-600">₱{Number(totalBookedVolume).toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-orange-50 to-orange-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Remaining to Goal</p>
+                <p className="text-xl font-bold text-orange-600">₱{Number(remainingGoal).toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Entries</p>
+                <p className="text-xl font-bold text-green-600">{entriesCount}</p>
+              </div>
             </div>
-            <div className="bg-gradient-to-br from-orange-50 to-orange-100/50 rounded-lg p-3">
-              <p className="text-xs text-muted-foreground mb-1">Remaining to Goal</p>
-              <p className="text-xl font-bold text-orange-600">₱{Number(remainingGoal).toLocaleString()}</p>
-            </div>
-            <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
-              <p className="text-xs text-muted-foreground mb-1">Entries</p>
-              <p className="text-xl font-bold text-green-600">{entriesCount}</p>
-            </div>
-          </div>
+          )}
 
           {/* Collector Stats */}
           <div className="space-y-3">

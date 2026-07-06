@@ -28,7 +28,14 @@ model User {
   campaign          Campaign?          @relation(fields: [campaignId], references: [id])
   campaignAssignments UserCampaign[]   // Multi-campaign assignment (collectors/managers)
   seatNumber        Int?
-  monthlyTarget     Float? // Current target for this agent
+  monthlyTarget     Float? // Current target for this agent (NTB target for ACQ campaigns)
+  monthlyTargetSupplementary Float? // ACQ: Supplementary target for this agent
+  // MB PL per-agent goals (auto-filled from level, overridable)
+  mbLevel               String? // PAYROLL SU2 / PAYROLL HYBRID-ROOKIE / DEPO HYBRID / PAYROLL HYBRID
+  disbursedTxnTarget    Float?
+  disbursedVolTarget    Float?
+  grossTurnInsTxnTarget Float?
+  grossTurnInsVolTarget Float?
   dailySales        DailySales[]
   targetHistory     AgentTarget[]
   productionDetails ProductionDetail[] // AGENT produces production details
@@ -59,6 +66,7 @@ model Campaign {
   campaignName      String
   goalType          String
   monthlyGoal       Float // Legacy field, kept for backwards compatibility
+  supplementaryGoal Float              @default(0) // ACQ: monthly Supplementary goal (NTB uses monthlyGoal)
   kpiMetric         String // Legacy field, kept for backwards compatibility
   workingDays       Int                @default(22) // Configurable working days per month
   daysLapsed        Int                @default(0) // Manually set days lapsed for run rate
@@ -82,6 +90,7 @@ model CampaignGoal {
   month       Int // 1-12
   year        Int
   monthlyGoal Float    @default(0)
+  supplementaryGoal Float @default(0) // ACQ: per-month Supplementary goal
   kpiMetric   String   @default("transmittals")
   workingDays Int      @default(22)
   daysLapsed  Int      @default(0)
@@ -162,6 +171,26 @@ model ProductionDetail {
   ntb               BigInt          @default(0) // ACQ: New-To-Bank accounts
   supplementary     BigInt          @default(0) // ACQ: supplementary accounts
   seatCategory      String? // ACQ: BILLABLE / BUFFER
+  // MB PL wide-format: per-category transaction counts + volume
+  bauPayrollTxn      BigInt         @default(0)
+  bauPayrollVol      BigInt         @default(0)
+  bauDepositorTxn    BigInt         @default(0)
+  bauDepositorVol    BigInt         @default(0)
+  topupPayrollTxn    BigInt         @default(0)
+  topupPayrollVol    BigInt         @default(0)
+  topupDepositorTxn  BigInt         @default(0)
+  topupDepositorVol  BigInt         @default(0)
+  openMarketTxn      BigInt         @default(0)
+  openMarketVol      BigInt         @default(0)
+  // MB PA wide-format: TOTAL (C2G / BT / BalCon PA) + GRAND TOTAL
+  c2gTxn            BigInt          @default(0)
+  c2gVol            BigInt          @default(0)
+  btTxn             BigInt          @default(0)
+  btVol             BigInt          @default(0)
+  balconTxn         BigInt          @default(0)
+  balconVol         BigInt          @default(0)
+  grandTotalTxn     BigInt          @default(0)
+  grandTotalVol     BigInt          @default(0)
   createdAt         DateTime        @default(now())
 
   @@unique([productionEntryId, agentId])

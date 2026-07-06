@@ -60,7 +60,9 @@ export async function GET(req: NextRequest) {
     const year = now.getFullYear();
     const month = now.getMonth() + 1;
     const startOfMonth = new Date(year, month - 1, 1);
-    const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
+    startOfMonth.setHours(0, 0, 0, 0);
+    const endOfMonth = new Date(year, month, 0);
+    endOfMonth.setHours(23, 59, 59, 999);
 
     const monthlyConfig = await prisma.campaignGoal.findFirst({
       where: { campaignId, month, year },

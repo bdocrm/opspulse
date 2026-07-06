@@ -5,7 +5,23 @@ import { prisma } from '@/lib/prisma';
 import * as XLSX from 'xlsx';
 import bcrypt from 'bcryptjs';
 
-type ParsedEntry = { name: string; count: number; volume: number; transmittals?: number; approvals?: number; booked?: number; ntb?: number; supplementary?: number; seatCategory?: string; rowIdx: number };
+type ParsedEntry = {
+  name: string; count: number; volume: number;
+  transmittals?: number; approvals?: number; booked?: number;
+  ntb?: number; supplementary?: number; seatCategory?: string;
+  // MB PL wide-format per-category totals (transaction + volume)
+  bauPayrollTxn?: number; bauPayrollVol?: number;
+  bauDepositorTxn?: number; bauDepositorVol?: number;
+  topupPayrollTxn?: number; topupPayrollVol?: number;
+  topupDepositorTxn?: number; topupDepositorVol?: number;
+  openMarketTxn?: number; openMarketVol?: number;
+  // MB PA wide-format: TOTAL (C2G / BT / BalCon PA) + GRAND TOTAL
+  c2gTxn?: number; c2gVol?: number;
+  btTxn?: number; btVol?: number;
+  balconTxn?: number; balconVol?: number;
+  grandTotalTxn?: number; grandTotalVol?: number;
+  rowIdx: number;
+};
 
 // Parse BPI PA / ACQ raw Excel rows. Supports three layouts:
 //   1. Simple template: FULL NAME | COUNT/metric | VOLUME
@@ -13,7 +29,8 @@ type ParsedEntry = { name: string; count: number; volume: number; transmittals?:
 //      (per category: BAU Payroll, Depositor, Top Up, Open Market, …)
 //   3. ACQ report:       AGENT CODE | LAST NAME | FIRST NAME | DATE ONBOARD | SEAT CATEGORY |
 //      TOTAL + repeating NTB/SUPPLEMENTARY pairs per date
-function parseExcelRows(rows: any[], metricType: string): ParsedEntry[] {
+function parseExcelRows(rows: any[], metricType: string, campaignName = ''): ParsedEntry[] {
+  const isMbPa = /\bmb pa\b/i.test(campaignName);
   let nameCol  = 1;
   let countCol = 3;
   let volumeCol = 4;
@@ -114,10 +131,32 @@ function parseExcelRows(rows: any[], metricType: string): ParsedEntry[] {
       let maxVol = 0;
       for (const c of volumeCols) maxVol = Math.max(maxVol, Math.round(Number(row[c]) || 0));
 
+      const txn = (i2: number) => { const c = transactionCols[i2]; return c !== undefined ? Math.max(0, Math.floor(Number(row[c]) || 0)) : 0; };
+      const vol = (i2: number) => { const c = volumeCols[i2]; return c !== undefined ? Math.max(0, Math.round(Number(row[c]) || 0)) : 0; };
+      // MB PA: first pairs are TOTAL(C2G, BT, BalCon PA) then GRAND TOTAL.
+      // MB PL / BPI: first five pairs are BAU Payroll/Depositor, Top Up Payroll/Depositor, Open Market.
+      const categories = isMbPa
+        ? {
+            c2gTxn: txn(0), c2gVol: vol(0),
+            btTxn: txn(1), btVol: vol(1),
+            balconTxn: txn(2), balconVol: vol(2),
+            // Grand Total = sum of the three categories (the file's own grand-total
+            // column isn't reliably positioned, so we derive it).
+            grandTotalTxn: txn(0) + txn(1) + txn(2),
+            grandTotalVol: vol(0) + vol(1) + vol(2),
+          }
+        : {
+            bauPayrollTxn: txn(0), bauPayrollVol: vol(0),
+            bauDepositorTxn: txn(1), bauDepositorVol: vol(1),
+            topupPayrollTxn: txn(2), topupPayrollVol: vol(2),
+            topupDepositorTxn: txn(3), topupDepositorVol: vol(3),
+            openMarketTxn: txn(4), openMarketVol: vol(4),
+          };
+
       if (metricType === 'all_metrics') {
-        entries.push({ name, count: maxTx, volume: maxVol, transmittals: maxTx, approvals: 0, booked: 0, rowIdx: i + 1 });
+        entries.push({ name, count: maxTx, volume: maxVol, transmittals: maxTx, approvals: 0, booked: 0, ...categories, rowIdx: i + 1 });
       } else {
-        entries.push({ name, count: maxTx, volume: maxVol, rowIdx: i + 1 });
+        entries.push({ name, count: maxTx, volume: maxVol, ...categories, rowIdx: i + 1 });
       }
     }
     return entries;
@@ -194,6 +233,30 @@ function buildDetailData(row: ParsedEntry, metricType: string): Record<string, a
   if (row.ntb !== undefined) data.ntb = BigInt(row.ntb || 0);
   if (row.supplementary !== undefined) data.supplementary = BigInt(row.supplementary || 0);
   if (row.seatCategory) data.seatCategory = row.seatCategory;
+  // MB PL wide-format per-category totals
+  if (row.bauPayrollTxn !== undefined) {
+    data.bauPayrollTxn = BigInt(row.bauPayrollTxn || 0);
+    data.bauPayrollVol = BigInt(row.bauPayrollVol || 0);
+    data.bauDepositorTxn = BigInt(row.bauDepositorTxn || 0);
+    data.bauDepositorVol = BigInt(row.bauDepositorVol || 0);
+    data.topupPayrollTxn = BigInt(row.topupPayrollTxn || 0);
+    data.topupPayrollVol = BigInt(row.topupPayrollVol || 0);
+    data.topupDepositorTxn = BigInt(row.topupDepositorTxn || 0);
+    data.topupDepositorVol = BigInt(row.topupDepositorVol || 0);
+    data.openMarketTxn = BigInt(row.openMarketTxn || 0);
+    data.openMarketVol = BigInt(row.openMarketVol || 0);
+  }
+  // MB PA wide-format per-category totals
+  if (row.c2gTxn !== undefined) {
+    data.c2gTxn = BigInt(row.c2gTxn || 0);
+    data.c2gVol = BigInt(row.c2gVol || 0);
+    data.btTxn = BigInt(row.btTxn || 0);
+    data.btVol = BigInt(row.btVol || 0);
+    data.balconTxn = BigInt(row.balconTxn || 0);
+    data.balconVol = BigInt(row.balconVol || 0);
+    data.grandTotalTxn = BigInt(row.grandTotalTxn || 0);
+    data.grandTotalVol = BigInt(row.grandTotalVol || 0);
+  }
   return data;
 }
 
@@ -232,8 +295,9 @@ export async function POST(req: NextRequest) {
 
     const campaignExists = await prisma.campaign.findUnique({
       where: { id: effectiveCampaignId },
-      select: { id: true },
+      select: { id: true, campaignName: true },
     });
+    const campaignName = campaignExists?.campaignName || '';
     if (!campaignExists) {
       return NextResponse.json({ error: 'Selected campaign not found' }, { status: 400 });
     }
@@ -292,7 +356,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Excel file has insufficient rows' }, { status: 400 });
       }
 
-      const entries = parseExcelRows(rows, metricType);
+      const entries = parseExcelRows(rows, metricType, campaignName);
 
       // ── PREVIEW MODE: classify agents, no DB writes ──────────────────────
       if (mode === 'preview') {
@@ -454,6 +518,11 @@ export async function POST(req: NextRequest) {
           } else {
             detail[metricType] = row.count;
           }
+          if (row.ntb !== undefined) {
+            detail.ntb = row.ntb;
+            detail.supplementary = row.supplementary;
+            detail.seatCategory = row.seatCategory;
+          }
           results.details.push(detail);
         } catch (rowError: any) {
           results.errors.push(`Row ${row.rowIdx}: ${rowError.message}`);
@@ -491,7 +560,7 @@ export async function POST(req: NextRequest) {
       })
     );
 
-    const csvEntries = parseExcelRows(csvRows, metricType);
+    const csvEntries = parseExcelRows(csvRows, metricType, campaignName);
 
     if (csvEntries.length === 0) {
       return NextResponse.json({ error: 'No data rows found. Check that your CSV matches the BPI PA template format.' }, { status: 400 });
@@ -616,6 +685,11 @@ export async function POST(req: NextRequest) {
           detail.booked = row.booked;
         } else {
           detail[metricType] = row.count;
+        }
+        if (row.ntb !== undefined) {
+          detail.ntb = row.ntb;
+          detail.supplementary = row.supplementary;
+          detail.seatCategory = row.seatCategory;
         }
         csvResults.details.push(detail);
       } catch (rowError: any) {

@@ -25,6 +25,12 @@ interface Agent {
   seatNumber: number | null;
   email: string;
   monthlyTarget?: number;
+  monthlyTargetSupplementary?: number;
+  mbLevel?: string | null;
+  disbursedTxnTarget?: number | null;
+  disbursedVolTarget?: number | null;
+  grossTurnInsTxnTarget?: number | null;
+  grossTurnInsVolTarget?: number | null;
 }
 
 interface Production {
@@ -33,6 +39,26 @@ interface Production {
   approvals: number;
   booked: number;
   volume?: number;
+  ntb?: number;
+  supplementary?: number;
+  bauPayrollTxn?: number;
+  bauPayrollVol?: number;
+  bauDepositorTxn?: number;
+  bauDepositorVol?: number;
+  topupPayrollTxn?: number;
+  topupPayrollVol?: number;
+  topupDepositorTxn?: number;
+  topupDepositorVol?: number;
+  openMarketTxn?: number;
+  openMarketVol?: number;
+  c2gTxn?: number;
+  c2gVol?: number;
+  btTxn?: number;
+  btVol?: number;
+  balconTxn?: number;
+  balconVol?: number;
+  grandTotalTxn?: number;
+  grandTotalVol?: number;
 }
 
 interface CampaignBlock {
@@ -40,13 +66,38 @@ interface CampaignBlock {
   campaignName: string;
   kpiMetric: string;
   goal: number;
+  supplementaryGoal?: number;
   agents: Agent[];
   production: Record<string, Production>;
   attendance: Record<string, { status: string; remarks: string | null }>;
   entriesCount: number;
 }
 
-const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
+const ZERO_PROD: Production = {
+  transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0,
+  bauPayrollTxn: 0, bauPayrollVol: 0, bauDepositorTxn: 0, bauDepositorVol: 0,
+  topupPayrollTxn: 0, topupPayrollVol: 0, topupDepositorTxn: 0, topupDepositorVol: 0,
+  openMarketTxn: 0, openMarketVol: 0,
+  c2gTxn: 0, c2gVol: 0, btTxn: 0, btVol: 0, balconTxn: 0, balconVol: 0, grandTotalTxn: 0, grandTotalVol: 0,
+};
+
+// ACQ campaigns (name contains "ACQ") report NTB + Supplementary instead of booked volume.
+const isAcqCampaign = (name?: string | null) => /\bacq\b/i.test(name || '');
+
+// MB PL reports a BAU / Top Up transaction + volume breakdown.
+const isMbPlCampaign = (name?: string | null) => /\bmb pl\b/i.test(name || '');
+
+// MB PA reports TOTAL (C2G / BT / BalCon PA) + GRAND TOTAL transaction + volume.
+const isMbPaCampaign = (name?: string | null) => /\bmb pa\b/i.test(name || '');
+
+// MB PL "Goal per Agent" — standard Disbursed + Monthly Gross Turn Ins targets by level.
+const MB_PL_LEVELS = ['PAYROLL SU2', 'PAYROLL HYBRID-ROOKIE', 'DEPO HYBRID', 'PAYROLL HYBRID'];
+const MB_PL_LEVEL_GOALS: Record<string, { disbursedTxn: number; disbursedVol: number; gtiTxn: number; gtiVol: number }> = {
+  'PAYROLL SU2': { disbursedTxn: 10, disbursedVol: 750000, gtiTxn: 55, gtiVol: 4091103 },
+  'PAYROLL HYBRID-ROOKIE': { disbursedTxn: 24, disbursedVol: 1800000, gtiTxn: 82, gtiVol: 6136655.55 },
+  'DEPO HYBRID': { disbursedTxn: 18, disbursedVol: 2100000, gtiTxn: 60, gtiVol: 7056669 },
+  'PAYROLL HYBRID': { disbursedTxn: 30, disbursedVol: 2250000, gtiTxn: 81, gtiVol: 6136656 },
+};
 
 function kpiValueFor(metric: string, prod: Production): number {
   switch (metric) {
@@ -73,49 +124,168 @@ const getRankBadge = (index: number) => {
   return <span className="text-muted-foreground text-sm">{index + 1}</span>;
 };
 
+interface TargetPayload {
+  target: number;
+  targetSupplementary: number;
+  mbLevel?: string;
+  disbursedTxnTarget?: number;
+  disbursedVolTarget?: number;
+  grossTurnInsTxnTarget?: number;
+  grossTurnInsVolTarget?: number;
+}
+
 interface TargetModalProps {
   agentName: string;
   currentTarget?: number;
+  currentTargetSupplementary?: number;
+  isAcq?: boolean;
+  isMbPl?: boolean;
+  currentMbLevel?: string | null;
+  currentDisbursedTxn?: number | null;
+  currentDisbursedVol?: number | null;
+  currentGtiTxn?: number | null;
+  currentGtiVol?: number | null;
   onClose: () => void;
-  onSave: (target: number, setForAll?: boolean) => void;
+  onSave: (payload: TargetPayload, setForAll?: boolean) => void;
   loading: boolean;
   agentCount?: number;
 }
 
-function TargetModal({ agentName, currentTarget, onClose, onSave, loading, agentCount }: TargetModalProps) {
+function TargetModal({
+  agentName, currentTarget, currentTargetSupplementary, isAcq, isMbPl,
+  currentMbLevel, currentDisbursedTxn, currentDisbursedVol, currentGtiTxn, currentGtiVol,
+  onClose, onSave, loading, agentCount,
+}: TargetModalProps) {
   const [target, setTarget] = useState(currentTarget?.toString() || '');
+  const [targetSupp, setTargetSupp] = useState(currentTargetSupplementary?.toString() || '');
   const [setForAll, setSetForAll] = useState(false);
+  // MB PL state
+  const [mbLevel, setMbLevel] = useState(currentMbLevel || '');
+  const [disbursedTxn, setDisbursedTxn] = useState(currentDisbursedTxn != null ? String(currentDisbursedTxn) : '');
+  const [disbursedVol, setDisbursedVol] = useState(currentDisbursedVol != null ? String(currentDisbursedVol) : '');
+  const [gtiTxn, setGtiTxn] = useState(currentGtiTxn != null ? String(currentGtiTxn) : '');
+  const [gtiVol, setGtiVol] = useState(currentGtiVol != null ? String(currentGtiVol) : '');
+
+  // Auto-fill the four goals from the selected level (still overridable).
+  const applyLevel = (level: string) => {
+    setMbLevel(level);
+    const g = MB_PL_LEVEL_GOALS[level];
+    if (g) {
+      setDisbursedTxn(String(g.disbursedTxn));
+      setDisbursedVol(String(g.disbursedVol));
+      setGtiTxn(String(g.gtiTxn));
+      setGtiVol(String(g.gtiVol));
+    }
+  };
+
+  const handleSave = () => {
+    if (isMbPl) {
+      onSave({
+        target: 0, targetSupplementary: 0,
+        mbLevel,
+        disbursedTxnTarget: parseFloat(disbursedTxn) || 0,
+        disbursedVolTarget: parseFloat(disbursedVol) || 0,
+        grossTurnInsTxnTarget: parseFloat(gtiTxn) || 0,
+        grossTurnInsVolTarget: parseFloat(gtiVol) || 0,
+      }, setForAll);
+    } else {
+      onSave({ target: parseFloat(target) || 0, targetSupplementary: parseFloat(targetSupp) || 0 }, setForAll);
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <Card className="w-full max-w-sm">
+      <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>
             {setForAll ? 'Set Target for All Agents' : `Set Target for ${agentName}`}
           </CardTitle>
           <CardDescription>
-            {setForAll ? `Apply to all ${agentCount} agents in this campaign` : 'Monthly target/goal for this agent'}
+            {setForAll
+              ? `Apply to all ${agentCount} agents in this campaign`
+              : isMbPl ? 'Monthly goal per agent — Disbursed & Gross Turn Ins'
+              : isAcq ? 'Monthly NTB & Supplementary targets for this agent' : 'Monthly target/goal for this agent'}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="target">Monthly Target</Label>
-            <Input
-              id="target"
-              type="number"
-              placeholder="0"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              disabled={loading}
-            />
-          </div>
+          {isMbPl ? (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="mb-level">Level</Label>
+                <select
+                  id="mb-level"
+                  value={mbLevel}
+                  onChange={(e) => applyLevel(e.target.value)}
+                  disabled={loading}
+                  className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Select level…</option>
+                  {MB_PL_LEVELS.map((lvl) => <option key={lvl} value={lvl}>{lvl}</option>)}
+                </select>
+                <p className="text-xs text-muted-foreground">Selecting a level auto-fills the goals below (you can override).</p>
+              </div>
+              <div className="rounded-lg border p-3 space-y-2">
+                <p className="text-xs font-semibold text-slate-700">Disbursed</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="disb-txn" className="text-xs">Transactions</Label>
+                    <Input id="disb-txn" type="number" placeholder="0" value={disbursedTxn} onChange={(e) => setDisbursedTxn(e.target.value)} disabled={loading} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="disb-vol" className="text-xs">Volume</Label>
+                    <Input id="disb-vol" type="number" placeholder="0" value={disbursedVol} onChange={(e) => setDisbursedVol(e.target.value)} disabled={loading} />
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-lg border p-3 space-y-2">
+                <p className="text-xs font-semibold text-slate-700">Monthly Gross Turn Ins</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="gti-txn" className="text-xs">Transactions</Label>
+                    <Input id="gti-txn" type="number" placeholder="0" value={gtiTxn} onChange={(e) => setGtiTxn(e.target.value)} disabled={loading} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="gti-vol" className="text-xs">Volume</Label>
+                    <Input id="gti-vol" type="number" placeholder="0" value={gtiVol} onChange={(e) => setGtiVol(e.target.value)} disabled={loading} />
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="target">{isAcq ? 'Target NTB' : 'Monthly Target'}</Label>
+                <Input
+                  id="target"
+                  type="number"
+                  placeholder="0"
+                  value={target}
+                  onChange={(e) => setTarget(e.target.value)}
+                  disabled={loading}
+                />
+              </div>
+              {isAcq && (
+                <div className="space-y-2">
+                  <Label htmlFor="target-supp">Target Supplementary</Label>
+                  <Input
+                    id="target-supp"
+                    type="number"
+                    placeholder="0"
+                    value={targetSupp}
+                    onChange={(e) => setTargetSupp(e.target.value)}
+                    disabled={loading}
+                  />
+                </div>
+              )}
+            </>
+          )}
           <div className="flex gap-2">
             <Button variant="outline" onClick={onClose} disabled={loading} className="flex-1">
               Cancel
             </Button>
             <Button
-              onClick={() => onSave(parseFloat(target) || 0, setForAll)}
-              disabled={loading || !target}
+              onClick={handleSave}
+              disabled={loading || (isMbPl ? !mbLevel && !disbursedTxn && !gtiTxn : !target)}
               className="flex-1"
             >
               {loading ? 'Saving...' : setForAll ? 'Set for All' : 'Save Target'}
@@ -169,7 +339,13 @@ export default function CollectorDashboard() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [createdAgent, setCreatedAgent] = useState<{ name: string; email: string; seatNumber: number; campaignName: string } | null>(null);
-  const [targetModal, setTargetModal] = useState<{ agentId: string; agentName: string; currentTarget?: number; campaignId: string; agentCount: number } | null>(null);
+  const [targetModal, setTargetModal] = useState<{
+    agentId: string; agentName: string; currentTarget?: number; currentTargetSupplementary?: number;
+    isAcq?: boolean; isMbPl?: boolean;
+    currentMbLevel?: string | null; currentDisbursedTxn?: number | null; currentDisbursedVol?: number | null;
+    currentGtiTxn?: number | null; currentGtiVol?: number | null;
+    campaignId: string; agentCount: number;
+  } | null>(null);
   const [savingTarget, setSavingTarget] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [agentSearch, setAgentSearch] = useState('');
@@ -244,11 +420,13 @@ export default function CollectorDashboard() {
   const kpis = useMemo(() => {
     let totalAgents = 0, presentCount = 0, absentCount = 0;
     let totalTransmittals = 0, totalActivations = 0, totalApprovals = 0, totalBooked = 0, totalVolume = 0;
-    let totalGoal = 0, kpiValue = 0, totalTarget = 0, entriesCount = 0;
+    let totalNtb = 0, totalSupplementary = 0;
+    let totalGoal = 0, totalSuppGoal = 0, kpiValue = 0, totalTarget = 0, entriesCount = 0;
 
     for (const c of campaigns) {
       totalAgents += c.agents.length;
       totalGoal += c.goal || 0;
+      totalSuppGoal += c.supplementaryGoal || 0;
       entriesCount += c.entriesCount || 0;
       let campaignKpi = 0;
       for (const a of c.agents) {
@@ -258,6 +436,8 @@ export default function CollectorDashboard() {
         totalApprovals += p.approvals;
         totalBooked += p.booked;
         totalVolume += p.volume || 0;
+        totalNtb += p.ntb || 0;
+        totalSupplementary += p.supplementary || 0;
         totalTarget += a.monthlyTarget || 0;
         campaignKpi += kpiValueFor(c.kpiMetric, p);
         const record = c.attendance[a.id];
@@ -267,14 +447,24 @@ export default function CollectorDashboard() {
       kpiValue += campaignKpi;
     }
 
+    // When every assigned campaign is ACQ, the global roll-up switches to NTB.
+    const allAcq = campaigns.length > 0 && campaigns.every((c) => isAcqCampaign(c.campaignName));
+
     let goal = totalGoal;
     if (goal === 0 && totalTarget > 0) goal = totalTarget;
-    const targetProgress = goal > 0 ? ((totalVolume / goal) * 100).toFixed(1) : '0';
-    const remainingGoal = Math.max(0, goal - totalVolume);
+    const actual = allAcq ? totalNtb : totalVolume;
+    const targetProgress = goal > 0 ? ((actual / goal) * 100).toFixed(1) : '0';
+    const remainingGoal = Math.max(0, goal - actual);
+
+    // Supplementary goal roll-up (ACQ only)
+    const suppProgress = totalSuppGoal > 0 ? ((totalSupplementary / totalSuppGoal) * 100).toFixed(1) : '0';
+    const remainingSupp = Math.max(0, totalSuppGoal - totalSupplementary);
 
     return {
       totalAgents, presentCount, absentCount,
       totalTransmittals, totalActivations, totalApprovals, totalBooked, totalVolume,
+      totalNtb, totalSupplementary, allAcq,
+      totalSuppGoal, suppProgress, remainingSupp,
       goal, kpiValue, targetProgress, remainingGoal, totalTarget, entriesCount,
     };
   }, [campaigns]);
@@ -365,15 +555,27 @@ export default function CollectorDashboard() {
     }
   };
 
-  const handleSaveTarget = async (target: number, setForAll?: boolean) => {
+  const handleSaveTarget = async (payload: TargetPayload, setForAll?: boolean) => {
     if (!targetModal) return;
     setSavingTarget(true);
     try {
+      // Send the field set matching the campaign type.
+      const body = targetModal.isMbPl
+        ? {
+            mbLevel: payload.mbLevel,
+            disbursedTxnTarget: payload.disbursedTxnTarget,
+            disbursedVolTarget: payload.disbursedVolTarget,
+            grossTurnInsTxnTarget: payload.grossTurnInsTxnTarget,
+            grossTurnInsVolTarget: payload.grossTurnInsVolTarget,
+          }
+        : targetModal.isAcq
+        ? { target: payload.target, targetSupplementary: payload.targetSupplementary }
+        : { target: payload.target };
       if (setForAll) {
         const res = await fetch(`/api/collectors/campaigns/${targetModal.campaignId}/agents/targets`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ target }),
+          body: JSON.stringify(body),
         });
         if (!res.ok) throw new Error('Failed to save targets');
         setMessage(`✅ Target updated for all ${targetModal.agentCount} agents!`);
@@ -381,7 +583,7 @@ export default function CollectorDashboard() {
         const res = await fetch(`/api/collectors/agents/${targetModal.agentId}/targets`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ target }),
+          body: JSON.stringify(body),
         });
         if (!res.ok) throw new Error('Failed to save target');
         setMessage(`✅ Target updated for ${targetModal.agentName}!`);
@@ -654,14 +856,18 @@ export default function CollectorDashboard() {
         <Card className="bg-gradient-to-br from-indigo-500/10 to-indigo-600/5 border-indigo-500/20">
           <CardContent className="pt-4">
             <div className="flex flex-col gap-2">
-              <p className="text-xs text-muted-foreground uppercase tracking-wide">Total Goal (Booked Vol)</p>
-              <p className="text-3xl font-bold text-indigo-500">₱{kpis.goal.toLocaleString()}</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">{kpis.allAcq ? 'Total Goal (NTB)' : 'Total Goal (Booked Vol)'}</p>
+              <p className="text-3xl font-bold text-indigo-500">{kpis.allAcq ? kpis.goal.toLocaleString() : `₱${kpis.goal.toLocaleString()}`}</p>
               <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">Progress: ₱{kpis.totalVolume.toLocaleString()}</span>
+                <span className="text-muted-foreground">
+                  {kpis.allAcq ? `Progress: ${kpis.totalNtb.toLocaleString()}` : `Progress: ₱${kpis.totalVolume.toLocaleString()}`}
+                </span>
                 <span className="font-semibold text-indigo-500">{kpis.targetProgress}%</span>
               </div>
               {kpis.remainingGoal > 0 && (
-                <p className="text-xs text-orange-500 font-semibold">To Go: ₱{kpis.remainingGoal.toLocaleString()}</p>
+                <p className="text-xs text-orange-500 font-semibold">
+                  {kpis.allAcq ? `To Go: ${kpis.remainingGoal.toLocaleString()}` : `To Go: ₱${kpis.remainingGoal.toLocaleString()}`}
+                </p>
               )}
             </div>
           </CardContent>
@@ -680,12 +886,26 @@ export default function CollectorDashboard() {
         <Card className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/20">
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Booked Volume (₱)</p>
-                <p className="text-3xl font-bold mt-1 text-purple-500">₱{kpis.totalVolume?.toLocaleString() || '0'}</p>
-                <p className="text-xs text-muted-foreground mt-1">from imported data</p>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">{kpis.allAcq ? 'Total Supplementary' : 'Booked Volume (₱)'}</p>
+                <p className="text-3xl font-bold mt-1 text-purple-500">
+                  {kpis.allAcq ? (kpis.totalSupplementary?.toLocaleString() || '0') : `₱${kpis.totalVolume?.toLocaleString() || '0'}`}
+                </p>
+                {kpis.allAcq ? (
+                  <>
+                    <div className="flex items-center justify-between text-xs mt-1 pr-1">
+                      <span className="text-muted-foreground">Goal: {kpis.totalSuppGoal.toLocaleString()}</span>
+                      <span className="font-semibold text-purple-500">{kpis.suppProgress}%</span>
+                    </div>
+                    {kpis.remainingSupp > 0 && (
+                      <p className="text-xs text-orange-500 font-semibold mt-1">To Go: {kpis.remainingSupp.toLocaleString()}</p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground mt-1">from imported data</p>
+                )}
               </div>
-              <TrendingUp className="w-8 h-8 text-purple-500 opacity-80" />
+              <TrendingUp className="w-8 h-8 text-purple-500 opacity-80 shrink-0" />
             </div>
           </CardContent>
         </Card>
@@ -869,6 +1089,13 @@ export default function CollectorDashboard() {
                 : null;
               const topBookedVolume = topPerformer ? (campaign.production[topPerformer.id] || ZERO_PROD).volume || 0 : 0;
 
+              // ACQ campaigns report NTB + Supplementary instead of booked volume.
+              const acq = isAcqCampaign(campaign.campaignName);
+              const totalNtb = campaignAgents.reduce((sum, agent) => sum + ((campaign.production[agent.id] || ZERO_PROD).ntb || 0), 0);
+              const totalSupplementary = campaignAgents.reduce((sum, agent) => sum + ((campaign.production[agent.id] || ZERO_PROD).supplementary || 0), 0);
+              const ntbGoal = campaignGoal; // legacy monthly goal doubles as the NTB goal
+              const ntbProgress = ntbGoal > 0 ? ((totalNtb / ntbGoal) * 100).toFixed(1) : '0';
+
               return (
                 <Card key={campaign.id} className="relative overflow-hidden hover:shadow-md transition-shadow">
                   {/* Background accent */}
@@ -880,43 +1107,58 @@ export default function CollectorDashboard() {
                       <div>
                         <h3 className="font-bold text-lg text-foreground">{campaign.campaignName}</h3>
                         <p className="text-xs text-muted-foreground capitalize mt-1">
-                          Booked Volume Goal (₱)
+                          {acq ? 'NTB Goal' : 'Booked Volume Goal (₱)'}
                         </p>
                       </div>
 
                       {/* Goal and Progress */}
                       <div className="space-y-2">
                         <div className="flex items-baseline justify-between">
-                          <span className="text-xs text-muted-foreground uppercase tracking-wide">Goal</span>
-                          <span className="text-xl font-bold text-blue-600">₱{campaignGoal.toLocaleString()}</span>
+                          <span className="text-xs text-muted-foreground uppercase tracking-wide">{acq ? 'NTB Goal' : 'Goal'}</span>
+                          <span className="text-xl font-bold text-blue-600">
+                            {acq ? Number(ntbGoal).toLocaleString() : `₱${campaignGoal.toLocaleString()}`}
+                          </span>
                         </div>
                         <div className="flex items-center gap-2">
                           <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                             <div
                               className={`h-full transition-all ${
-                                Number(goalProgress) >= 100 ? 'bg-green-500' :
-                                Number(goalProgress) >= 75 ? 'bg-blue-500' :
-                                Number(goalProgress) >= 50 ? 'bg-yellow-500' :
+                                Number(acq ? ntbProgress : goalProgress) >= 100 ? 'bg-green-500' :
+                                Number(acq ? ntbProgress : goalProgress) >= 75 ? 'bg-blue-500' :
+                                Number(acq ? ntbProgress : goalProgress) >= 50 ? 'bg-yellow-500' :
                                 'bg-red-500'
                               }`}
-                              style={{ width: `${Math.min(Number(goalProgress), 100)}%` }}
+                              style={{ width: `${Math.min(Number(acq ? ntbProgress : goalProgress), 100)}%` }}
                             />
                           </div>
-                          <span className="text-sm font-semibold text-foreground w-12 text-right">{goalProgress}%</span>
+                          <span className="text-sm font-semibold text-foreground w-12 text-right">{acq ? ntbProgress : goalProgress}%</span>
                         </div>
                       </div>
 
                       {/* Stats Grid */}
-                      <div className="grid grid-cols-2 gap-3 pt-2 border-t">
-                        <div className="text-center">
-                          <p className="text-2xl font-bold text-foreground">{campaignAgents.length}</p>
-                          <p className="text-xs text-muted-foreground mt-1">Agents</p>
+                      {acq ? (
+                        <div className="grid grid-cols-2 gap-3 pt-2 border-t">
+                          <div className="text-center">
+                            <p className="text-2xl font-bold text-blue-600">{Number(totalNtb).toLocaleString()}</p>
+                            <p className="text-xs text-muted-foreground mt-1">Total NTB</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-2xl font-bold text-purple-600">{Number(totalSupplementary).toLocaleString()}</p>
+                            <p className="text-xs text-muted-foreground mt-1">Total Supplementary</p>
+                          </div>
                         </div>
-                        <div className="text-center">
-                          <p className="text-2xl font-bold text-purple-600">₱{Number(totalBookedVolume).toLocaleString()}</p>
-                          <p className="text-xs text-muted-foreground mt-1">Booked Volume</p>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-3 pt-2 border-t">
+                          <div className="text-center">
+                            <p className="text-2xl font-bold text-foreground">{campaignAgents.length}</p>
+                            <p className="text-xs text-muted-foreground mt-1">Agents</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-2xl font-bold text-purple-600">₱{Number(totalBookedVolume).toLocaleString()}</p>
+                            <p className="text-xs text-muted-foreground mt-1">Booked Volume</p>
+                          </div>
                         </div>
-                      </div>
+                      )}
 
                       {/* Top Booked Volume Performer */}
                       {topPerformer && topBookedVolume > 0 && (
@@ -977,10 +1219,22 @@ export default function CollectorDashboard() {
           <div className="space-y-4">
             {nonEmptyCampaigns.map((block) => {
               const prodFor = (agentId: string) => block.production[agentId] || ZERO_PROD;
+              const acq = isAcqCampaign(block.campaignName);
+              const mbpl = isMbPlCampaign(block.campaignName);
+              const mbpa = isMbPaCampaign(block.campaignName);
               const q = agentSearch.trim().toLowerCase();
               let filtered = block.agents.filter((a) => a.name.toLowerCase().includes(q));
               filtered = [...filtered].sort((a, b) => {
-                if (sortBy === 'booked') return (prodFor(b.id).volume || 0) - (prodFor(a.id).volume || 0);
+                if (sortBy === 'booked') {
+                  // ACQ ranks by highest NTB, then Supplementary as the tiebreaker
+                  // (not summed); others rank by booked volume.
+                  if (acq) {
+                    const ntbDiff = (prodFor(b.id).ntb || 0) - (prodFor(a.id).ntb || 0);
+                    if (ntbDiff !== 0) return ntbDiff;
+                    return (prodFor(b.id).supplementary || 0) - (prodFor(a.id).supplementary || 0);
+                  }
+                  return (prodFor(b.id).volume || 0) - (prodFor(a.id).volume || 0);
+                }
                 if (sortBy === 'name') return a.name.localeCompare(b.name);
                 return (a.seatNumber || 0) - (b.seatNumber || 0);
               });
@@ -992,6 +1246,7 @@ export default function CollectorDashboard() {
                   campaignName={block.campaignName}
                   kpiMetric={block.kpiMetric}
                   goal={block.goal}
+                  supplementaryGoal={block.supplementaryGoal || 0}
                   agents={block.agents}
                   production={block.production}
                   attendance={block.attendance}
@@ -1001,21 +1256,78 @@ export default function CollectorDashboard() {
                 >
                   {/* Collector Table */}
                   {filtered.length > 0 ? (
-                    <div className="max-h-[420px] overflow-y-auto">
+                    <div className="max-h-[420px] overflow-auto">
                       <Table>
                         <TableHeader className="sticky top-0 bg-card z-10">
-                          <TableRow>
-                            <TableHead className="w-12">Rank</TableHead>
-                            <TableHead className="w-12">Seat</TableHead>
-                            <TableHead>Collector</TableHead>
-                            <TableHead className="text-center w-20">Attendance</TableHead>
-                            <TableHead className="text-center">Transmitted</TableHead>
-                            <TableHead className="text-center">Approved</TableHead>
-                            <TableHead className="text-center">Booked</TableHead>
-                            <TableHead className="text-right">Booked Volume (₱)</TableHead>
-                            <TableHead className="w-32">Progress</TableHead>
-                            <TableHead className="text-right w-20">Actions</TableHead>
-                          </TableRow>
+                          {mbpl ? (
+                            <>
+                              <TableRow>
+                                <TableHead rowSpan={2} className="w-12 align-bottom">Rank</TableHead>
+                                <TableHead rowSpan={2} className="w-12 align-bottom">Seat</TableHead>
+                                <TableHead rowSpan={2} className="align-bottom">Collector</TableHead>
+                                <TableHead colSpan={4} className="text-center border-l">BAU</TableHead>
+                                <TableHead colSpan={6} className="text-center border-l">TOP UP</TableHead>
+                                <TableHead rowSpan={2} className="w-32 border-l align-bottom">Progress</TableHead>
+                                <TableHead rowSpan={2} className="text-right w-20 align-bottom">Actions</TableHead>
+                              </TableRow>
+                              <TableRow>
+                                <TableHead className="text-center text-xs border-l">Payroll Txn</TableHead>
+                                <TableHead className="text-center text-xs">Payroll Vol</TableHead>
+                                <TableHead className="text-center text-xs">Depositor Txn</TableHead>
+                                <TableHead className="text-center text-xs">Depositor Vol</TableHead>
+                                <TableHead className="text-center text-xs border-l">Payroll Txn</TableHead>
+                                <TableHead className="text-center text-xs">Payroll Vol</TableHead>
+                                <TableHead className="text-center text-xs">Depositor Txn</TableHead>
+                                <TableHead className="text-center text-xs">Depositor Vol</TableHead>
+                                <TableHead className="text-center text-xs">Open Mkt Txn</TableHead>
+                                <TableHead className="text-center text-xs">Open Mkt Vol</TableHead>
+                              </TableRow>
+                            </>
+                          ) : mbpa ? (
+                            <>
+                              <TableRow>
+                                <TableHead rowSpan={2} className="w-12 align-bottom">Rank</TableHead>
+                                <TableHead rowSpan={2} className="w-12 align-bottom">Seat</TableHead>
+                                <TableHead rowSpan={2} className="align-bottom">Collector</TableHead>
+                                <TableHead colSpan={6} className="text-center border-l">TOTAL</TableHead>
+                                <TableHead colSpan={2} className="text-center border-l">GRAND TOTAL</TableHead>
+                                <TableHead rowSpan={2} className="w-32 border-l align-bottom">Progress</TableHead>
+                                <TableHead rowSpan={2} className="text-right w-20 align-bottom">Actions</TableHead>
+                              </TableRow>
+                              <TableRow>
+                                <TableHead className="text-center text-xs border-l">C2G Txn</TableHead>
+                                <TableHead className="text-center text-xs">C2G Vol</TableHead>
+                                <TableHead className="text-center text-xs">BT Txn</TableHead>
+                                <TableHead className="text-center text-xs">BT Vol</TableHead>
+                                <TableHead className="text-center text-xs">BalCon PA Txn</TableHead>
+                                <TableHead className="text-center text-xs">BalCon PA Vol</TableHead>
+                                <TableHead className="text-center text-xs border-l">Txn</TableHead>
+                                <TableHead className="text-center text-xs">Vol</TableHead>
+                              </TableRow>
+                            </>
+                          ) : (
+                            <TableRow>
+                              <TableHead className="w-12">Rank</TableHead>
+                              <TableHead className="w-12">Seat</TableHead>
+                              <TableHead>Collector</TableHead>
+                              {acq ? (
+                                <>
+                                  <TableHead className="text-center">NTB</TableHead>
+                                  <TableHead className="text-center">Supplementary</TableHead>
+                                </>
+                              ) : (
+                                <>
+                                  <TableHead className="text-center w-20">Attendance</TableHead>
+                                  <TableHead className="text-center">Transmitted</TableHead>
+                                  <TableHead className="text-center">Approved</TableHead>
+                                  <TableHead className="text-center">Booked</TableHead>
+                                  <TableHead className="text-right">Booked Volume (₱)</TableHead>
+                                </>
+                              )}
+                              <TableHead className="w-32">Progress</TableHead>
+                              <TableHead className="text-right w-20">Actions</TableHead>
+                            </TableRow>
+                          )}
                         </TableHeader>
                         <TableBody>
                           {filtered.map((agent, index) => {
@@ -1023,7 +1335,24 @@ export default function CollectorDashboard() {
                             const record = block.attendance[agent.id];
                             const isPresent = !record || record.status === 'PRESENT';
                             const value = kpiValueFor(block.kpiMetric, prod);
-                            const progressNum = agent.monthlyTarget ? ((prod.volume || 0) / agent.monthlyTarget) * 100 : 0;
+                            // ACQ tracks (NTB + Supplementary) vs (NTB + Supplementary targets); others track booked volume vs target.
+                            const acqTarget = (agent.monthlyTarget || 0) + (agent.monthlyTargetSupplementary || 0);
+                            const acqActual = (prod.ntb || 0) + (prod.supplementary || 0);
+                            const hasTarget = acq ? acqTarget > 0 : !!agent.monthlyTarget;
+                            const progressNum = acq
+                              ? (acqTarget > 0 ? (acqActual / acqTarget) * 100 : 0)
+                              : (agent.monthlyTarget ? ((prod.volume || 0) / agent.monthlyTarget) * 100 : 0);
+                            // Separate NTB / Supplementary progress bars for ACQ.
+                            const ntbProgress = (agent.monthlyTarget || 0) > 0 ? ((prod.ntb || 0) / (agent.monthlyTarget as number)) * 100 : 0;
+                            const suppProgress = (agent.monthlyTargetSupplementary || 0) > 0 ? ((prod.supplementary || 0) / (agent.monthlyTargetSupplementary as number)) * 100 : 0;
+                            // MB PL: total turn-ins (all BAU + Top Up txn/vol) vs the Gross Turn Ins goals.
+                            const mbTotalTxn = (prod.bauPayrollTxn || 0) + (prod.bauDepositorTxn || 0) + (prod.topupPayrollTxn || 0) + (prod.topupDepositorTxn || 0) + (prod.openMarketTxn || 0);
+                            const mbTotalVol = (prod.bauPayrollVol || 0) + (prod.bauDepositorVol || 0) + (prod.topupPayrollVol || 0) + (prod.topupDepositorVol || 0) + (prod.openMarketVol || 0);
+                            const mbTxnTarget = agent.grossTurnInsTxnTarget || 0;
+                            const mbVolTarget = agent.grossTurnInsVolTarget || 0;
+                            const mbTxnProgress = mbTxnTarget > 0 ? (mbTotalTxn / mbTxnTarget) * 100 : 0;
+                            const mbVolProgress = mbVolTarget > 0 ? (mbTotalVol / mbVolTarget) * 100 : 0;
+                            const mbHasTarget = mbTxnTarget > 0 || mbVolTarget > 0 || (agent.disbursedTxnTarget || 0) > 0 || (agent.disbursedVolTarget || 0) > 0;
 
                             return (
                               <TableRow key={agent.id} className={!isPresent ? 'opacity-50 bg-muted/30' : ''}>
@@ -1032,26 +1361,101 @@ export default function CollectorDashboard() {
                                 </TableCell>
                                 <TableCell className="font-semibold text-muted-foreground">{agent.seatNumber}</TableCell>
                                 <TableCell className="font-medium">{agent.name}</TableCell>
-                                <TableCell className="text-center">
-                                  <button
-                                    onClick={() => handleToggleAttendance(agent.id, record?.status || 'PRESENT')}
-                                    className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors cursor-pointer ${
-                                      isPresent
-                                        ? 'text-green-500 bg-green-500/10 hover:bg-green-500/20'
-                                        : 'text-red-500 bg-red-500/10 hover:bg-red-500/20'
-                                    }`}
-                                    title="Click to toggle"
-                                  >
-                                    {isPresent ? <UserCheck className="w-3 h-3" /> : <UserX className="w-3 h-3" />}
-                                    <span>{isPresent ? 'P' : 'A'}</span>
-                                  </button>
-                                </TableCell>
-                                <TableCell className="text-center">{prod.transmittals}</TableCell>
-                                <TableCell className="text-center">{prod.approvals}</TableCell>
-                                <TableCell className="text-center font-semibold text-primary">{prod.booked}</TableCell>
-                                <TableCell className="text-right font-semibold text-purple-600">₱{Number(prod.volume || 0).toLocaleString()}</TableCell>
+                                {mbpl ? (
+                                  <>
+                                    <TableCell className="text-center border-l">{Number(prod.bauPayrollTxn || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center text-purple-600">₱{Number(prod.bauPayrollVol || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center">{Number(prod.bauDepositorTxn || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center text-purple-600">₱{Number(prod.bauDepositorVol || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center border-l">{Number(prod.topupPayrollTxn || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center text-purple-600">₱{Number(prod.topupPayrollVol || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center">{Number(prod.topupDepositorTxn || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center text-purple-600">₱{Number(prod.topupDepositorVol || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center">{Number(prod.openMarketTxn || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center text-purple-600">₱{Number(prod.openMarketVol || 0).toLocaleString()}</TableCell>
+                                  </>
+                                ) : mbpa ? (
+                                  <>
+                                    <TableCell className="text-center border-l">{Number(prod.c2gTxn || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center text-purple-600">₱{Number(prod.c2gVol || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center">{Number(prod.btTxn || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center text-purple-600">₱{Number(prod.btVol || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center">{Number(prod.balconTxn || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center text-purple-600">₱{Number(prod.balconVol || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center border-l font-semibold">{Number((prod.c2gTxn || 0) + (prod.btTxn || 0) + (prod.balconTxn || 0)).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center text-purple-600 font-semibold">₱{Number((prod.c2gVol || 0) + (prod.btVol || 0) + (prod.balconVol || 0)).toLocaleString()}</TableCell>
+                                  </>
+                                ) : acq ? (
+                                  <>
+                                    <TableCell className="text-center font-semibold text-blue-600">{Number(prod.ntb || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center font-semibold text-purple-600">{Number(prod.supplementary || 0).toLocaleString()}</TableCell>
+                                  </>
+                                ) : (
+                                  <>
+                                    <TableCell className="text-center">
+                                      <button
+                                        onClick={() => handleToggleAttendance(agent.id, record?.status || 'PRESENT')}
+                                        className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors cursor-pointer ${
+                                          isPresent
+                                            ? 'text-green-500 bg-green-500/10 hover:bg-green-500/20'
+                                            : 'text-red-500 bg-red-500/10 hover:bg-red-500/20'
+                                        }`}
+                                        title="Click to toggle"
+                                      >
+                                        {isPresent ? <UserCheck className="w-3 h-3" /> : <UserX className="w-3 h-3" />}
+                                        <span>{isPresent ? 'P' : 'A'}</span>
+                                      </button>
+                                    </TableCell>
+                                    <TableCell className="text-center">{prod.transmittals}</TableCell>
+                                    <TableCell className="text-center">{prod.approvals}</TableCell>
+                                    <TableCell className="text-center font-semibold text-primary">{prod.booked}</TableCell>
+                                    <TableCell className="text-right font-semibold text-purple-600">₱{Number(prod.volume || 0).toLocaleString()}</TableCell>
+                                  </>
+                                )}
                                 <TableCell>
-                                  {agent.monthlyTarget ? (
+                                  {mbpl ? (
+                                    mbHasTarget ? (
+                                      <div className="space-y-1.5">
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-[10px] font-semibold text-blue-600 w-7 shrink-0">TXN</span>
+                                          <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                                            <div className={`h-full transition-all ${getProgressColor(mbTxnProgress)}`} style={{ width: `${Math.min(mbTxnProgress, 100)}%` }} />
+                                          </div>
+                                          <span className="text-xs w-9 text-right text-muted-foreground">{mbTxnProgress.toFixed(0)}%</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-[10px] font-semibold text-purple-600 w-7 shrink-0">VOL</span>
+                                          <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                                            <div className={`h-full transition-all ${getProgressColor(mbVolProgress)}`} style={{ width: `${Math.min(mbVolProgress, 100)}%` }} />
+                                          </div>
+                                          <span className="text-xs w-9 text-right text-muted-foreground">{mbVolProgress.toFixed(0)}%</span>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <span className="text-muted-foreground text-xs">No target</span>
+                                    )
+                                  ) : acq ? (
+                                    hasTarget ? (
+                                      <div className="space-y-1.5">
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-[10px] font-semibold text-blue-600 w-7 shrink-0">NTB</span>
+                                          <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                                            <div className={`h-full transition-all ${getProgressColor(ntbProgress)}`} style={{ width: `${Math.min(ntbProgress, 100)}%` }} />
+                                          </div>
+                                          <span className="text-xs w-9 text-right text-muted-foreground">{ntbProgress.toFixed(0)}%</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-[10px] font-semibold text-purple-600 w-7 shrink-0">SUP</span>
+                                          <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                                            <div className={`h-full transition-all ${getProgressColor(suppProgress)}`} style={{ width: `${Math.min(suppProgress, 100)}%` }} />
+                                          </div>
+                                          <span className="text-xs w-9 text-right text-muted-foreground">{suppProgress.toFixed(0)}%</span>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <span className="text-muted-foreground text-xs">No target</span>
+                                    )
+                                  ) : agent.monthlyTarget ? (
                                     <div className="flex items-center gap-2">
                                       <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                                         <div
@@ -1076,7 +1480,7 @@ export default function CollectorDashboard() {
                                   <div className="flex gap-1 justify-end">
                                     <Button
                                       variant="ghost" size="icon" className="h-7 w-7"
-                                      onClick={() => setTargetModal({ agentId: agent.id, agentName: agent.name, currentTarget: agent.monthlyTarget, campaignId: block.id, agentCount: block.agents.length })}
+                                      onClick={() => setTargetModal({ agentId: agent.id, agentName: agent.name, currentTarget: agent.monthlyTarget, currentTargetSupplementary: agent.monthlyTargetSupplementary, isAcq: acq, isMbPl: mbpl, currentMbLevel: agent.mbLevel, currentDisbursedTxn: agent.disbursedTxnTarget, currentDisbursedVol: agent.disbursedVolTarget, currentGtiTxn: agent.grossTurnInsTxnTarget, currentGtiVol: agent.grossTurnInsVolTarget, campaignId: block.id, agentCount: block.agents.length })}
                                       title="Set Target"
                                     >
                                       <Target className="h-3.5 w-3.5" />
@@ -1129,6 +1533,14 @@ export default function CollectorDashboard() {
         <TargetModal
           agentName={targetModal.agentName}
           currentTarget={targetModal.currentTarget}
+          currentTargetSupplementary={targetModal.currentTargetSupplementary}
+          isAcq={targetModal.isAcq}
+          isMbPl={targetModal.isMbPl}
+          currentMbLevel={targetModal.currentMbLevel}
+          currentDisbursedTxn={targetModal.currentDisbursedTxn}
+          currentDisbursedVol={targetModal.currentDisbursedVol}
+          currentGtiTxn={targetModal.currentGtiTxn}
+          currentGtiVol={targetModal.currentGtiVol}
           onClose={() => setTargetModal(null)}
           onSave={handleSaveTarget}
           loading={savingTarget}

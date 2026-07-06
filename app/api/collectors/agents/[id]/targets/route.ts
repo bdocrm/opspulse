@@ -71,11 +71,21 @@ export async function POST(
     }
 
     const userId = params.id;
-    const { target, startDate } = await req.json();
+    const { target, targetSupplementary, startDate, mbLevel, disbursedTxnTarget, disbursedVolTarget, grossTurnInsTxnTarget, grossTurnInsVolTarget } = await req.json();
 
-    if (!target || target <= 0) {
+    // MB PL uses a level + 4-part goal instead of a single numeric target.
+    const hasMbPl =
+      mbLevel !== undefined || disbursedTxnTarget !== undefined || disbursedVolTarget !== undefined ||
+      grossTurnInsTxnTarget !== undefined || grossTurnInsVolTarget !== undefined;
+
+    if (!hasMbPl && (!target || target <= 0)) {
       return NextResponse.json({ error: "Invalid target" }, { status: 400 });
     }
+    const suppTarget =
+      targetSupplementary !== undefined && targetSupplementary !== null
+        ? Number(targetSupplementary) || 0
+        : undefined;
+    const num = (v: any) => (v !== undefined && v !== null ? Number(v) || 0 : undefined);
 
     const agent = await prisma.user.findUnique({
       where: { id: userId },
@@ -91,25 +101,30 @@ export async function POST(
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // End the previous target
-    await prisma.agentTarget.updateMany({
-      where: { userId, endDate: null },
-      data: { endDate: new Date(startDate || new Date()) },
-    });
+    // Track numeric target history only when a single target value is provided.
+    let newTarget = null;
+    if (target && target > 0) {
+      await prisma.agentTarget.updateMany({
+        where: { userId, endDate: null },
+        data: { endDate: new Date(startDate || new Date()) },
+      });
+      newTarget = await prisma.agentTarget.create({
+        data: { userId, target, startDate: new Date(startDate || new Date()) },
+      });
+    }
 
-    // Create new target
-    const newTarget = await prisma.agentTarget.create({
-      data: {
-        userId,
-        target,
-        startDate: new Date(startDate || new Date()),
-      },
-    });
-
-    // Update user's current monthlyTarget
+    // Update user's current targets (monthly + ACQ supplementary + MB PL goals).
     await prisma.user.update({
       where: { id: userId },
-      data: { monthlyTarget: target },
+      data: {
+        ...(target && target > 0 && { monthlyTarget: target }),
+        ...(suppTarget !== undefined && { monthlyTargetSupplementary: suppTarget }),
+        ...(mbLevel !== undefined && { mbLevel: mbLevel || null }),
+        ...(num(disbursedTxnTarget) !== undefined && { disbursedTxnTarget: num(disbursedTxnTarget) }),
+        ...(num(disbursedVolTarget) !== undefined && { disbursedVolTarget: num(disbursedVolTarget) }),
+        ...(num(grossTurnInsTxnTarget) !== undefined && { grossTurnInsTxnTarget: num(grossTurnInsTxnTarget) }),
+        ...(num(grossTurnInsVolTarget) !== undefined && { grossTurnInsVolTarget: num(grossTurnInsVolTarget) }),
+      },
     });
 
     return NextResponse.json({

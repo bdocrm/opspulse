@@ -43,6 +43,7 @@ const METRIC_LABELS: Record<string, string> = {
   approvals: 'Approvals',
   booked: 'Booked',
   all_metrics: 'All (Transmitted, Approvals, Booked)',
+  acq: 'ACQ (NTB & Supplementary)',
 };
 
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
@@ -273,7 +274,16 @@ export default function BulkImportPage() {
 
   const downloadTemplate = () => {
     let csv: string;
-    if (metricType === 'all_metrics') {
+    if (metricType === 'acq') {
+      // ACQ raw format: AGENT CODE | LAST/FIRST NAME | DATE ONBOARD | SEAT CATEGORY | TOTAL + per-date NTB/SUPPLEMENTARY pairs
+      csv = [
+        `AGENT CODE,LAST NAME,FIRST NAME,DATE ONBOARD,SEAT CATEGORY,TOTAL,,2026-04-21,`,
+        `,,,,,NTB,SUPPLEMENTARY,NTB,SUPPLEMENTARY`,
+        `TAXH,ADLAON,EDZEL,2024-02-05,BILLABLE,43,22,1,1`,
+        `TAAD,AGUILAR,REDJEAN,2021-05-27,BILLABLE,35,18,0,0`,
+        `TBGK,BUHAIN,EDMAR,2026-04-06,BUFFER,18,6,0,0`,
+      ].join('\n');
+    } else if (metricType === 'all_metrics') {
       // Format with separate columns for each metric type
       csv = [
         `,BPI,LEVEL,TRANSMITTED,APPROVALS,BOOKED,VOLUME`,
@@ -296,7 +306,7 @@ export default function BulkImportPage() {
     }
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     const a = document.createElement('a');
-    a.href = url; a.download = 'bpi-pa-import-template.csv'; a.click();
+    a.href = url; a.download = metricType === 'acq' ? 'acq-import-template.csv' : 'bpi-pa-import-template.csv'; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -321,6 +331,7 @@ export default function BulkImportPage() {
           <CardContent className="text-sm text-slate-600 space-y-2">
             <p><span className="font-medium text-slate-800">Single Metric (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/COUNT/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Count | Volume</p>
             <p><span className="font-medium text-slate-800">All Metrics (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/TRANSMITTED/APPROVALS/BOOKED/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Transmitted | Approvals | Booked | Volume</p>
+            <p><span className="font-medium text-slate-800">ACQ (.xlsx) or CSV:</span> AGENT CODE | LAST NAME | FIRST NAME | DATE ONBOARD | SEAT CATEGORY | TOTAL + per-date NTB/SUPPLEMENTARY pairs — reads name from Last + First and the highest NTB &amp; Supplementary per agent</p>
             <p className="text-xs text-slate-400">For single metric mode, the COUNT column is stored as the selected type. For all metrics mode, each column is stored separately. Use the Report Month picker to set the period.</p>
             <Button onClick={downloadTemplate} variant="outline" size="sm" className="gap-2 mt-1">
               <Download className="h-4 w-4" /> Download CSV Template
@@ -350,7 +361,7 @@ export default function BulkImportPage() {
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">
-                Metric Type {metricType === 'all_metrics' ? '(TRANSMITTED/APPROVALS/BOOKED columns)' : '(COUNT column)'}
+                Metric Type {metricType === 'all_metrics' ? '(TRANSMITTED/APPROVALS/BOOKED columns)' : metricType === 'acq' ? '(NTB/SUPPLEMENTARY columns)' : '(COUNT column)'}
               </label>
               <select
                 value={metricType}
@@ -361,10 +372,13 @@ export default function BulkImportPage() {
                 <option value="approvals">Approvals</option>
                 <option value="booked">Booked</option>
                 <option value="all_metrics">All (Transmitted, Approvals, Booked)</option>
+                <option value="acq">ACQ (NTB &amp; Supplementary)</option>
               </select>
               <p className="text-xs text-slate-500">
                 {metricType === 'all_metrics'
                   ? 'Transmitted, Approvals, and Booked columns will be stored separately'
+                  : metricType === 'acq'
+                  ? 'Highest NTB & Supplementary per agent stored, with seat category (BILLABLE/BUFFER)'
                   : `The COUNT column will be stored as ${METRIC_LABELS[metricType]}`}
               </p>
             </div>
@@ -643,10 +657,16 @@ export default function BulkImportPage() {
                         <th className="text-right p-2">Approvals</th>
                         <th className="text-right p-2">Booked</th>
                       </>
+                    ) : metricType === 'acq' ? (
+                      <>
+                        <th className="text-left p-2">Seat</th>
+                        <th className="text-right p-2">NTB</th>
+                        <th className="text-right p-2">Supplementary</th>
+                      </>
                     ) : (
                       <th className="text-right p-2">{METRIC_LABELS[metricType]}</th>
                     )}
-                    <th className="text-right p-2">Volume</th>
+                    {metricType !== 'acq' && <th className="text-right p-2">Volume</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -660,14 +680,22 @@ export default function BulkImportPage() {
                           <td className="text-right p-2">{(d.approvals ?? 0).toLocaleString()}</td>
                           <td className="text-right p-2">{(d.booked ?? 0).toLocaleString()}</td>
                         </>
+                      ) : metricType === 'acq' ? (
+                        <>
+                          <td className="p-2">{d.seatCategory || '—'}</td>
+                          <td className="text-right p-2">{(d.ntb ?? 0).toLocaleString()}</td>
+                          <td className="text-right p-2">{(d.supplementary ?? 0).toLocaleString()}</td>
+                        </>
                       ) : (
                         <td className="text-right p-2">
                           {(d.transmittals ?? d.approvals ?? d.booked ?? 0).toLocaleString()}
                         </td>
                       )}
-                      <td className="text-right p-2">
-                        {d.volume > 0 ? `₱${Number(d.volume).toLocaleString()}` : '—'}
-                      </td>
+                      {metricType !== 'acq' && (
+                        <td className="text-right p-2">
+                          {d.volume > 0 ? `₱${Number(d.volume).toLocaleString()}` : '—'}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

@@ -39,7 +39,8 @@ export async function ensureCampaignGoalTable() {
       ADD COLUMN IF NOT EXISTS "deletedAt" TIMESTAMP(3),
       ADD COLUMN IF NOT EXISTS "deletedBy" TEXT,
       ADD COLUMN IF NOT EXISTS "restoredAt" TIMESTAMP(3),
-      ADD COLUMN IF NOT EXISTS "restoredBy" TEXT;
+      ADD COLUMN IF NOT EXISTS "restoredBy" TEXT,
+      ADD COLUMN IF NOT EXISTS "supplementaryGoal" DOUBLE PRECISION NOT NULL DEFAULT 0;
   `);
 }
 

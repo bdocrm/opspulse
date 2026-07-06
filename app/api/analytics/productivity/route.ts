@@ -20,7 +20,9 @@ export async function GET(req: NextRequest) {
     const month = parseInt(searchParams.get('month') ?? String(new Date().getMonth() + 1));
 
     const startDate = new Date(year, month - 1, 1);
-    const endDate = new Date(year, month, 0, 23, 59, 59);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(year, month, 0);
+    endDate.setHours(23, 59, 59, 999);
 
     // Read from ProductionDetail (the source the collector data-entry and bulk
     // import write to), scoped to the OM's campaign; CEO sees all.

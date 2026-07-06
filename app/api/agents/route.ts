@@ -16,7 +16,9 @@ export async function GET(req: NextRequest) {
     const campaignId = searchParams.get("campaignId");
 
     const startDate = new Date(year, month - 1, 1);
-    const endDate = new Date(year, month, 0, 23, 59, 59);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(year, month, 0);
+    endDate.setHours(23, 59, 59, 999);
 
     const where: any = { date: { gte: startDate, lte: endDate } };
     if (campaignId) where.campaignId = campaignId;

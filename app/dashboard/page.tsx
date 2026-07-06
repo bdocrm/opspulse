@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { PageTitle } from "@/components/layout/page-title";
-import { PeriodFilter } from "@/components/layout/period-filter";
 import { CampaignSelector } from "@/components/campaign-selector";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { KpiCard } from "@/components/kpi-card";
 import { ExportButton } from "@/components/export-button";
 import { CampaignBarChart } from "@/components/charts/campaign-bar-chart";
@@ -24,7 +24,6 @@ import {
 } from "@/components/ui/table";
 import { kpiColorClass } from "@/utils/kpi";
 import { cn } from "@/lib/utils";
-import type { FilterPeriod } from "@/utils/kpi";
 import { Target, TrendingUp, Activity, BarChart3 } from "lucide-react";
 
 interface Campaign {
@@ -32,29 +31,37 @@ interface Campaign {
   campaignName: string;
 }
 
+interface Period {
+  year: number;
+  month: number;
+}
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
 const fetcher = (url: string) => fetch(url, { credentials: "include" }).then((r) => r.json());
 
 export default function DashboardPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
-  const [period, setPeriod] = useState<FilterPeriod>("monthly");
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
 
-  // Determine month/year from current date for the API
+  // Selected reporting period — defaults to the current month, but auto-jumps to
+  // the most recent month that actually has data on first load (see effect below).
   const now = new Date();
-  const year  = now.getFullYear();
-  const month = now.getMonth() + 1;
+  const [year, setYear] = useState<number>(now.getFullYear());
+  const [month, setMonth] = useState<number>(now.getMonth() + 1);
+  // Ensures the auto-jump only runs once, so the CEO can freely browse months after.
+  const didAutoJump = useRef(false);
 
   // Fetch campaigns for the selector
   const { data: campaignsData } = useSWR<Campaign[]>("/api/campaigns", fetcher);
   const campaigns: Campaign[] = Array.isArray(campaignsData) ? campaignsData : [];
 
-  // Set default campaign on first load
-  useEffect(() => {
-    if (campaigns.length > 0 && !selectedCampaignId) {
-      setSelectedCampaignId(campaigns[0].id);
-    }
-  }, [campaigns, selectedCampaignId]);
+  // Default view is "All Campaigns" (selectedCampaignId = null), which the API
+  // treats as an aggregate across every campaign.
 
   // Auth guard
   useEffect(() => {
@@ -63,9 +70,30 @@ export default function DashboardPage() {
     if ((session.user as any).role === "AGENT") { router.push("/collector"); return; }
   }, [session, status, router]);
 
-  // Build API URL — always pass current month/year so KPIs use current period
+  // Build API URL — pass the selected month/year so the CEO can view any period
   const apiUrl = `/api/dashboard?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}`;
   const { data, isLoading } = useSWR(apiUrl, fetcher, { refreshInterval: 30000 });
+
+  const availablePeriods: Period[] = data?.availablePeriods ?? [];
+
+  // First-load convenience: if the current month has no data but earlier months
+  // do, jump to the most recent month that has data so the dashboard isn't blank.
+  useEffect(() => {
+    if (didAutoJump.current) return;
+    if (!data || availablePeriods.length === 0) return;
+    didAutoJump.current = true;
+    const currentHasData = availablePeriods.some((p) => p.year === year && p.month === month);
+    if (!currentHasData) {
+      const latest = availablePeriods[0]; // API returns newest first
+      setYear(latest.year);
+      setMonth(latest.month);
+    }
+  }, [data, availablePeriods, year, month]);
+
+  // Year options: derived from periods that have data, plus the current year.
+  const yearOptions = Array.from(
+    new Set([now.getFullYear(), ...availablePeriods.map((p) => p.year)])
+  ).sort((a, b) => b - a);
 
   const kpis = data?.kpis ?? {
     totalMTD: 0,
@@ -92,9 +120,29 @@ export default function DashboardPage() {
               onCampaignChange={setSelectedCampaignId}
               placeholder="Select campaign"
               className="w-[220px]"
+              includeAllOption
             />
           )}
-          <PeriodFilter value={period} onChange={setPeriod} />
+          <Select value={String(month)} onValueChange={(v) => setMonth(Number(v))}>
+            <SelectTrigger className="w-[140px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MONTH_NAMES.map((name, i) => (
+                <SelectItem key={i} value={String(i + 1)}>{name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={String(year)} onValueChange={(v) => setYear(Number(v))}>
+            <SelectTrigger className="w-[100px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {yearOptions.map((y) => (
+                <SelectItem key={y} value={String(y)}>{y}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <ExportButton
             endpoint={`/api/export/dashboard?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}`}
             className="h-10"

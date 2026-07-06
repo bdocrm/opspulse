@@ -23,7 +23,9 @@ export async function GET(request: NextRequest) {
 
     // Date range for the selected month
     const startDate = new Date(year, month - 1, 1);
-    const endDate = new Date(year, month, 0, 23, 59, 59);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(year, month, 0);
+    endDate.setHours(23, 59, 59, 999);
 
     let where: any = { date: { gte: startDate, lte: endDate } };
     if (agentId) {

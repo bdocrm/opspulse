@@ -20,6 +20,7 @@ interface Campaign {
   campaignName: string;
   kpiMetric: string;
   monthlyGoal: number;
+  supplementaryGoal: number;
   workingDays: number;
   daysLapsed: number;
   mtd: number;
@@ -85,6 +86,10 @@ const MONTHS = [
 ];
 const metricLabel = (value: string) =>
   KPI_METRICS.find((m) => m.value === value)?.label || value;
+
+// ACQ campaigns (name contains "ACQ") track NTB + Supplementary goals instead of
+// a single booked-volume goal.
+const isAcqCampaign = (name?: string | null) => /\bacq\b/i.test(name || '');
 
 const formatNumber = (value: number) =>
   Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 1 });
@@ -194,6 +199,7 @@ export default function GoalsManagement() {
 
   // Campaign-level fields
   const [monthlyGoal, setMonthlyGoal] = useState('');
+  const [supplementaryGoal, setSupplementaryGoal] = useState('');
   const [kpiMetric, setKpiMetric] = useState('');
   const [workingDays, setWorkingDays] = useState('22');
   const [daysLapsed, setDaysLapsed] = useState('0');
@@ -350,6 +356,7 @@ export default function GoalsManagement() {
     setSelectedCampaign(campaign);
     selectedCampaignIdRef.current = campaign.id;
     setMonthlyGoal(formatInputNumber(campaign.monthlyGoal, 2));
+    setSupplementaryGoal(formatInputNumber(campaign.supplementaryGoal ?? 0, 2));
     setKpiMetric(campaign.kpiMetric || 'transmittals');
     setWorkingDays((campaign.workingDays ?? 22).toString());
     setDaysLapsed((campaign.daysLapsed ?? 0).toString());
@@ -385,6 +392,7 @@ export default function GoalsManagement() {
           month: selectedMonth,
           year: selectedYear,
           monthlyGoal: Number(stripNumberFormatting(monthlyGoal)),
+          supplementaryGoal: Number(stripNumberFormatting(supplementaryGoal)) || 0,
           kpiMetric,
           workingDays: Number(stripNumberFormatting(workingDays)) || 22,
           daysLapsed: Number(stripNumberFormatting(daysLapsed)) || 0,
@@ -1248,9 +1256,11 @@ export default function GoalsManagement() {
                 </select>
               </div>
 
-              {/* Monthly Goal */}
+              {/* Monthly Goal (NTB for ACQ campaigns) */}
               <div>
-                <Label htmlFor="monthly-goal">Monthly Goal</Label>
+                <Label htmlFor="monthly-goal">
+                  {isAcqCampaign(selectedCampaign?.campaignName) ? 'Monthly Goal (NTB)' : 'Monthly Goal'}
+                </Label>
                 <Input
                   id="monthly-goal"
                   inputMode="decimal"
@@ -1264,6 +1274,25 @@ export default function GoalsManagement() {
                   className="mt-1"
                 />
               </div>
+
+              {/* Monthly Goal (Supplementary) — ACQ campaigns only */}
+              {isAcqCampaign(selectedCampaign?.campaignName) && (
+                <div>
+                  <Label htmlFor="supplementary-goal">Monthly Goal (Supplementary)</Label>
+                  <Input
+                    id="supplementary-goal"
+                    inputMode="decimal"
+                    value={supplementaryGoal}
+                    onChange={(e) => setSupplementaryGoal(formatNumericTextValue(e.target.value))}
+                    onBlur={(e) => {
+                      const n = Number(stripNumberFormatting(e.target.value));
+                      if (e.target.value !== '' && !Number.isNaN(n)) setSupplementaryGoal(formatInputNumber(n, 2));
+                    }}
+                    placeholder="e.g. 291.00"
+                    className="mt-1"
+                  />
+                </div>
+              )}
 
               {/* Working Days */}
               <div>

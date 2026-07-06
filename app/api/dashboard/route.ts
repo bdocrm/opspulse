@@ -13,6 +13,16 @@ function calcRRAch(rr: number, goal: number) {
   return goal > 0 ? (rr / goal) * 100 : 0;
 }
 
+// ACQ campaigns (name contains "ACQ") report acquisitions in `ntb`, not peso
+// `volume`. Mirror the Collector Dashboard so MB ACQ shows real numbers here too.
+const isAcqCampaign = (name?: string | null) => /\bacq\b/i.test(name || "");
+
+/** Resolve the MTD-contributing value for one ProductionDetail row given its
+ *  campaign: NTB for acquisition campaigns, gross peso volume for everything else. */
+function metricValue(campaignName: string | undefined, d: { volume: bigint | number; ntb: bigint | number }) {
+  return isAcqCampaign(campaignName) ? Number(d.ntb) : Number(d.volume);
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -22,7 +32,9 @@ export async function GET(req: NextRequest) {
     const campaignId = searchParams.get("campaignId") ?? null;
 
     const startDate = new Date(year, month - 1, 1);
-    const endDate   = new Date(year, month,     0, 23, 59, 59);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate   = new Date(year, month, 0);
+    endDate.setHours(23, 59, 59, 999);
 
     // 1. Campaigns
     const campaigns = await prisma.campaign.findMany({
@@ -30,6 +42,18 @@ export async function GET(req: NextRequest) {
       select: { id: true, campaignName: true, kpiMetric: true, monthlyGoal: true },
       orderBy: { createdAt: "asc" },
     });
+
+    // 1b. Distinct periods (year/month) that actually contain production data.
+    // Used by the UI to populate the month selector and to auto-jump to the most
+    // recent month with data when the current month is empty.
+    const availablePeriods = await prisma.$queryRaw<Array<{ year: number; month: number }>>`
+      SELECT DISTINCT
+        EXTRACT(YEAR FROM pe."date")::int  AS year,
+        EXTRACT(MONTH FROM pe."date")::int AS month
+      FROM "ProductionEntry" pe
+      JOIN "ProductionDetail" pd ON pd."productionEntryId" = pe."id"
+      ORDER BY year DESC, month DESC
+    `;
 
     // 2. workingDays / daysLapsed via raw SQL
     const cIds = campaigns.map((c) => c.id);
@@ -43,13 +67,19 @@ export async function GET(req: NextRequest) {
     }
     const extrasById = Object.fromEntries(extras.map((e) => [e.id, e]));
 
+    // Campaign name lookup — used to pick the right metric (NTB vs volume) per row.
+    const campaignNameById = new Map(campaigns.map((c) => [c.id, c.campaignName]));
+
     // 3. All ProductionDetail rows for the period
     const allDetails = await prisma.productionDetail.findMany({
       where: {
         ...(campaignId ? { campaignId } : {}),
         productionEntry: { date: { gte: startDate, lte: endDate } },
       },
-      include: {
+      select: {
+        campaignId: true,
+        volume: true,
+        ntb: true,
         agent: { select: { id: true, name: true } },
         productionEntry: { select: { date: true } },
       },
@@ -67,8 +97,9 @@ export async function GET(req: NextRequest) {
       const details = detailsByCampaign.get(c.id) ?? [];
       const wDays   = Number(extrasById[c.id]?.workingDays ?? 22);
       const dLapsed = Number(extrasById[c.id]?.daysLapsed  ?? 0);
-      // MTD = sum of volume (peso amounts), matching the OM Dashboard Excel
-      const mtd     = details.reduce((sum, d) => sum + Number(d.volume), 0);
+      // MTD = sum of volume (peso amounts) for standard campaigns, or NTB for ACQ
+      // campaigns — matching the OM / Collector dashboards.
+      const mtd     = details.reduce((sum, d) => sum + metricValue(c.campaignName, d), 0);
       const rr      = calcRunRate(mtd, dLapsed, wDays);
       const ach     = calcAchievement(mtd, c.monthlyGoal);
       const rrAch   = calcRRAch(rr, c.monthlyGoal);
@@ -76,7 +107,8 @@ export async function GET(req: NextRequest) {
       return {
         id: c.id,
         campaignName: c.campaignName,
-        kpiMetric: c.kpiMetric,
+        // Show the metric that actually drives MTD (NTB for acquisition campaigns).
+        kpiMetric: isAcqCampaign(c.campaignName) ? "ntb" : c.kpiMetric,
         goal: c.monthlyGoal,
         mtd:          Math.round(mtd),
         achievement:  ach,
@@ -100,11 +132,11 @@ export async function GET(req: NextRequest) {
       achievement: c.achievement,
     }));
 
-    // 8. Daily trend (aggregate volume per date)
+    // 8. Daily trend (aggregate the per-campaign metric per date)
     const dailyMap = new Map<string, number>();
     for (const d of allDetails) {
       const key = new Date(d.productionEntry.date).toISOString().slice(0, 10);
-      dailyMap.set(key, (dailyMap.get(key) ?? 0) + Number(d.volume));
+      dailyMap.set(key, (dailyMap.get(key) ?? 0) + metricValue(campaignNameById.get(d.campaignId), d));
     }
     const dailyTrend = Array.from(dailyMap.entries())
       .sort(([a], [b]) => a.localeCompare(b))
@@ -115,10 +147,10 @@ export async function GET(req: NextRequest) {
       .filter((c) => c.mtd > 0)
       .map((c) => ({ name: c.campaignName, value: c.mtd }));
 
-    // 10. Agent leaderboard (top 10 by volume)
+    // 10. Agent leaderboard (top 10 by the per-campaign metric)
     const agentMap = new Map<string, { name: string; value: number }>();
     for (const d of allDetails) {
-      const val = Number(d.volume);
+      const val = metricValue(campaignNameById.get(d.campaignId), d);
       const aid = d.agent.id;
       if (!agentMap.has(aid)) agentMap.set(aid, { name: d.agent.name, value: 0 });
       agentMap.get(aid)!.value += val;
@@ -141,6 +173,7 @@ export async function GET(req: NextRequest) {
       dailyTrend,
       distribution,
       leaderboard,
+      availablePeriods,
     });
   } catch (error) {
     console.error("Dashboard API error:", error);

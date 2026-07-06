@@ -61,7 +61,7 @@ export async function GET(req: NextRequest) {
         WHERE id = ANY(${campaignIds}::text[])
       `;
       monthlyRows = await prisma.$queryRaw<any[]>`
-        SELECT "campaignId", "monthlyGoal", "kpiMetric", "workingDays", "daysLapsed", "updatedAt"
+        SELECT "campaignId", "monthlyGoal", "supplementaryGoal", "kpiMetric", "workingDays", "daysLapsed", "updatedAt"
         FROM "CampaignGoal"
         WHERE "campaignId" = ANY(${campaignIds}::text[])
           AND "month" = ${month} AND "year" = ${year}
@@ -70,7 +70,9 @@ export async function GET(req: NextRequest) {
     }
 
     const startDate = new Date(year, month - 1, 1);
-    const endDate = new Date(year, month, 0, 23, 59, 59);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(year, month, 0);
+    endDate.setHours(23, 59, 59, 999);
     const dailySales =
       campaignIds.length > 0
         ? await prisma.dailySales.findMany({
@@ -96,6 +98,7 @@ export async function GET(req: NextRequest) {
       // Per-month config takes precedence; otherwise fall back to the campaign's
       // legacy values so existing (pre-month) data keeps showing unchanged.
       const monthlyGoal = Number(m ? m.monthlyGoal : c.monthlyGoal);
+      const supplementaryGoal = Number(m ? m.supplementaryGoal : (c as any).supplementaryGoal ?? 0);
       const kpiMetric = (m ? m.kpiMetric : c.kpiMetric) as any;
       const workingDays = Number(m ? m.workingDays : extrasById[c.id]?.workingDays ?? 22);
       const configuredDaysLapsed = Number(m ? m.daysLapsed : extrasById[c.id]?.daysLapsed ?? 0);
@@ -121,6 +124,7 @@ export async function GET(req: NextRequest) {
         year,
         hasMonthlyConfig: Boolean(m),
         monthlyGoal,
+        supplementaryGoal,
         kpiMetric,
         workingDays,
         daysLapsed: configuredDaysLapsed,
@@ -152,7 +156,7 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const { campaignId, monthlyGoal, kpiMetric, workingDays, daysLapsed, month: monthRaw, year: yearRaw } = await req.json();
+    const { campaignId, monthlyGoal, supplementaryGoal, kpiMetric, workingDays, daysLapsed, month: monthRaw, year: yearRaw } = await req.json();
 
     if (!campaignId || monthlyGoal === undefined) {
       return NextResponse.json(
@@ -182,6 +186,7 @@ export async function PUT(req: NextRequest) {
     }
 
     const goal = Number(monthlyGoal);
+    const suppGoal = supplementaryGoal !== undefined ? Number(supplementaryGoal) || 0 : 0;
     const metric = kpiMetric !== undefined ? String(kpiMetric) : 'transmittals';
     const wDays = workingDays !== undefined ? Number(workingDays) : 22;
     const dLapsed = daysLapsed !== undefined ? Number(daysLapsed) : 0;
@@ -205,12 +210,13 @@ export async function PUT(req: NextRequest) {
     // record or updates the existing one for this exact combination.
     await prisma.$executeRaw`
       INSERT INTO "CampaignGoal"
-        ("id", "campaignId", "month", "year", "monthlyGoal", "kpiMetric", "workingDays", "daysLapsed", "createdAt", "updatedAt")
+        ("id", "campaignId", "month", "year", "monthlyGoal", "supplementaryGoal", "kpiMetric", "workingDays", "daysLapsed", "createdAt", "updatedAt")
       VALUES
-        (${crypto.randomUUID()}, ${campaignId}, ${month}, ${year}, ${goal}, ${metric}, ${wDays}, ${dLapsed}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        (${crypto.randomUUID()}, ${campaignId}, ${month}, ${year}, ${goal}, ${suppGoal}, ${metric}, ${wDays}, ${dLapsed}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       ON CONFLICT ("campaignId", "month", "year")
       DO UPDATE SET
         "monthlyGoal" = EXCLUDED."monthlyGoal",
+        "supplementaryGoal" = EXCLUDED."supplementaryGoal",
         "kpiMetric"   = EXCLUDED."kpiMetric",
         "workingDays" = EXCLUDED."workingDays",
         "daysLapsed"  = EXCLUDED."daysLapsed",
@@ -225,7 +231,7 @@ export async function PUT(req: NextRequest) {
     if (isCurrentMonth) {
       await prisma.campaign.update({
         where: { id: campaignId },
-        data: { monthlyGoal: goal, ...(kpiMetric !== undefined && { kpiMetric: metric }) },
+        data: { monthlyGoal: goal, supplementaryGoal: suppGoal, ...(kpiMetric !== undefined && { kpiMetric: metric }) },
       });
       await prisma.$executeRaw`
         UPDATE "Campaign"
@@ -270,6 +276,7 @@ export async function PUT(req: NextRequest) {
       month,
       year,
       monthlyGoal: goal,
+      supplementaryGoal: suppGoal,
       kpiMetric: metric,
       workingDays: wDays,
       daysLapsed: dLapsed,

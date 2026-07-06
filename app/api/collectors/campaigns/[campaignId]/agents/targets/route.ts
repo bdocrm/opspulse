@@ -20,11 +20,20 @@ export async function POST(
 
     const campaignId = params.campaignId;
     const body = await req.json();
-    const { target } = body;
+    const { target, targetSupplementary, mbLevel, disbursedTxnTarget, disbursedVolTarget, grossTurnInsTxnTarget, grossTurnInsVolTarget } = body;
 
-    if (typeof target !== 'number' || target < 0) {
+    const hasMbPl =
+      mbLevel !== undefined || disbursedTxnTarget !== undefined || disbursedVolTarget !== undefined ||
+      grossTurnInsTxnTarget !== undefined || grossTurnInsVolTarget !== undefined;
+
+    if (!hasMbPl && (typeof target !== 'number' || target < 0)) {
       return NextResponse.json({ error: 'Invalid target value' }, { status: 400 });
     }
+    const suppTarget =
+      targetSupplementary !== undefined && targetSupplementary !== null
+        ? Number(targetSupplementary) || 0
+        : undefined;
+    const num = (v: any) => (v !== undefined && v !== null ? Number(v) || 0 : undefined);
 
     // Verify the collector has access to this campaign
     const collectorAccess = await prisma.userCampaign.findFirst({
@@ -35,10 +44,18 @@ export async function POST(
       return NextResponse.json({ error: 'You do not have access to this campaign' }, { status: 403 });
     }
 
-    // Update all agents in the campaign
+    // Update all agents in the campaign (+ ACQ supplementary / MB PL goals)
     const result = await prisma.user.updateMany({
       where: { campaignId, role: 'AGENT' },
-      data: { monthlyTarget: target },
+      data: {
+        ...(typeof target === 'number' && target >= 0 && !hasMbPl && { monthlyTarget: target }),
+        ...(suppTarget !== undefined && { monthlyTargetSupplementary: suppTarget }),
+        ...(mbLevel !== undefined && { mbLevel: mbLevel || null }),
+        ...(num(disbursedTxnTarget) !== undefined && { disbursedTxnTarget: num(disbursedTxnTarget) }),
+        ...(num(disbursedVolTarget) !== undefined && { disbursedVolTarget: num(disbursedVolTarget) }),
+        ...(num(grossTurnInsTxnTarget) !== undefined && { grossTurnInsTxnTarget: num(grossTurnInsTxnTarget) }),
+        ...(num(grossTurnInsVolTarget) !== undefined && { grossTurnInsVolTarget: num(grossTurnInsVolTarget) }),
+      },
     });
 
     return NextResponse.json({
