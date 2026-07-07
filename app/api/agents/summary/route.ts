@@ -2,7 +2,48 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { computeMTD, runRate, achievementPct, rrAchievementPct, daysLapsed, WORKING_DAYS_DEFAULT } from '@/utils/kpi';
+import { runRate, achievementPct, rrAchievementPct, WORKING_DAYS_DEFAULT } from '@/utils/kpi';
+
+const BUSINESS_TIME_ZONE = 'Asia/Manila';
+const BUSINESS_TIME_ZONE_OFFSET = '+08:00';
+
+function monthRange(year: number, month: number) {
+  const mm = String(month).padStart(2, '0');
+  const lastDay = new Date(year, month, 0).getDate();
+
+  return {
+    start: new Date(`${year}-${mm}-01T00:00:00.000${BUSINESS_TIME_ZONE_OFFSET}`),
+    end: new Date(`${year}-${mm}-${String(lastDay).padStart(2, '0')}T23:59:59.999${BUSINESS_TIME_ZONE_OFFSET}`),
+  };
+}
+
+function toBusinessYmd(value: Date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(value);
+
+  const yyyy = parts.find((part) => part.type === 'year')?.value ?? '0000';
+  const mm = parts.find((part) => part.type === 'month')?.value ?? '01';
+  const dd = parts.find((part) => part.type === 'day')?.value ?? '01';
+
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function metricValue(metric: string, totals: Record<string, number>) {
+  if (metric === 'activations') return totals.activations;
+  if (metric === 'approvals') return totals.approvals;
+  if (metric === 'booked') return totals.booked;
+  if (metric === 'volume') return totals.volume;
+  if (metric === 'transaction') return totals.transaction;
+  return totals.transmittals;
+}
+
+function percent(numerator: number, denominator: number) {
+  return denominator > 0 ? (numerator / denominator) * 100 : 0;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -18,107 +59,113 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const agentId = searchParams.get('id');
+    const campaignId = searchParams.get('campaignId');
     const year = parseInt(searchParams.get('year') ?? new Date().getFullYear().toString());
     const month = parseInt(searchParams.get('month') ?? String(new Date().getMonth() + 1));
 
-    // Date range for the selected month
-    const startDate = new Date(year, month - 1, 1);
-    startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(year, month, 0);
-    endDate.setHours(23, 59, 59, 999);
+    const { start: startDate, end: endDate } = monthRange(year, month);
 
-    let where: any = { date: { gte: startDate, lte: endDate } };
+    const where: any = {
+      ...(campaignId ? { campaignId } : {}),
+      productionEntry: { date: { gte: startDate, lte: endDate } },
+    };
     if (agentId) {
-      where.userId = agentId;
+      where.agentId = agentId;
     }
 
-    const sales = await prisma.dailySales.findMany({
+    const details = await prisma.productionDetail.findMany({
       where,
-      include: {
-        user: { select: { id: true, name: true, seatNumber: true, monthlyTarget: true } },
+      select: {
+        agentId: true,
+        campaignId: true,
+        transmittals: true,
+        activations: true,
+        approvals: true,
+        booked: true,
+        volume: true,
+        transaction: true,
+        agent: { select: { id: true, name: true, seatNumber: true, monthlyTarget: true } },
         campaign: { select: { id: true, campaignName: true, kpiMetric: true, monthlyGoal: true } },
+        productionEntry: { select: { date: true } },
       },
     });
 
-    // Group by agent
     const agentMap = new Map();
 
-    sales.forEach((s) => {
-      const agentId = s.userId;
+    details.forEach((detail) => {
+      if (!detail.agent?.id || !detail.campaign?.id) return;
+      const agentId = detail.agentId;
+      const dateKey = toBusinessYmd(detail.productionEntry.date);
+
       if (!agentMap.has(agentId)) {
         agentMap.set(agentId, {
-          id: s.userId,
-          name: s.user.name,
-          seatNumber: s.user.seatNumber,
-          monthlyTarget: s.user.monthlyTarget,
+          id: detail.agentId,
+          name: detail.agent.name,
+          seatNumber: detail.agent.seatNumber,
+          monthlyTarget: detail.agent.monthlyTarget,
           campaigns: new Map(),
           totalTransmittals: 0,
           totalActivations: 0,
           totalApprovals: 0,
           totalBooked: 0,
-          totalQualityRate: 0,
-          totalConversionRate: 0,
-          daysCount: 0,
+          totalVolume: 0,
+          totalTransaction: 0,
+          workedDates: new Set<string>(),
         });
       }
-      const agent = agentMap.get(agentId);
-      agent.totalTransmittals += Number(s.transmittals);
-      agent.totalActivations += Number(s.activations);
-      agent.totalApprovals += Number(s.approvals);
-      agent.totalBooked += Number(s.booked);
-      if (s.qualityRate) agent.totalQualityRate += s.qualityRate;
-      if (s.conversionRate) agent.totalConversionRate += s.conversionRate;
-      agent.daysCount += 1;
 
-      // Per campaign
-      const campId = s.campaignId;
+      const agent = agentMap.get(agentId);
+      const transmittals = Number(detail.transmittals || 0);
+      const activations = Number(detail.activations || 0);
+      const approvals = Number(detail.approvals || 0);
+      const booked = Number(detail.booked || 0);
+      const volume = Number(detail.volume || 0);
+      const transaction = Number(detail.transaction || 0);
+
+      agent.totalTransmittals += transmittals;
+      agent.totalActivations += activations;
+      agent.totalApprovals += approvals;
+      agent.totalBooked += booked;
+      agent.totalVolume += volume;
+      agent.totalTransaction += transaction;
+      agent.workedDates.add(dateKey);
+
+      const campId = detail.campaignId;
       if (!agent.campaigns.has(campId)) {
         agent.campaigns.set(campId, {
-          id: s.campaign.id,
-          name: s.campaign.campaignName,
-          kpiMetric: s.campaign.kpiMetric,
-          monthlyGoal: s.campaign.monthlyGoal,
+          id: detail.campaign.id,
+          name: detail.campaign.campaignName,
+          kpiMetric: detail.campaign.kpiMetric,
+          monthlyGoal: detail.campaign.monthlyGoal,
           transmittals: 0,
           activations: 0,
           approvals: 0,
           booked: 0,
-          qualityRate: 0,
-          conversionRate: 0,
-          days: 0,
+          volume: 0,
+          transaction: 0,
+          workedDates: new Set<string>(),
         });
       }
+
       const camp = agent.campaigns.get(campId);
-      camp.transmittals += Number(s.transmittals);
-      camp.activations += Number(s.activations);
-      camp.approvals += Number(s.approvals);
-      camp.booked += Number(s.booked);
-      if (s.qualityRate) camp.qualityRate += s.qualityRate;
-      if (s.conversionRate) camp.conversionRate += s.conversionRate;
-      camp.days += 1;
+      camp.transmittals += transmittals;
+      camp.activations += activations;
+      camp.approvals += approvals;
+      camp.booked += booked;
+      camp.volume += volume;
+      camp.transaction += transaction;
+      camp.workedDates.add(dateKey);
     });
 
-    // Compute summaries
     const agents = Array.from(agentMap.values()).map((agent: any) => {
       const campaigns = Array.from(agent.campaigns.values()).map((camp: any) => {
-        const metric = camp.kpiMetric as any;
-        const rows = sales.filter(s => s.userId === agent.id && s.campaignId === camp.id).map(s => ({
-          date: s.date.toISOString(),
-          transmittals: Number(s.transmittals),
-          activations: Number(s.activations),
-          approvals: Number(s.approvals),
-          booked: Number(s.booked),
-          qualityRate: s.qualityRate,
-          conversionRate: s.conversionRate,
-          volume: Number(s.volume),
-          transaction: Number(s.transaction),
-        }));
-        const mtd = computeMTD(rows, metric);
-        const elapsed = daysLapsed(rows);
+        const mtd = metricValue(camp.kpiMetric, camp);
+        const elapsed = camp.workedDates.size;
         const rr = runRate(mtd, elapsed, WORKING_DAYS_DEFAULT);
         const ach = achievementPct(mtd, camp.monthlyGoal);
         const rrAch = rrAchievementPct(rr, camp.monthlyGoal);
-        const avgQuality = camp.days > 0 ? camp.qualityRate / camp.days : 0;
-        const avgConversion = camp.days > 0 ? camp.conversionRate / camp.days : 0;
+        const avgQuality = percent(camp.approvals, camp.transmittals);
+        const avgConversion = percent(camp.booked, camp.transmittals);
 
         return {
           id: camp.id,
@@ -138,8 +185,8 @@ export async function GET(request: NextRequest) {
         };
       });
 
-      const avgQuality = agent.daysCount > 0 ? agent.totalQualityRate / agent.daysCount : 0;
-      const avgConversion = agent.daysCount > 0 ? agent.totalConversionRate / agent.daysCount : 0;
+      const avgQuality = percent(agent.totalApprovals, agent.totalTransmittals);
+      const avgConversion = percent(agent.totalBooked, agent.totalTransmittals);
 
       return {
         id: agent.id,
@@ -153,9 +200,9 @@ export async function GET(request: NextRequest) {
         totalBooked: agent.totalBooked,
         avgQualityRate: avgQuality,
         avgConversionRate: avgConversion,
-        daysWorked: agent.daysCount,
+        daysWorked: agent.workedDates.size,
       };
-    });
+    }).sort((a: any, b: any) => a.name.localeCompare(b.name));
 
     return NextResponse.json({ agents });
   } catch (error) {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, Suspense } from 'react';
+import { useEffect, useMemo, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card } from '@/components/ui/card';
@@ -18,6 +18,14 @@ interface AgentPerformance {
   id: string;
   name: string;
   level: string;
+  seatNumber: number | null;
+  daysWorked: number;
+  transmittals: number;
+  activations: number;
+  approvals: number;
+  booked: number;
+  qualityRate: number;
+  conversionRate: number;
   goal: number;
   actual: number;
   achievement: number;
@@ -40,6 +48,7 @@ interface OverallCampaignPerformance {
   totalActual: number;
   achievementRate: number;
   targetHit: boolean;
+  targetStatus?: "hit" | "near" | "missed";
   campaignCount: number;
 }
 
@@ -53,6 +62,24 @@ const achievementTextClass = (value: number) => {
 
 const actualTextClass = (value: number) => (value > 0 ? "text-green-600" : "text-red-600");
 
+const statusLabel = (status?: "hit" | "near" | "missed") => {
+  if (status === "hit") return "HIT";
+  if (status === "near") return "NEAR TARGET";
+  return "MISSED";
+};
+
+const statusTextClass = (status?: "hit" | "near" | "missed") => {
+  if (status === "hit") return "text-green-600";
+  if (status === "near") return "text-amber-600";
+  return "text-red-600";
+};
+
+const statusBadgeClass = (status?: "hit" | "near" | "missed") => {
+  if (status === "hit") return "bg-green-50 text-green-700";
+  if (status === "near") return "bg-amber-50 text-amber-700";
+  return "bg-red-50 text-red-700";
+};
+
 function OverallCampaignPerformanceCard({
   summary,
   loading,
@@ -64,6 +91,7 @@ function OverallCampaignPerformanceCard({
   const totalActual = summary?.totalActual ?? 0;
   const achievementRate = summary?.achievementRate ?? 0;
   const targetHit = summary?.targetHit ?? false;
+  const targetStatus = summary?.targetStatus ?? (targetHit ? "hit" : "missed");
 
   return (
     <Card className="p-5 border-slate-200 bg-white shadow-sm">
@@ -75,11 +103,9 @@ function OverallCampaignPerformanceCard({
           </p>
         </div>
         <span
-          className={`inline-flex w-fit rounded-full px-3 py-1 text-xs font-semibold ${
-            targetHit ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
-          }`}
+          className={`inline-flex w-fit rounded-full px-3 py-1 text-xs font-semibold ${statusBadgeClass(targetStatus)}`}
         >
-          {targetHit ? "HIT" : "MISSED"}
+          {statusLabel(targetStatus)}
         </span>
       </div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -87,7 +113,7 @@ function OverallCampaignPerformanceCard({
           { label: "Total Goal", value: totalGoal.toLocaleString(), className: "text-blue-600" },
           { label: "Total Actual", value: totalActual.toLocaleString(), className: actualTextClass(totalActual) },
           { label: "Achievement Rate", value: `${achievementRate.toFixed(1)}%`, className: achievementTextClass(achievementRate) },
-          { label: "Target Status", value: targetHit ? "HIT" : "MISSED", className: targetHit ? "text-green-600" : "text-red-600" },
+          { label: "Target Status", value: statusLabel(targetStatus), className: statusTextClass(targetStatus) },
         ].map(({ label, value, className }) => (
           <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
@@ -101,14 +127,39 @@ function OverallCampaignPerformanceCard({
   );
 }
 
-function CampaignSelectorView({ campaigns }: { campaigns: Campaign[] }) {
+function CampaignSelectorView({
+  campaigns,
+  year,
+  month,
+  selectedCampaignId,
+  campaignSearch,
+  onMonthChange,
+  onCampaignChange,
+  onCampaignSearchChange,
+}: {
+  campaigns: Campaign[];
+  year: number;
+  month: number;
+  selectedCampaignId: string;
+  campaignSearch: string;
+  onMonthChange: (year: number, month: number) => void;
+  onCampaignChange: (campaignId: string) => void;
+  onCampaignSearchChange: (value: string) => void;
+}) {
   const [isSeeding, setIsSeeding] = useState(false);
   const [overallSummary, setOverallSummary] = useState<OverallCampaignPerformance | null>(null);
   const [campaignSummaries, setCampaignSummaries] = useState<CampaignPerformanceSummaryMap>({});
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const visibleCampaigns = useMemo(
+    () =>
+      campaigns
+        .filter((campaign) => !selectedCampaignId || campaign.id === selectedCampaignId)
+        .filter((campaign) => campaign.campaignName.toLowerCase().includes(campaignSearch.toLowerCase())),
+    [campaigns, selectedCampaignId, campaignSearch]
+  );
 
   useEffect(() => {
-    if (campaigns.length === 0) {
+    if (visibleCampaigns.length === 0) {
       setOverallSummary(null);
       setCampaignSummaries({});
       return;
@@ -119,8 +170,8 @@ function CampaignSelectorView({ campaigns }: { campaigns: Campaign[] }) {
       setSummaryLoading(true);
       try {
         const results = await Promise.allSettled(
-          campaigns.map((campaign) =>
-            fetch(`/api/reports/campaign-performance?campaignId=${campaign.id}`).then((res) => {
+          visibleCampaigns.map((campaign) =>
+            fetch(`/api/reports/campaign-performance?campaignId=${campaign.id}&year=${year}&month=${month}`).then((res) => {
               if (!res.ok) throw new Error(`Failed to fetch ${campaign.campaignName}`);
               return res.json() as Promise<CampaignPerformanceData>;
             })
@@ -163,7 +214,7 @@ function CampaignSelectorView({ campaigns }: { campaigns: Campaign[] }) {
     return () => {
       cancelled = true;
     };
-  }, [campaigns]);
+  }, [visibleCampaigns, year, month]);
 
   const createTestData = async () => {
     setIsSeeding(true);
@@ -188,7 +239,37 @@ function CampaignSelectorView({ campaigns }: { campaigns: Campaign[] }) {
         subtitle="Select a campaign to view detailed agent performance metrics"
       />
 
-      {campaigns.length > 0 && (
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <input
+          type="month"
+          value={`${year}-${String(month).padStart(2, "0")}`}
+          onChange={(e) => {
+            const [nextYear, nextMonth] = e.target.value.split("-");
+            onMonthChange(parseInt(nextYear), parseInt(nextMonth));
+          }}
+          className="h-10 rounded-md border border-slate-300 px-3 py-2 text-sm"
+        />
+        <select
+          value={selectedCampaignId}
+          onChange={(e) => onCampaignChange(e.target.value)}
+          className="h-10 min-w-[220px] rounded-md border border-slate-300 px-3 py-2 text-sm"
+        >
+          <option value="">All Campaigns</option>
+          {campaigns.map((campaign) => (
+            <option key={campaign.id} value={campaign.id}>
+              {campaign.campaignName}
+            </option>
+          ))}
+        </select>
+        <input
+          value={campaignSearch}
+          onChange={(e) => onCampaignSearchChange(e.target.value)}
+          placeholder="Search campaigns..."
+          className="h-10 min-w-[220px] rounded-md border border-slate-300 px-3 py-2 text-sm"
+        />
+      </div>
+
+      {visibleCampaigns.length > 0 && (
         <OverallCampaignPerformanceCard summary={overallSummary} loading={summaryLoading} />
       )}
 
@@ -205,15 +286,16 @@ function CampaignSelectorView({ campaigns }: { campaigns: Campaign[] }) {
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {campaigns.map((campaign) => {
+          {visibleCampaigns.map((campaign) => {
             const campaignSummary = campaignSummaries[campaign.id];
             const campaignGoal = campaignSummary?.totalGoal ?? campaign.monthlyGoal;
             const campaignActual = campaignSummary?.totalActual ?? 0;
             const campaignAchievement = campaignSummary?.achievementRate ?? 0;
+            const campaignStatus = campaignSummary?.targetStatus ?? (campaignSummary?.targetHit ? "hit" : "missed");
             return (
             <Link
               key={campaign.id}
-              href={`/reports/campaign-performance?campaignId=${campaign.id}`}
+              href={`/reports/campaign-performance?campaignId=${campaign.id}&year=${year}&month=${month}`}
             >
               <Card className="p-6 cursor-pointer hover:shadow-lg hover:border-blue-400 transition-all h-full">
                 <h3 className="text-lg font-bold text-gray-800 mb-3">
@@ -249,8 +331,8 @@ function CampaignSelectorView({ campaigns }: { campaigns: Campaign[] }) {
                   </div>
                   <div className="flex justify-between">
                     <span>Status:</span>
-                    <span className={`font-bold ${campaignSummary?.targetHit ? "text-green-600" : "text-red-600"}`}>
-                      {summaryLoading ? "..." : campaignSummary?.targetHit ? "HIT" : "MISSED"}
+                    <span className={`font-bold ${statusTextClass(campaignStatus)}`}>
+                      {summaryLoading ? "..." : statusLabel(campaignStatus)}
                     </span>
                   </div>
                 </div>
@@ -272,9 +354,19 @@ function CampaignSelectorView({ campaigns }: { campaigns: Campaign[] }) {
 function CampaignDetailView({
   data,
   campaign: campaignData,
+  year,
+  month,
+  agentSearch,
+  onMonthChange,
+  onAgentSearchChange,
 }: {
   data: CampaignPerformanceData;
   campaign: Campaign;
+  year: number;
+  month: number;
+  agentSearch: string;
+  onMonthChange: (year: number, month: number) => void;
+  onAgentSearchChange: (value: string) => void;
 }) {
   const {
     campaign,
@@ -286,6 +378,16 @@ function CampaignDetailView({
     allAgents,
     recommendations,
   } = data;
+  const targetStatus = overallPerformance.targetStatus ?? (overallPerformance.targetHit ? "hit" : "missed");
+  const filteredAgents = allAgents.filter((agent) => {
+    const query = agentSearch.trim().toLowerCase();
+    if (!query) return true;
+
+    return (
+      agent.name.toLowerCase().includes(query) ||
+      String(agent.seatNumber ?? "").includes(query)
+    );
+  });
 
   return (
     <div className="space-y-6 p-6">
@@ -297,6 +399,24 @@ function CampaignDetailView({
         <Link href="/reports/campaign-performance">
           <Button variant="outline">← Back to Campaigns</Button>
         </Link>
+      </div>
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <input
+          type="month"
+          value={`${year}-${String(month).padStart(2, "0")}`}
+          onChange={(e) => {
+            const [nextYear, nextMonth] = e.target.value.split("-");
+            onMonthChange(parseInt(nextYear), parseInt(nextMonth));
+          }}
+          className="h-10 rounded-md border border-slate-300 px-3 py-2 text-sm"
+        />
+        <input
+          value={agentSearch}
+          onChange={(e) => onAgentSearchChange(e.target.value)}
+          placeholder="Search agents or seat..."
+          className="h-10 min-w-[240px] rounded-md border border-slate-300 px-3 py-2 text-sm"
+        />
       </div>
 
       {/* Overall Performance Summary */}
@@ -325,14 +445,8 @@ function CampaignDetailView({
           </div>
           <div className="bg-white p-4 rounded-lg shadow-sm">
             <p className="text-sm text-gray-600">Target Status</p>
-            <p
-              className={`text-2xl font-bold ${
-                overallPerformance.targetHit
-                  ? "text-green-600"
-                  : "text-red-600"
-              }`}
-            >
-              {overallPerformance.targetHit ? "✅ HIT" : "❌ MISSED"}
+            <p className={`text-2xl font-bold ${statusTextClass(targetStatus)}`}>
+              {statusLabel(targetStatus)}
             </p>
           </div>
         </div>
@@ -504,11 +618,22 @@ function CampaignDetailView({
         <h2 className="text-xl font-bold mb-4 text-gray-800">
           📋 Individual Agent Scorecard
         </h2>
+        <p className="mb-4 text-sm text-gray-500">
+          Showing {filteredAgents.length} of {allAgents.length} agents
+        </p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-100 border-b-2 border-gray-300">
               <tr>
                 <th className="px-4 py-2 text-left">Name</th>
+                <th className="px-4 py-2 text-right">Seat Number</th>
+                <th className="px-4 py-2 text-right">Days Worked</th>
+                <th className="px-4 py-2 text-right">Transmittals</th>
+                <th className="px-4 py-2 text-right">Activations</th>
+                <th className="px-4 py-2 text-right">Approvals</th>
+                <th className="px-4 py-2 text-right">Booked</th>
+                <th className="px-4 py-2 text-right">Quality %</th>
+                <th className="px-4 py-2 text-right">Conversion %</th>
                 <th className="px-4 py-2 text-left">Level</th>
                 <th className="px-4 py-2 text-right">Goal</th>
                 <th className="px-4 py-2 text-right">Actual</th>
@@ -517,10 +642,34 @@ function CampaignDetailView({
               </tr>
             </thead>
             <tbody>
-              {allAgents.map((agent) => (
+              {filteredAgents.map((agent) => (
                 <tr key={agent.id} className="border-b hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-800">
                     {agent.name}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {agent.seatNumber ?? "-"}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {agent.daysWorked.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {agent.transmittals.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {agent.activations.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {agent.approvals.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {agent.booked.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {agent.qualityRate.toFixed(1)}%
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {agent.conversionRate.toFixed(1)}%
                   </td>
                   <td className="px-4 py-3">
                     <span
@@ -543,7 +692,7 @@ function CampaignDetailView({
                     className={`px-4 py-3 text-right font-bold ${
                       agent.achievement >= 100
                         ? "text-green-600"
-                        : agent.achievement >= 70
+                        : agent.achievement >= 85
                           ? "text-yellow-600"
                           : "text-red-600"
                     }`}
@@ -551,12 +700,19 @@ function CampaignDetailView({
                     {agent.achievement}%
                   </td>
                   <td className="px-4 py-3 text-center">
-                    {agent.status === "hit" && "✅ Hit"}
-                    {agent.status === "near" && "⚠️ Near"}
-                    {agent.status === "missed" && "❌ Missed"}
+                    <span className={`font-semibold ${statusTextClass(agent.status)}`}>
+                      {statusLabel(agent.status)}
+                    </span>
                   </td>
                 </tr>
               ))}
+              {filteredAgents.length === 0 && (
+                <tr>
+                  <td colSpan={14} className="px-4 py-8 text-center text-gray-500">
+                    No agents match your search.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -595,10 +751,18 @@ function CampaignDetailView({
 function CampaignPerformancePageContent() {
   const searchParams = useSearchParams();
   const campaignId = searchParams.get("campaignId");
+  const now = new Date();
+  const initialYear = parseInt(searchParams.get("year") ?? now.getFullYear().toString());
+  const initialMonth = parseInt(searchParams.get("month") ?? String(now.getMonth() + 1));
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [data, setData] = useState<CampaignPerformanceData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [year, setYear] = useState(initialYear);
+  const [month, setMonth] = useState(initialMonth);
+  const [selectedCampaignId, setSelectedCampaignId] = useState("");
+  const [campaignSearch, setCampaignSearch] = useState("");
+  const [agentSearch, setAgentSearch] = useState("");
 
   useEffect(() => {
     const fetchCampaigns = async () => {
@@ -622,9 +786,11 @@ function CampaignPerformancePageContent() {
     }
 
     const fetchPerformance = async () => {
+      setLoading(true);
+      setError(null);
       try {
         const res = await fetch(
-          `/api/reports/campaign-performance?campaignId=${campaignId}`
+          `/api/reports/campaign-performance?campaignId=${campaignId}&year=${year}&month=${month}`
         );
         if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
         const result = await res.json();
@@ -637,7 +803,7 @@ function CampaignPerformancePageContent() {
     };
 
     fetchPerformance();
-  }, [campaignId]);
+  }, [campaignId, year, month]);
 
   if (loading)
     return (
@@ -659,7 +825,21 @@ function CampaignPerformancePageContent() {
 
   // Show campaign selector if no campaignId
   if (!campaignId) {
-    return <CampaignSelectorView campaigns={campaigns} />;
+    return (
+      <CampaignSelectorView
+        campaigns={campaigns}
+        year={year}
+        month={month}
+        selectedCampaignId={selectedCampaignId}
+        campaignSearch={campaignSearch}
+        onMonthChange={(nextYear, nextMonth) => {
+          setYear(nextYear);
+          setMonth(nextMonth);
+        }}
+        onCampaignChange={setSelectedCampaignId}
+        onCampaignSearchChange={setCampaignSearch}
+      />
+    );
   }
 
   // Show detail view if campaignId provided
@@ -677,6 +857,14 @@ function CampaignPerformancePageContent() {
     <CampaignDetailView
       data={data}
       campaign={selectedCampaign || { id: campaignId, campaignName: "Unknown", monthlyGoal: 0, kpiMetric: "" }}
+      year={year}
+      month={month}
+      agentSearch={agentSearch}
+      onMonthChange={(nextYear, nextMonth) => {
+        setYear(nextYear);
+        setMonth(nextMonth);
+      }}
+      onAgentSearchChange={setAgentSearch}
     />
   );
 }

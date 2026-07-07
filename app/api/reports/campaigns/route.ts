@@ -2,7 +2,63 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { computeMTD, runRate, achievementPct, rrAchievementPct, daysLapsed, WORKING_DAYS_DEFAULT } from '@/utils/kpi';
+import { runRate, achievementPct, rrAchievementPct, WORKING_DAYS_DEFAULT } from '@/utils/kpi';
+
+const BUSINESS_TIME_ZONE = 'Asia/Manila';
+const BUSINESS_TIME_ZONE_OFFSET = '+08:00';
+
+function monthRange(year: number, month: number) {
+  const mm = String(month).padStart(2, '0');
+  const lastDay = new Date(year, month, 0).getDate();
+
+  return {
+    start: new Date(`${year}-${mm}-01T00:00:00.000${BUSINESS_TIME_ZONE_OFFSET}`),
+    end: new Date(`${year}-${mm}-${String(lastDay).padStart(2, '0')}T23:59:59.999${BUSINESS_TIME_ZONE_OFFSET}`),
+  };
+}
+
+function toBusinessYmd(value: Date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(value);
+
+  const yyyy = parts.find((part) => part.type === 'year')?.value ?? '0000';
+  const mm = parts.find((part) => part.type === 'month')?.value ?? '01';
+  const dd = parts.find((part) => part.type === 'day')?.value ?? '01';
+
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+type MetricTotals = {
+  transmittals: number;
+  activations: number;
+  approvals: number;
+  booked: number;
+  volume: number;
+  transaction: number;
+};
+
+function metricValue(metric: string, totals: MetricTotals) {
+  if (metric === 'activations') return totals.activations;
+  if (metric === 'approvals') return totals.approvals;
+  if (metric === 'booked') return totals.booked;
+  if (metric === 'volume') return totals.volume;
+  if (metric === 'transaction') return totals.transaction;
+  return totals.transmittals;
+}
+
+function percent(numerator: number, denominator: number) {
+  return denominator > 0 ? (numerator / denominator) * 100 : 0;
+}
+
+function reportStatus(achievement: number): 'on-track' | 'at-risk' | 'exceeding' {
+  if (achievement >= 100) return 'exceeding';
+  if (achievement >= 85) return 'on-track';
+  return 'at-risk';
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -20,76 +76,109 @@ export async function GET(req: NextRequest) {
     const year = parseInt(searchParams.get('year') ?? new Date().getFullYear().toString());
     const month = parseInt(searchParams.get('month') ?? String(new Date().getMonth() + 1));
 
-    const startDate = new Date(year, month - 1, 1);
-    startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(year, month, 0);
-    endDate.setHours(23, 59, 59, 999);
+    const { start: startDate, end: endDate } = monthRange(year, month);
 
-    const campaigns = await prisma.campaign.findMany({
-      include: {
-        dailySales: {
-          where: { date: { gte: startDate, lte: endDate } },
+    const details = await prisma.productionDetail.findMany({
+      where: {
+        ...(user.role === 'CEO' ? {} : user.campaignId ? { campaignId: user.campaignId } : {}),
+        productionEntry: {
+          date: { gte: startDate, lte: endDate },
         },
-        users: true,
+      },
+      select: {
+        agentId: true,
+        campaignId: true,
+        transmittals: true,
+        activations: true,
+        approvals: true,
+        booked: true,
+        volume: true,
+        transaction: true,
+        campaign: {
+          select: {
+            id: true,
+            campaignName: true,
+            kpiMetric: true,
+            monthlyGoal: true,
+          },
+        },
+        productionEntry: { select: { date: true } },
       },
     });
 
-    const campaignReports = campaigns.map(c => {
-      const metric = c.kpiMetric as any;
-      const rows = c.dailySales.map(s => ({
-        date: s.date.toISOString(),
-        transmittals: Number(s.transmittals),
-        activations: Number(s.activations),
-        approvals: Number(s.approvals),
-        booked: Number(s.booked),
-        qualityRate: s.qualityRate,
-        conversionRate: s.conversionRate,
-        volume: Number(s.volume),
-        transaction: Number(s.transaction),
-      }));
+    const campaignMap = new Map<string, {
+      id: string;
+      name: string;
+      kpiMetric: string;
+      monthlyGoal: number;
+      transmittals: number;
+      activations: number;
+      approvals: number;
+      booked: number;
+      volume: number;
+      transaction: number;
+      agentIds: Set<string>;
+      workedDates: Set<string>;
+    }>();
 
-      const mtd = computeMTD(rows, metric);
-      const elapsed = daysLapsed(rows);
+    details.forEach((detail) => {
+      const campaign = detail.campaign;
+      if (!campaign?.id) return;
+
+      if (!campaignMap.has(campaign.id)) {
+        campaignMap.set(campaign.id, {
+          id: campaign.id,
+          name: campaign.campaignName,
+          kpiMetric: campaign.kpiMetric,
+          monthlyGoal: campaign.monthlyGoal,
+          transmittals: 0,
+          activations: 0,
+          approvals: 0,
+          booked: 0,
+          volume: 0,
+          transaction: 0,
+          agentIds: new Set<string>(),
+          workedDates: new Set<string>(),
+        });
+      }
+
+      const report = campaignMap.get(campaign.id)!;
+      report.transmittals += Number(detail.transmittals || 0);
+      report.activations += Number(detail.activations || 0);
+      report.approvals += Number(detail.approvals || 0);
+      report.booked += Number(detail.booked || 0);
+      report.volume += Number(detail.volume || 0);
+      report.transaction += Number(detail.transaction || 0);
+      report.agentIds.add(detail.agentId);
+      report.workedDates.add(toBusinessYmd(detail.productionEntry.date));
+    });
+
+    const campaignReports = Array.from(campaignMap.values()).map((campaign) => {
+      const mtd = metricValue(campaign.kpiMetric, campaign);
+      const elapsed = campaign.workedDates.size;
       const rr = runRate(mtd, elapsed, WORKING_DAYS_DEFAULT);
-      const ach = achievementPct(mtd, c.monthlyGoal);
-      const rrAch = rrAchievementPct(rr, c.monthlyGoal);
+      const ach = achievementPct(mtd, campaign.monthlyGoal);
+      const rrAch = rrAchievementPct(rr, campaign.monthlyGoal);
+      const avgQuality = percent(campaign.approvals, campaign.transmittals);
+      const avgConversion = percent(campaign.booked, campaign.transmittals);
 
-      // Calculate average quality
-      const qualityValues = c.dailySales
-        .filter(s => s.qualityRate !== null)
-        .map(s => s.qualityRate as number);
-      const avgQuality = qualityValues.length > 0 
-        ? qualityValues.reduce((a, b) => a + b, 0) / qualityValues.length
-        : 0;
-
-      // Calculate average conversion
-      const conversionValues = c.dailySales
-        .filter(s => s.conversionRate !== null)
-        .map(s => s.conversionRate as number);
-      const avgConversion = conversionValues.length > 0 
-        ? conversionValues.reduce((a, b) => a + b, 0) / conversionValues.length
-        : 0;
-
-      // Determine status
-      let status: 'on-track' | 'at-risk' | 'exceeding' = 'on-track';
-      if (ach >= 100) status = 'exceeding';
-      else if (ach < 75 && elapsed > 10) status = 'at-risk';
+      const status = reportStatus(ach);
 
       return {
-        id: c.id,
-        name: c.campaignName,
-        kpiMetric: c.kpiMetric,
-        monthlyGoal: c.monthlyGoal,
+        id: campaign.id,
+        name: campaign.name,
+        kpiMetric: campaign.kpiMetric,
+        monthlyGoal: campaign.monthlyGoal,
         mtd: Math.round(mtd),
         achievement: ach,
         runRate: Math.round(rr),
         rrAchievement: rrAch,
-        agentCount: c.users.length,
+        agentCount: campaign.agentIds.size,
         avgQuality,
         avgConversion,
         status,
       };
-    });
+    }).sort((a, b) => b.achievement - a.achievement || a.name.localeCompare(b.name));
 
     const onTrack = campaignReports.filter(c => c.status === 'on-track').length;
     const atRisk = campaignReports.filter(c => c.status === 'at-risk').length;

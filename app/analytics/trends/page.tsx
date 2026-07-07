@@ -6,12 +6,22 @@ import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { PageTitle } from "@/components/layout/page-title";
 import { KpiCard } from "@/components/kpi-card";
+import { CampaignSelector } from "@/components/campaign-selector";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DailyLineChart } from "@/components/charts/daily-line-chart";
 import { DailyBarChart } from "@/components/charts/daily-bar-chart";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { TrendingUp, Download } from "lucide-react";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 interface TrendData {
   date: string;
@@ -21,12 +31,73 @@ interface TrendData {
   booked: number;
 }
 
+type TrendMetric = 'all' | 'transmittals' | 'activations' | 'approvals' | 'booked';
+
+const METRIC_OPTIONS: TrendMetric[] = ['all', 'transmittals', 'activations', 'approvals', 'booked'];
+const SINGLE_METRICS = ['transmittals', 'activations', 'approvals', 'booked'] as const;
+const METRIC_LABELS: Record<TrendMetric, string> = {
+  all: 'All',
+  transmittals: 'Transmittals',
+  activations: 'Activations',
+  approvals: 'Approvals',
+  booked: 'Booked',
+};
+const METRIC_COLORS = {
+  transmittals: '#2563eb',
+  activations: '#16a34a',
+  approvals: '#f59e0b',
+  booked: '#dc2626',
+};
+
+function totalForMetric(trend: TrendData, metric: TrendMetric) {
+  if (metric === 'all') {
+    return SINGLE_METRICS.reduce((sum, key) => sum + (trend[key] || 0), 0);
+  }
+
+  return trend[metric] || 0;
+}
+
+function AllMetricsChart({ data }: { data: Array<TrendData & { label: string }> }) {
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <LineChart data={data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+        <XAxis dataKey="label" className="text-xs" tick={{ fontSize: 11 }} />
+        <YAxis className="text-xs" tick={{ fontSize: 11 }} />
+        <Tooltip
+          contentStyle={{
+            backgroundColor: "hsl(var(--card))",
+            border: "1px solid hsl(var(--border))",
+            borderRadius: 8,
+          }}
+          formatter={(value: number, name: string) => [
+            Number(value).toLocaleString(),
+            METRIC_LABELS[name as TrendMetric] || name,
+          ]}
+        />
+        {SINGLE_METRICS.map((key) => (
+          <Line
+            key={key}
+            type="monotone"
+            dataKey={key}
+            stroke={METRIC_COLORS[key]}
+            strokeWidth={2}
+            dot={{ r: 3 }}
+            activeDot={{ r: 5 }}
+          />
+        ))}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
 export default function PerformanceTrendsPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
-  const [metric, setMetric] = useState<'transmittals' | 'activations' | 'approvals' | 'booked'>('transmittals');
+  const [metric, setMetric] = useState<TrendMetric>('all');
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
 
   useEffect(() => {
     if (status === 'loading') return;
@@ -41,29 +112,33 @@ export default function PerformanceTrendsPage() {
   }, [session, status, router]);
 
   const { data, isLoading } = useSWR(
-    session?.user ? `/api/analytics/trends?year=${year}&month=${month}` : null,
+    session?.user ? `/api/analytics/trends?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}` : null,
     (url: string) => fetch(url, { credentials: 'include' }).then(res => res.json())
   );
 
+  const { data: campaignsData } = useSWR(
+    session?.user && (session.user as any).role === 'CEO' ? '/api/campaigns' : null,
+    (url: string) => fetch(url).then(res => res.json())
+  );
+
   const trends = data?.trends || [];
+  const previousTrends = data?.previousTrends || [];
+  const campaigns = Array.isArray(campaignsData) ? campaignsData : [];
 
-  // Stats are computed per selected metric so activations, approvals and booked
-  // are kept separate from transmittals regardless of the month.
-  const metricTotal = trends.reduce((sum: number, t: TrendData) => sum + (t[metric] || 0), 0);
+  const metricTotal = trends.reduce((sum: number, t: TrendData) => sum + totalForMetric(t, metric), 0);
   const metricAvg = trends.length > 0 ? Math.round(metricTotal / trends.length) : 0;
-  const metricPeak = trends.length > 0 ? Math.max(...trends.map((t: TrendData) => t[metric] || 0)) : 0;
+  const metricPeak = trends.length > 0 ? Math.max(...trends.map((t: TrendData) => totalForMetric(t, metric))) : 0;
 
-  // Calculate growth trend
+  // Calculate growth against the previous equivalent month for the selected metric.
   const sortedTrends = [...trends].sort((a: TrendData, b: TrendData) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  const firstHalf = sortedTrends.slice(0, Math.floor(sortedTrends.length / 2));
-  const secondHalf = sortedTrends.slice(Math.floor(sortedTrends.length / 2));
-  const firstHalfAvg = firstHalf.length > 0 ? firstHalf.reduce((sum, d: TrendData) => sum + (d[metric] || 0), 0) / firstHalf.length : 0;
-  const secondHalfAvg = secondHalf.length > 0 ? secondHalf.reduce((sum, d: TrendData) => sum + (d[metric] || 0), 0) / secondHalf.length : 0;
-  const growthRate = firstHalfAvg > 0 ? ((secondHalfAvg - firstHalfAvg) / firstHalfAvg * 100).toFixed(1) : 0;
+  const previousMetricTotal = previousTrends.reduce((sum: number, t: TrendData) => sum + totalForMetric(t, metric), 0);
+  const growthRate = previousMetricTotal > 0 ? ((metricTotal - previousMetricTotal) / previousMetricTotal * 100).toFixed(1) : '0.0';
 
   const chartData = trends.map((t: TrendData) => ({
+    ...t,
     date: new Date(t.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-    value: t[metric] || 0,
+    label: new Date(t.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    value: totalForMetric(t, metric),
   }));
 
   return (
@@ -85,15 +160,24 @@ export default function PerformanceTrendsPage() {
             }}
             className="px-3 py-2 border rounded-md"
           />
+          {session?.user && (session.user as any).role === 'CEO' && (
+            <CampaignSelector
+              campaigns={campaigns}
+              selectedCampaignId={selectedCampaignId}
+              onCampaignChange={setSelectedCampaignId}
+              includeAllOption
+              className="min-w-[220px]"
+            />
+          )}
           <div className="flex gap-2">
-            {(['transmittals', 'activations', 'approvals', 'booked'] as const).map(m => (
+            {METRIC_OPTIONS.map(m => (
               <Button 
                 key={m}
                 variant={metric === m ? 'default' : 'outline'}
                 onClick={() => setMetric(m)}
-                className="capitalize"
+                className={m === 'all' ? '' : 'capitalize'}
               >
-                {m}
+                {METRIC_LABELS[m]}
               </Button>
             ))}
           </div>
@@ -128,14 +212,16 @@ export default function PerformanceTrendsPage() {
       {/* Charts */}
       <Card>
         <CardHeader>
-          <CardTitle>{metric.charAt(0).toUpperCase() + metric.slice(1)} Trend</CardTitle>
+          <CardTitle>{METRIC_LABELS[metric]} Trend</CardTitle>
         </CardHeader>
         <CardContent>
           {chartData.length > 0 ? (
-            metric === 'transmittals' ? (
+            metric === 'all' ? (
+              <AllMetricsChart data={chartData} />
+            ) : metric === 'transmittals' ? (
               <DailyBarChart data={chartData} label="Transmittals" />
             ) : (
-              <DailyLineChart data={chartData} label={metric.charAt(0).toUpperCase() + metric.slice(1)} />
+              <DailyLineChart data={chartData} label={METRIC_LABELS[metric]} />
             )
           ) : (
             <div className="h-96 flex items-center justify-center text-muted-foreground">

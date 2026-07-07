@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { PageTitle } from "@/components/layout/page-title";
 import { KpiCard } from "@/components/kpi-card";
+import { CampaignSelector } from "@/components/campaign-selector";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -39,6 +40,7 @@ export default function ProductivityAnalyticsPage() {
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState<'efficiency' | 'quality' | 'tasks'>('efficiency');
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
 
   useEffect(() => {
     if (status === 'loading') return;
@@ -53,11 +55,17 @@ export default function ProductivityAnalyticsPage() {
   }, [session, status, router]);
 
   const { data, isLoading } = useSWR(
-    session?.user ? `/api/analytics/productivity?year=${year}&month=${month}` : null,
+    session?.user ? `/api/analytics/productivity?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}` : null,
+    (url: string) => fetch(url).then(res => res.json())
+  );
+
+  const { data: campaignsData } = useSWR(
+    session?.user && (session.user as any).role === 'CEO' ? '/api/campaigns' : null,
     (url: string) => fetch(url).then(res => res.json())
   );
 
   const metrics: ProductivityMetric[] = data?.metrics || [];
+  const campaigns = Array.isArray(campaignsData) ? campaignsData : [];
   const summary = data?.summary || {
     avgEfficiency: 0,
     avgQuality: 0,
@@ -73,7 +81,7 @@ export default function ProductivityAnalyticsPage() {
       return b.tasksCompleted - a.tasksCompleted;
     });
 
-  const topPerformers = metrics
+  const topPerformers = [...metrics]
     .sort((a, b) => (b.efficiencyScore + b.qualityScore) / 2 - (a.efficiencyScore + a.qualityScore) / 2)
     .slice(0, 10)
     .map(m => ({ name: m.agentName, value: Math.round((m.efficiencyScore + m.qualityScore) / 2) }));
@@ -97,6 +105,15 @@ export default function ProductivityAnalyticsPage() {
             }}
             className="px-3 py-2 border rounded-md"
           />
+          {session?.user && (session.user as any).role === 'CEO' && (
+            <CampaignSelector
+              campaigns={campaigns}
+              selectedCampaignId={selectedCampaignId}
+              onCampaignChange={setSelectedCampaignId}
+              includeAllOption
+              className="min-w-[220px]"
+            />
+          )}
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
             <Input

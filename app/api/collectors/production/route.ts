@@ -4,26 +4,35 @@ import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import { getAssignedCampaignIds } from "@/lib/user-campaigns";
 
+const BUSINESS_TIME_ZONE = "Asia/Manila";
+const BUSINESS_TIME_ZONE_OFFSET = "+08:00";
+
 function parseDateOnly(value: string) {
   const [year, month, day] = value.split("-").map(Number);
   if (!year || !month || !day) return new Date(value);
-  return new Date(year, month - 1, day);
+  return new Date(`${value}T00:00:00.000${BUSINESS_TIME_ZONE_OFFSET}`);
 }
 
 function dayRange(value: string) {
-  const start = parseDateOnly(value);
-  start.setHours(0, 0, 0, 0);
-  const end = parseDateOnly(value);
-  end.setHours(23, 59, 59, 999);
-  return { start, end };
+  return {
+    start: new Date(`${value}T00:00:00.000${BUSINESS_TIME_ZONE_OFFSET}`),
+    end: new Date(`${value}T23:59:59.999${BUSINESS_TIME_ZONE_OFFSET}`),
+  };
 }
 
 function toYmd(value: Date) {
-  return [
-    value.getFullYear(),
-    String(value.getMonth() + 1).padStart(2, "0"),
-    String(value.getDate()).padStart(2, "0"),
-  ].join("-");
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+
+  const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const month = parts.find((part) => part.type === "month")?.value ?? "01";
+  const day = parts.find((part) => part.type === "day")?.value ?? "01";
+
+  return `${year}-${month}-${day}`;
 }
 
 export async function POST(req: Request) {
@@ -188,8 +197,31 @@ export async function GET(req: Request) {
 
     const [entries, availableEntryDates] = await Promise.all([
       prisma.productionEntry.findMany({
-        where,
-        include: { details: true },
+        where: {
+          ...where,
+          details: { some: {} },
+        },
+        select: {
+          id: true,
+          campaignId: true,
+          date: true,
+          time: true,
+          createdAt: true,
+          details: {
+            select: {
+              id: true,
+              agentId: true,
+              transmittals: true,
+              activations: true,
+              approvals: true,
+              booked: true,
+              volume: true,
+              transaction: true,
+              qualityRate: true,
+              conversionRate: true,
+            },
+          },
+        },
         orderBy: [{ date: "asc" }, { time: "asc" }],
       }),
       prisma.productionEntry.findMany({
@@ -207,7 +239,29 @@ export async function GET(req: Request) {
     const availableDates = availableEntryDates.map((entry) => toYmd(entry.date));
     const latestDate = availableDates[0] ?? null;
 
-    // Convert BigInt fields to numbers for JSON serialization
+    const agentTotals: Record<
+      string,
+      {
+        agentId: string;
+        transmittals: number;
+        activations: number;
+        approvals: number;
+        booked: number;
+        volume: number;
+        transaction: number;
+      }
+    > = {};
+    const summaryTotals = {
+      transmittals: 0,
+      activations: 0,
+      approvals: 0,
+      booked: 0,
+      volume: 0,
+      transaction: 0,
+    };
+
+    // Convert BigInt fields to numbers for JSON serialization and build a single
+    // per-agent index so the UI can populate cards without extra queries.
     const serializedEntries = entries.map(entry => ({
       ...entry,
       details: entry.details.map(detail => ({
@@ -218,10 +272,44 @@ export async function GET(req: Request) {
         booked: Number(detail.booked),
         volume: Number(detail.volume),
         transaction: Number(detail.transaction),
-      })),
+      })).map((detail) => {
+        const current = agentTotals[detail.agentId] ?? {
+          agentId: detail.agentId,
+          transmittals: 0,
+          activations: 0,
+          approvals: 0,
+          booked: 0,
+          volume: 0,
+          transaction: 0,
+        };
+
+        current.transmittals += detail.transmittals;
+        current.activations += detail.activations;
+        current.approvals += detail.approvals;
+        current.booked += detail.booked;
+        current.volume += detail.volume;
+        current.transaction += detail.transaction;
+        agentTotals[detail.agentId] = current;
+
+        summaryTotals.transmittals += detail.transmittals;
+        summaryTotals.activations += detail.activations;
+        summaryTotals.approvals += detail.approvals;
+        summaryTotals.booked += detail.booked;
+        summaryTotals.volume += detail.volume;
+        summaryTotals.transaction += detail.transaction;
+
+        return detail;
+      }),
     }));
 
-    return NextResponse.json({ entries: serializedEntries, availableDates, latestDate });
+    return NextResponse.json({
+      entries: serializedEntries,
+      agentTotals,
+      summaryTotals,
+      detailCount: serializedEntries.reduce((sum, entry) => sum + entry.details.length, 0),
+      availableDates,
+      latestDate,
+    });
   } catch (error) {
     console.error("Error fetching entries:", error);
     return NextResponse.json(

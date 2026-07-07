@@ -7,6 +7,7 @@ import useSWR from "swr";
 import { PageTitle } from "@/components/layout/page-title";
 import { ExportButton } from "@/components/export-button";
 import { KpiCard } from "@/components/kpi-card";
+import { CampaignSelector } from "@/components/campaign-selector";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -64,9 +65,11 @@ export default function AgentSummariesPage() {
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [selectedAgent, setSelectedAgent] = useState<string>("");
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [totalAgentsCount, setTotalAgentsCount] = useState(0);
   const pagination = usePagination(1, 25, totalAgentsCount);
+  const summaryEndpoint = `/api/agents/summary?year=${year}&month=${month}${selectedAgent ? `&id=${selectedAgent}` : ''}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`;
 
   const handleViewDetails = (agentId: string) => {
     router.push(`/agent-details/${agentId}?year=${year}&month=${month}`);
@@ -85,27 +88,17 @@ export default function AgentSummariesPage() {
   }, [session, status, router]);
 
   const { data, error, isLoading, mutate } = useSWR(
-    session?.user?.role === 'CEO' ? `/api/agents/summary?year=${year}&month=${month}${selectedAgent ? `&id=${selectedAgent}` : ''}` : null,
+    session?.user?.role === 'CEO' ? summaryEndpoint : null,
     (url: string) => fetch(url).then(res => res.json())
   );
 
-  useEffect(() => {
-    if (status === 'loading') return;
-    if (!session?.user || session.user.role !== 'CEO') {
-      router.push('/login');
-      return;
-    }
-  }, [session, status, router]);
-
-  if (status === 'loading' || !session) {
-    return <div>Loading...</div>;
-  }
-
-  if (session.user.role !== 'CEO') {
-    return <div>Access denied</div>;
-  }
+  const { data: campaignsData } = useSWR(
+    session?.user?.role === 'CEO' ? '/api/campaigns' : null,
+    (url: string) => fetch(url).then(res => res.json())
+  );
 
   const agents: AgentSummary[] = data?.agents || [];
+  const campaigns = Array.isArray(campaignsData) ? campaignsData : [];
   const filteredAgents = agents.filter(agent =>
     agent.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -114,6 +107,14 @@ export default function AgentSummariesPage() {
     setTotalAgentsCount(filteredAgents.length);
     pagination.goToPage(1); // Reset to first page when search term changes
   }, [filteredAgents.length]);
+
+  if (status === 'loading' || !session) {
+    return <div>Loading...</div>;
+  }
+
+  if (session.user.role !== 'CEO') {
+    return <div>Access denied</div>;
+  }
 
   const paginatedAgents = filteredAgents.slice(
     pagination.startIndex,
@@ -149,6 +150,13 @@ export default function AgentSummariesPage() {
             }}
             className="px-3 py-2 border rounded-md"
           />
+          <CampaignSelector
+            campaigns={campaigns}
+            selectedCampaignId={selectedCampaignId}
+            onCampaignChange={setSelectedCampaignId}
+            includeAllOption
+            className="min-w-[220px]"
+          />
           <div className="flex gap-2">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
@@ -163,7 +171,7 @@ export default function AgentSummariesPage() {
         </div>
         <div className="flex gap-2">
           <ExportButton
-            endpoint={`/api/agents/summary?year=${year}&month=${month}${selectedAgent ? `&id=${selectedAgent}` : ''}`}
+            endpoint={summaryEndpoint}
             label="Export Report"
           />
         </div>

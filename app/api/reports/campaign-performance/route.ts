@@ -2,16 +2,145 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { computeMTD, type DailySalesRow, type KpiMetricKey } from "@/utils/kpi";
+import type { KpiMetricKey } from "@/utils/kpi";
 
 interface AgentPerformance {
   id: string;
   name: string;
   level: string;
+  seatNumber: number | null;
+  daysWorked: number;
+  transmittals: number;
+  activations: number;
+  approvals: number;
+  booked: number;
+  qualityRate: number;
+  conversionRate: number;
   goal: number;
   actual: number;
   achievement: number;
   status: "hit" | "near" | "missed";
+}
+
+const BUSINESS_TIME_ZONE = "Asia/Manila";
+const BUSINESS_TIME_ZONE_OFFSET = "+08:00";
+
+function monthRange(year: number, month: number) {
+  const mm = String(month).padStart(2, "0");
+  const lastDay = new Date(year, month, 0).getDate();
+
+  return {
+    start: new Date(`${year}-${mm}-01T00:00:00.000${BUSINESS_TIME_ZONE_OFFSET}`),
+    end: new Date(`${year}-${mm}-${String(lastDay).padStart(2, "0")}T23:59:59.999${BUSINESS_TIME_ZONE_OFFSET}`),
+  };
+}
+
+function toBusinessYmd(value: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+
+  const yyyy = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const mm = parts.find((part) => part.type === "month")?.value ?? "01";
+  const dd = parts.find((part) => part.type === "day")?.value ?? "01";
+
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+type MetricTotals = {
+  transmittals: number;
+  activations: number;
+  approvals: number;
+  booked: number;
+  volume: number;
+  transaction: number;
+};
+
+type AgentTotals = MetricTotals & { workedDates: Set<string> };
+
+function emptyAgentTotals(): AgentTotals {
+  return {
+    transmittals: 0,
+    activations: 0,
+    approvals: 0,
+    booked: 0,
+    volume: 0,
+    transaction: 0,
+    workedDates: new Set<string>(),
+  };
+}
+
+function normalizeName(value: string | null | undefined) {
+  return (value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function agentSeatKey(name: string | null | undefined, seatNumber: number | null | undefined) {
+  return `${normalizeName(name)}|${seatNumber ?? ""}`;
+}
+
+function mergeTotals(target: AgentTotals, source: AgentTotals) {
+  target.transmittals += source.transmittals;
+  target.activations += source.activations;
+  target.approvals += source.approvals;
+  target.booked += source.booked;
+  target.volume += source.volume;
+  target.transaction += source.transaction;
+  source.workedDates.forEach((date) => target.workedDates.add(date));
+}
+
+function normalizeMetric(metric: string | null | undefined): KpiMetricKey {
+  const normalized = (metric ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (["activation", "activations", "activated", "act"].includes(normalized)) return "activations";
+  if (["approval", "approvals", "approved", "appr"].includes(normalized)) return "approvals";
+  if (["book", "booked", "booking", "bookings"].includes(normalized)) return "booked";
+  if (["volume", "vol"].includes(normalized)) return "volume";
+  if (["transaction", "transactions", "txn", "txns"].includes(normalized)) return "transaction";
+  return "transmittals";
+}
+
+function metricValue(metric: KpiMetricKey, totals: MetricTotals) {
+  if (metric === "activations") return totals.activations;
+  if (metric === "approvals") return totals.approvals;
+  if (metric === "booked") return totals.booked;
+  if (metric === "volume") return totals.volume;
+  if (metric === "transaction") return totals.transaction;
+  return totals.transmittals;
+}
+
+function percent(numerator: number, denominator: number) {
+  return denominator > 0 ? (numerator / denominator) * 100 : 0;
+}
+
+function performanceStatus(achievement: number): "hit" | "near" | "missed" {
+  if (achievement >= 100) return "hit";
+  if (achievement >= 85) return "near";
+  return "missed";
+}
+
+function resolveEffectiveMetric(
+  configuredMetric: KpiMetricKey,
+  campaignGoal: number,
+  campaignTotals: MetricTotals,
+  agents: Array<{ monthlyTarget: number | null }>
+): KpiMetricKey {
+  const configuredActual = metricValue(configuredMetric, campaignTotals);
+  const targetValues = agents.map((agent) => Number(agent.monthlyTarget || 0)).filter((target) => target > 0);
+  const averageTarget =
+    targetValues.length > 0 ? targetValues.reduce((sum, target) => sum + target, 0) / targetValues.length : 0;
+  const looksLikeMoneyGoal = campaignGoal >= 1_000_000 || averageTarget >= 1_000_000;
+  const hasMeaningfulVolume = campaignTotals.volume > configuredActual && campaignTotals.volume > 0;
+
+  // Some imported campaigns store peso-volume goals while the legacy KPI field
+  // still says "transmittals". In that case, using count actuals against volume
+  // goals makes every achievement look like 0%.
+  if (configuredMetric !== "volume" && looksLikeMoneyGoal && hasMeaningfulVolume) {
+    return "volume";
+  }
+
+  return configuredMetric;
 }
 
 // Determine agent level based on seat number
@@ -38,6 +167,9 @@ export async function GET(req: NextRequest) {
 
     const { searchParams } = new URL(req.url);
     const campaignId = searchParams.get("campaignId");
+    const now = new Date();
+    const year = parseInt(searchParams.get("year") ?? now.getFullYear().toString());
+    const month = parseInt(searchParams.get("month") ?? String(now.getMonth() + 1));
 
     if (!campaignId) {
       return NextResponse.json(
@@ -55,64 +187,128 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     }
 
-    // Get current month
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth() + 1;
-    const startOfMonth = new Date(year, month - 1, 1);
-    startOfMonth.setHours(0, 0, 0, 0);
-    const endOfMonth = new Date(year, month, 0);
-    endOfMonth.setHours(23, 59, 59, 999);
+    const { start: startOfMonth, end: endOfMonth } = monthRange(year, month);
 
     const monthlyConfig = await prisma.campaignGoal.findFirst({
       where: { campaignId, month, year },
       select: { monthlyGoal: true, kpiMetric: true },
     });
     const campaignGoal = Number(monthlyConfig?.monthlyGoal ?? campaign.monthlyGoal ?? 0);
-    const campaignMetric = (monthlyConfig?.kpiMetric ?? campaign.kpiMetric) as KpiMetricKey;
+    const configuredCampaignMetric = normalizeMetric(monthlyConfig?.kpiMetric ?? campaign.kpiMetric);
 
     // Get all agents in the campaign
-    const agents = await prisma.user.findMany({
+    const campaignAgents = await prisma.user.findMany({
       where: {
         role: "AGENT",
         campaignId: campaignId,
       },
+      select: {
+        id: true,
+        name: true,
+        seatNumber: true,
+        monthlyTarget: true,
+      },
+      orderBy: [{ seatNumber: "asc" }, { name: "asc" }],
     });
 
     const productionDetails = await prisma.productionDetail.findMany({
       where: {
         campaignId: campaignId,
-        productionEntry: { date: { gte: startOfMonth, lte: endOfMonth } },
+        productionEntry: {
+          OR: [
+            { date: { gte: startOfMonth, lte: endOfMonth } },
+            {
+              periodStart: { lte: endOfMonth },
+              periodEnd: { gte: startOfMonth },
+            },
+          ],
+        },
       },
-      include: { productionEntry: { select: { date: true } } },
+      select: {
+        agentId: true,
+        transmittals: true,
+        activations: true,
+        approvals: true,
+        booked: true,
+        volume: true,
+        transaction: true,
+        agent: { select: { id: true, name: true, seatNumber: true, monthlyTarget: true } },
+        productionEntry: { select: { date: true } },
+      },
     });
 
-    const rowFromDetail = (detail: (typeof productionDetails)[number]): DailySalesRow => ({
-      date: detail.productionEntry.date,
-      transmittals: Number(detail.transmittals),
-      activations: Number(detail.activations),
-      approvals: Number(detail.approvals),
-      booked: Number(detail.booked),
-      qualityRate: detail.qualityRate,
-      conversionRate: detail.conversionRate,
-      volume: Number(detail.volume),
-      transaction: Number(detail.transaction),
+    const agentsById = new Map(campaignAgents.map((agent) => [agent.id, agent]));
+    productionDetails.forEach((detail) => {
+      if (detail.agent && !agentsById.has(detail.agent.id)) {
+        agentsById.set(detail.agent.id, detail.agent);
+      }
     });
+    const agents = Array.from(agentsById.values());
 
     // Group production by agent ID for easy lookup.
-    const rowsByAgent = new Map<string, DailySalesRow[]>();
-    const allRows: DailySalesRow[] = [];
+    const totalsByAgentId = new Map<string, AgentTotals>();
+    const totalsByNameSeat = new Map<string, AgentTotals>();
+    const totalsByName = new Map<string, AgentTotals>();
+    const campaignTotals: MetricTotals = {
+      transmittals: 0,
+      activations: 0,
+      approvals: 0,
+      booked: 0,
+      volume: 0,
+      transaction: 0,
+    };
+
     productionDetails.forEach((detail) => {
-      const row = rowFromDetail(detail);
-      allRows.push(row);
-      if (!rowsByAgent.has(detail.agentId)) {
-        rowsByAgent.set(detail.agentId, []);
+      const transmittals = Number(detail.transmittals || 0);
+      const activations = Number(detail.activations || 0);
+      const approvals = Number(detail.approvals || 0);
+      const booked = Number(detail.booked || 0);
+      const volume = Number(detail.volume || 0);
+      const transaction = Number(detail.transaction || 0);
+
+      campaignTotals.transmittals += transmittals;
+      campaignTotals.activations += activations;
+      campaignTotals.approvals += approvals;
+      campaignTotals.booked += booked;
+      campaignTotals.volume += volume;
+      campaignTotals.transaction += transaction;
+
+      const rowTotals = emptyAgentTotals();
+      rowTotals.transmittals = transmittals;
+      rowTotals.activations = activations;
+      rowTotals.approvals = approvals;
+      rowTotals.booked = booked;
+      rowTotals.volume = volume;
+      rowTotals.transaction = transaction;
+      rowTotals.workedDates.add(toBusinessYmd(detail.productionEntry.date));
+
+      const idTotals = totalsByAgentId.get(detail.agentId) ?? emptyAgentTotals();
+      mergeTotals(idTotals, rowTotals);
+      totalsByAgentId.set(detail.agentId, idTotals);
+
+      const nameSeat = agentSeatKey(detail.agent?.name, detail.agent?.seatNumber);
+      if (nameSeat !== "|") {
+        const keyedTotals = totalsByNameSeat.get(nameSeat) ?? emptyAgentTotals();
+        mergeTotals(keyedTotals, rowTotals);
+        totalsByNameSeat.set(nameSeat, keyedTotals);
       }
-      rowsByAgent.get(detail.agentId)!.push(row);
+
+      const name = normalizeName(detail.agent?.name);
+      if (name) {
+        const namedTotals = totalsByName.get(name) ?? emptyAgentTotals();
+        mergeTotals(namedTotals, rowTotals);
+        totalsByName.set(name, namedTotals);
+      }
     });
 
     const agentPerformances: AgentPerformance[] = [];
-    const totalActual = computeMTD(allRows, campaignMetric);
+    const campaignMetric = resolveEffectiveMetric(
+      configuredCampaignMetric,
+      campaignGoal,
+      campaignTotals,
+      agents
+    );
+    const totalActual = metricValue(campaignMetric, campaignTotals);
     let coreTotal = 0;
     let coreMet = 0;
     let rookieTotal = 0;
@@ -130,23 +326,31 @@ export async function GET(req: NextRequest) {
 
     // Calculate performance for each agent using pre-fetched data
     for (const agent of agents) {
-      const agentRows = rowsByAgent.get(agent.id) || [];
-      const actual = computeMTD(agentRows, campaignMetric);
+      const agentTotals =
+        totalsByAgentId.get(agent.id) ??
+        totalsByNameSeat.get(agentSeatKey(agent.name, agent.seatNumber)) ??
+        totalsByName.get(normalizeName(agent.name)) ??
+        emptyAgentTotals();
+      const actual = metricValue(campaignMetric, agentTotals);
       const goal = Number(agent.monthlyTarget) > 0 ? Number(agent.monthlyTarget) : fallbackGoal;
-      const achievement = goal > 0 ? Number(actual) / goal : 0;
-      let status: "hit" | "near" | "missed";
-
-      if (achievement >= 1) status = "hit";
-      else if (achievement >= 0.7) status = "near";
-      else status = "missed";
+      const achievement = goal > 0 ? (Number(actual) / goal) * 100 : 0;
+      const status = performanceStatus(achievement);
 
       agentPerformances.push({
         id: agent.id,
         name: agent.name,
         level: getAgentLevel(agent.seatNumber),
+        seatNumber: agent.seatNumber,
+        daysWorked: agentTotals.workedDates.size,
+        transmittals: agentTotals.transmittals,
+        activations: agentTotals.activations,
+        approvals: agentTotals.approvals,
+        booked: agentTotals.booked,
+        qualityRate: percent(agentTotals.approvals, agentTotals.transmittals),
+        conversionRate: percent(agentTotals.booked, agentTotals.transmittals),
         goal,
         actual,
-        achievement: Math.round(achievement * 10000) / 100, // 2 decimal places
+        achievement: Math.round(achievement * 100) / 100,
         status,
       });
 
@@ -154,10 +358,10 @@ export async function GET(req: NextRequest) {
       const agentLevel = getAgentLevel(agent.seatNumber);
       if (agentLevel === "CORE") {
         coreTotal++;
-        if (achievement >= 1) coreMet++;
+        if (achievement >= 100) coreMet++;
       } else {
         rookieTotal++;
-        if (achievement >= 1) rookieMet++;
+        if (achievement >= 100) rookieMet++;
       }
     }
 
@@ -165,15 +369,16 @@ export async function GET(req: NextRequest) {
     const overallAchievement =
       totalGoal > 0 ? Math.round((totalActual / totalGoal) * 10000) / 100 : 0;
     const campaignHitTarget = overallAchievement >= 100;
+    const campaignTargetStatus = performanceStatus(overallAchievement);
 
     // Get top 5 performers
     const topPerformers = agentPerformances
       .sort((a, b) => b.achievement - a.achievement)
       .slice(0, 5);
 
-    // Get agents needing attention (below 100%)
+    // Get agents needing attention (below near-target threshold)
     const needingAttention = agentPerformances
-      .filter((a) => a.achievement < 100)
+      .filter((a) => a.achievement < 85)
       .sort((a, b) => a.achievement - b.achievement);
 
     // Get critically low performers (below 70%)
@@ -198,6 +403,7 @@ export async function GET(req: NextRequest) {
         totalActual,
         achievementRate: overallAchievement,
         targetHit: campaignHitTarget,
+        targetStatus: campaignTargetStatus,
       },
       topPerformers,
       needingAttention,

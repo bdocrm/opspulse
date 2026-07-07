@@ -37,6 +37,16 @@ interface SavedEntry {
   }>;
 }
 
+interface AgentTotals {
+  agentId: string;
+  transmittals: number;
+  activations: number;
+  approvals: number;
+  booked: number;
+  volume: number;
+  transaction?: number;
+}
+
 interface CampaignBlock {
   id: string;
   campaignName: string;
@@ -44,6 +54,28 @@ interface CampaignBlock {
 }
 
 const AGENTS_PER_PAGE = 12;
+const EMPTY_TOTALS = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
+
+const createEmptyAgentDetail = (agentId: string): AgentDetail => ({
+  agentId,
+  transmittals: 0,
+  activations: 0,
+  approvals: 0,
+  booked: 0,
+  volume: 0,
+  qualityRate: 0,
+  conversionRate: 0,
+});
+
+const formatRate = (value: number) => `${value.toFixed(1)}%`;
+
+const getQualityRate = (metrics: Pick<AgentTotals, 'transmittals' | 'approvals'>) => (
+  metrics.transmittals > 0 ? (metrics.approvals / metrics.transmittals) * 100 : 0
+);
+
+const getConversionRate = (metrics: Pick<AgentTotals, 'transmittals' | 'booked'>) => (
+  metrics.transmittals > 0 ? (metrics.booked / metrics.transmittals) * 100 : 0
+);
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -111,6 +143,15 @@ export default function DataEntryPage() {
 
   const agents = useMemo(() => selectedCampaign?.agents || [], [selectedCampaign]);
   const savedEntries: SavedEntry[] = useMemo(() => savedData?.entries || [], [savedData]);
+  const importedAgentTotals = useMemo<Record<string, AgentTotals>>(
+    () => savedData?.agentTotals || {},
+    [savedData]
+  );
+  const importedSummaryTotals = useMemo(
+    () => savedData?.summaryTotals || EMPTY_TOTALS,
+    [savedData]
+  );
+  const importedDetailCount = savedData?.detailCount || 0;
   const latestImportedDate: string | null = savedData?.latestDate || null;
 
   useEffect(() => {
@@ -145,16 +186,7 @@ export default function DataEntryPage() {
       setAgentData((prev) => {
         const next: Record<string, AgentDetail> = {};
         agents.forEach((agent: any) => {
-          next[agent.id] = prev[agent.id] || {
-            agentId: agent.id,
-            transmittals: 0,
-            activations: 0,
-            approvals: 0,
-            booked: 0,
-            volume: 0,
-            qualityRate: 0,
-            conversionRate: 0,
-          };
+          next[agent.id] = prev[agent.id] || createEmptyAgentDetail(agent.id);
         });
         return next;
       });
@@ -218,24 +250,9 @@ export default function DataEntryPage() {
     return { present, absent: agents.length - present };
   }, [attendance, agents.length]);
 
-  // Calculate totals from SAVED entries (from database)
-  const savedTotals = useMemo(() => {
-    const totals = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
-    savedEntries.forEach((entry) => {
-      entry.details.forEach((detail) => {
-        totals.transmittals += detail.transmittals || 0;
-        totals.activations  += detail.activations  || 0;
-        totals.approvals    += detail.approvals    || 0;
-        totals.booked       += detail.booked       || 0;
-        totals.volume       += detail.volume       || 0;
-      });
-    });
-    return totals;
-  }, [savedEntries]);
-
   // Calculate totals from current form
   const pendingTotals = useMemo(() => {
-    const totals = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
+    const totals = { ...EMPTY_TOTALS };
     Object.values(agentData).forEach((detail) => {
       totals.transmittals += detail.transmittals || 0;
       totals.activations  += detail.activations  || 0;
@@ -248,30 +265,12 @@ export default function DataEntryPage() {
 
   // Combined daily totals (saved + pending)
   const dailyTotals = useMemo(() => ({
-    transmittals: savedTotals.transmittals + pendingTotals.transmittals,
-    activations:  savedTotals.activations  + pendingTotals.activations,
-    approvals:    savedTotals.approvals    + pendingTotals.approvals,
-    booked:       savedTotals.booked       + pendingTotals.booked,
-    volume:       savedTotals.volume       + pendingTotals.volume,
-  }), [savedTotals, pendingTotals]);
-
-  // Calculate per-agent saved totals from all entries
-  const agentSavedTotals = useMemo(() => {
-    const totals: Record<string, { transmittals: number; activations: number; approvals: number; booked: number; volume: number }> = {};
-    savedEntries.forEach((entry) => {
-      entry.details.forEach((detail) => {
-        if (!totals[detail.agentId]) {
-          totals[detail.agentId] = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
-        }
-        totals[detail.agentId].transmittals += detail.transmittals || 0;
-        totals[detail.agentId].activations  += detail.activations  || 0;
-        totals[detail.agentId].approvals    += detail.approvals    || 0;
-        totals[detail.agentId].booked       += detail.booked       || 0;
-        totals[detail.agentId].volume       += detail.volume       || 0;
-      });
-    });
-    return totals;
-  }, [savedEntries]);
+    transmittals: importedSummaryTotals.transmittals + pendingTotals.transmittals,
+    activations:  importedSummaryTotals.activations  + pendingTotals.activations,
+    approvals:    importedSummaryTotals.approvals    + pendingTotals.approvals,
+    booked:       importedSummaryTotals.booked       + pendingTotals.booked,
+    volume:       importedSummaryTotals.volume       + pendingTotals.volume,
+  }), [importedSummaryTotals, pendingTotals]);
 
   // Filter agents based on search
   const filteredAgents = useMemo(() => {
@@ -317,16 +316,7 @@ export default function DataEntryPage() {
   const resetForm = () => {
     const resetData: Record<string, AgentDetail> = {};
     agents.forEach((agent: any) => {
-      resetData[agent.id] = {
-        agentId: agent.id,
-        transmittals: 0,
-        activations: 0,
-        approvals: 0,
-        booked: 0,
-        volume: 0,
-        qualityRate: 0,
-        conversionRate: 0,
-      };
+      resetData[agent.id] = createEmptyAgentDetail(agent.id);
     });
     setAgentData(resetData);
   };
@@ -492,7 +482,7 @@ export default function DataEntryPage() {
             {savedEntries.length > 0 && (
               <span className="flex items-center gap-1 text-green-500 bg-green-500/10 px-2 py-1 rounded">
                 <CheckCircle2 className="w-3 h-3" />
-                {savedEntries.length} saved
+                {savedEntries.length} loaded
               </span>
             )}
             {hasData && (
@@ -527,7 +517,7 @@ export default function DataEntryPage() {
         </div>
       </Card>
 
-      {!loadingSaved && selectedCampaignId && agents.length > 0 && savedEntries.length === 0 && (
+      {!loadingSaved && selectedCampaignId && agents.length > 0 && importedDetailCount === 0 && (
         <div className="p-3 rounded-lg text-sm flex items-center gap-2 bg-yellow-500/10 text-yellow-600 border border-yellow-500/20">
           <AlertCircle className="w-4 h-4" />
           No imported data found for {selectedCampaign?.campaignName || 'this campaign'} on {date}.
@@ -541,7 +531,7 @@ export default function DataEntryPage() {
             <summary className="flex items-center justify-between cursor-pointer list-none">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <CheckCircle2 className="w-4 h-4 text-green-500" />
-                View Saved Entries ({savedEntries.length})
+                View Loaded Entries ({savedEntries.length})
               </div>
               <ChevronRight className="w-4 h-4 transition-transform group-open:rotate-90" />
             </summary>
@@ -641,8 +631,8 @@ export default function DataEntryPage() {
         {viewMode === 'grid' ? (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
             {paginatedAgents.map((agent: any) => {
-              const saved = agentSavedTotals[agent.id] || { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
-              const pending = agentData[agent.id] || { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0, qualityRate: 0, conversionRate: 0 };
+              const saved = importedAgentTotals[agent.id] || { agentId: agent.id, ...EMPTY_TOTALS };
+              const pending = agentData[agent.id] || createEmptyAgentDetail(agent.id);
               const total = {
                 transmittals: saved.transmittals + (pending.transmittals || 0),
                 activations: saved.activations + (pending.activations || 0),
@@ -650,7 +640,8 @@ export default function DataEntryPage() {
                 booked: saved.booked + (pending.booked || 0),
                 volume: saved.volume + (pending.volume || 0),
               };
-              const convRate = total.transmittals > 0 ? ((total.booked / total.transmittals) * 100).toFixed(1) : '0.0';
+              const qualityRate = getQualityRate(total);
+              const conversionRate = getConversionRate(total);
               const isPresent = attendance[agent.id] !== false;
               
               return (
@@ -703,8 +694,8 @@ export default function DataEntryPage() {
                     <p className="text-sm font-bold text-primary">{total.booked}</p>
                   </div>
                   <div>
-                    <p className="text-[10px] text-muted-foreground">C%</p>
-                    <p className="text-sm font-bold text-blue-500">{convRate}%</p>
+                    <p className="text-[10px] text-muted-foreground">Q%</p>
+                    <p className="text-sm font-bold text-emerald-500">{formatRate(qualityRate)}</p>
                   </div>
                 </div>
                 <div className="mb-3 rounded-md bg-muted/30 px-2 py-1 text-center">
@@ -712,6 +703,19 @@ export default function DataEntryPage() {
                   <p className="text-sm font-semibold text-primary">
                     {total.volume > 0 ? `₱${total.volume.toLocaleString()}` : '—'}
                   </p>
+                </div>
+
+                <div className="mb-3 grid grid-cols-2 gap-2 text-center text-xs">
+                  <div className="rounded-md bg-blue-500/10 px-2 py-1">
+                    <p className="text-[10px] text-muted-foreground">CONVERSION %</p>
+                    <p className="font-semibold text-blue-600">{formatRate(conversionRate)}</p>
+                  </div>
+                  <div className="rounded-md bg-slate-500/10 px-2 py-1">
+                    <p className="text-[10px] text-muted-foreground">IMPORTED</p>
+                    <p className="font-semibold text-slate-700">
+                      T {saved.transmittals} • B {saved.booked}
+                    </p>
+                  </div>
                 </div>
 
                 {/* New Entry Section */}
@@ -822,7 +826,7 @@ export default function DataEntryPage() {
                   <tr className="border-b">
                     <th className="text-center py-3 px-2 font-medium w-12">Status</th>
                     <th className="text-left py-3 px-3 font-medium">Agent</th>
-                    <th className="text-center py-3 px-1 font-medium w-16 text-[10px] text-green-500">Saved</th>
+                    <th className="text-center py-3 px-1 font-medium w-16 text-[10px] text-green-500">Imported</th>
                     <th className="text-center py-3 px-2 font-medium w-20">Transmitted</th>
                     <th className="text-center py-3 px-2 font-medium w-20">Act</th>
                     <th className="text-center py-3 px-2 font-medium w-20">Approved</th>
@@ -834,8 +838,10 @@ export default function DataEntryPage() {
                 </thead>
                 <tbody>
                   {paginatedAgents.map((agent: any, idx: number) => {
-                    const saved = agentSavedTotals[agent.id] || { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
+                    const saved = importedAgentTotals[agent.id] || { agentId: agent.id, ...EMPTY_TOTALS };
                     const hasSaved = saved.booked > 0 || saved.transmittals > 0 || saved.activations > 0 || saved.approvals > 0 || saved.volume > 0;
+                    const qualityRate = getQualityRate(saved);
+                    const conversionRate = getConversionRate(saved);
                     const isPresent = attendance[agent.id] !== false;
                     return (
                     <tr key={agent.id} className={`border-b hover:bg-muted/30 ${idx % 2 === 0 ? '' : 'bg-muted/10'} ${!isPresent ? 'opacity-50' : ''}`}>
@@ -861,6 +867,7 @@ export default function DataEntryPage() {
                         {hasSaved ? (
                           <div className="text-[10px] text-green-500 leading-tight">
                             <div>{saved.transmittals}/{saved.activations}/{saved.approvals}/{saved.booked}</div>
+                            <div>Q:{formatRate(qualityRate)} C:{formatRate(conversionRate)}</div>
                             {saved.volume > 0 && <div>₱{saved.volume.toLocaleString()}</div>}
                           </div>
                         ) : (

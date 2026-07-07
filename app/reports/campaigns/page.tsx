@@ -88,7 +88,14 @@ export default function CampaignReportsPage() {
     .filter(c => filterStatus === 'all' || c.status === filterStatus)
     .filter(c => !showDuplicatesOnly || isDuplicateName(c.name));
 
-  const chartData = campaigns.map(c => ({ name: c.name, achievement: c.achievement }));
+  const chartData = campaigns.map((c, index) => ({
+    name: c.name,
+    achievement: c.achievement,
+    actual: c.mtd,
+    goal: c.monthlyGoal,
+    rank: index + 1,
+    status: c.status.replace('-', ' ').toUpperCase(),
+  }));
 
   const getStatusColor = (status: string) => {
     if (status === 'exceeding') return 'bg-green-100 text-green-800 border-green-300';
