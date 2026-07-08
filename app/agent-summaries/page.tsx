@@ -37,6 +37,8 @@ interface AgentSummary {
   totalActivations: number;
   totalApprovals: number;
   totalBooked: number;
+  totalVolume: number;
+  totalTransaction: number;
   avgQualityRate: number;
   avgConversionRate: number;
   daysWorked: number;
@@ -70,6 +72,7 @@ export default function AgentSummariesPage() {
   const [totalAgentsCount, setTotalAgentsCount] = useState(0);
   const pagination = usePagination(1, 25, totalAgentsCount);
   const summaryEndpoint = `/api/agents/summary?year=${year}&month=${month}${selectedAgent ? `&id=${selectedAgent}` : ''}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`;
+  const exportEndpoint = `/api/export/agents?year=${year}&month=${month}${selectedAgent ? `&id=${selectedAgent}` : ''}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`;
 
   const handleViewDetails = (agentId: string) => {
     router.push(`/agent-details/${agentId}?year=${year}&month=${month}`);
@@ -98,7 +101,9 @@ export default function AgentSummariesPage() {
   );
 
   const agents: AgentSummary[] = data?.agents || [];
-  const campaigns = Array.isArray(campaignsData) ? campaignsData : [];
+  const campaigns = Array.isArray(campaignsData)
+    ? campaignsData
+    : campaignsData?.campaigns ?? [];
   const filteredAgents = agents.filter(agent =>
     agent.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -122,8 +127,12 @@ export default function AgentSummariesPage() {
   );
 
   const totalAgents = agents.length;
-  const totalTransmittals = agents.reduce((sum, agent) => sum + agent.totalTransmittals, 0);
+  const totalProduction = agents.reduce(
+    (sum, agent) => sum + agent.campaigns.reduce((campaignSum, campaign) => campaignSum + campaign.mtd, 0),
+    0
+  );
   const totalActivations = agents.reduce((sum, agent) => sum + agent.totalActivations, 0);
+  const totalVolume = agents.reduce((sum, agent) => sum + (agent.totalVolume || 0), 0);
   const avgAchievement = agents.length > 0
     ? agents.reduce((sum, agent) => {
         const overall = agent.campaigns.reduce((cSum, camp) => cSum + camp.achievement, 0) / agent.campaigns.length;
@@ -171,7 +180,7 @@ export default function AgentSummariesPage() {
         </div>
         <div className="flex gap-2">
           <ExportButton
-            endpoint={summaryEndpoint}
+            endpoint={exportEndpoint}
             label="Export Report"
           />
         </div>
@@ -185,13 +194,13 @@ export default function AgentSummariesPage() {
           icon={Users}
         />
         <KpiCard
-          title="Total Transmittals"
-          value={totalTransmittals}
+          title="Total Production"
+          value={Math.round(totalProduction).toLocaleString()}
           icon={Activity}
         />
         <KpiCard
-          title="Total Activations"
-          value={totalActivations}
+          title={totalActivations > 0 ? "Total Activations" : "Imported Volume"}
+          value={(totalActivations > 0 ? totalActivations : totalVolume).toLocaleString()}
           icon={Target}
         />
         <KpiCard

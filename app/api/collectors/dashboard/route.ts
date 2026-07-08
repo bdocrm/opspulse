@@ -3,6 +3,25 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getAssignedCampaignIds } from "@/lib/user-campaigns";
+import { ensureCampaignGoalTable } from "@/lib/campaign-goals";
+
+function monthYearFromYmd(value: string) {
+  const [yearRaw, monthRaw] = value.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+
+  if (
+    Number.isInteger(year) &&
+    Number.isInteger(month) &&
+    month >= 1 &&
+    month <= 12
+  ) {
+    return { month, year };
+  }
+
+  const now = new Date();
+  return { month: now.getMonth() + 1, year: now.getFullYear() };
+}
 
 /**
  * Aggregate Collector Dashboard data, grouped by the logged-in collector's
@@ -37,6 +56,7 @@ export async function GET(req: NextRequest) {
     startDate.setHours(0, 0, 0, 0);
     const endDate = new Date(dateTo);
     endDate.setHours(23, 59, 59, 999);
+    const { month: goalMonth, year: goalYear } = monthYearFromYmd(dateTo);
 
     // Resolve the collector's assigned campaigns (join table + legacy primary).
     const assignedIds = await getAssignedCampaignIds(user.id);
@@ -44,8 +64,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ campaigns: [] });
     }
 
+    await ensureCampaignGoalTable();
+
     // Pull everything in a few batched queries scoped to the assigned set.
-    const [campaigns, agents, details, entries] = await Promise.all([
+    const [campaigns, agents, details, entries, monthlyGoalRows] = await Promise.all([
       prisma.campaign.findMany({
         where: { id: { in: assignedIds } },
         select: {
@@ -114,7 +136,18 @@ export async function GET(req: NextRequest) {
         where: { campaignId: { in: assignedIds }, date: { gte: startDate, lte: endDate } },
         select: { id: true, campaignId: true },
       }),
+      prisma.$queryRaw<any[]>`
+        SELECT "campaignId", "monthlyGoal", "supplementaryGoal", "kpiMetric"
+        FROM "CampaignGoal"
+        WHERE "campaignId" = ANY(${assignedIds}::text[])
+          AND "month" = ${goalMonth}
+          AND "year" = ${goalYear}
+          AND "deletedAt" IS NULL
+      `,
     ]);
+    const monthlyGoalsByCampaignId = new Map(
+      monthlyGoalRows.map((row) => [row.campaignId, row])
+    );
 
     // Attendance is optional (table may not exist on older DBs).
     let attendanceRows: any[] = [];
@@ -190,29 +223,33 @@ export async function GET(req: NextRequest) {
       entryCountByCampaign.set(e.campaignId, (entryCountByCampaign.get(e.campaignId) ?? 0) + 1);
     }
 
-    const result = campaigns.map((c) => ({
-      id: c.id,
-      campaignName: c.campaignName,
-      kpiMetric: c.kpiMetric || "booked",
-      goal: c.monthlyGoal || 0,
-      supplementaryGoal: c.supplementaryGoal || 0,
-      agents: (agentsByCampaign.get(c.id) ?? []).map((a) => ({
-        id: a.id,
-        name: a.name,
-        email: a.email,
-        seatNumber: a.seatNumber,
-        monthlyTarget: a.monthlyTarget,
-        monthlyTargetSupplementary: a.monthlyTargetSupplementary,
-        mbLevel: a.mbLevel,
-        disbursedTxnTarget: a.disbursedTxnTarget,
-        disbursedVolTarget: a.disbursedVolTarget,
-        grossTurnInsTxnTarget: a.grossTurnInsTxnTarget,
-        grossTurnInsVolTarget: a.grossTurnInsVolTarget,
-      })),
-      production: prodByCampaign.get(c.id) ?? {},
-      attendance: attByCampaign.get(c.id) ?? {},
-      entriesCount: entryCountByCampaign.get(c.id) ?? 0,
-    }));
+    const result = campaigns.map((c) => {
+      const savedGoal = monthlyGoalsByCampaignId.get(c.id);
+
+      return {
+        id: c.id,
+        campaignName: c.campaignName,
+        kpiMetric: savedGoal?.kpiMetric || c.kpiMetric || "booked",
+        goal: Number(savedGoal?.monthlyGoal ?? c.monthlyGoal ?? 0),
+        supplementaryGoal: Number(savedGoal?.supplementaryGoal ?? c.supplementaryGoal ?? 0),
+        agents: (agentsByCampaign.get(c.id) ?? []).map((a) => ({
+          id: a.id,
+          name: a.name,
+          email: a.email,
+          seatNumber: a.seatNumber,
+          monthlyTarget: a.monthlyTarget,
+          monthlyTargetSupplementary: a.monthlyTargetSupplementary,
+          mbLevel: a.mbLevel,
+          disbursedTxnTarget: a.disbursedTxnTarget,
+          disbursedVolTarget: a.disbursedVolTarget,
+          grossTurnInsTxnTarget: a.grossTurnInsTxnTarget,
+          grossTurnInsVolTarget: a.grossTurnInsVolTarget,
+        })),
+        production: prodByCampaign.get(c.id) ?? {},
+        attendance: attByCampaign.get(c.id) ?? {},
+        entriesCount: entryCountByCampaign.get(c.id) ?? 0,
+      };
+    });
 
     return NextResponse.json({ campaigns: result });
   } catch (error: any) {

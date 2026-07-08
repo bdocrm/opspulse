@@ -38,12 +38,18 @@ interface CampaignReport {
   status: 'on-track' | 'at-risk' | 'exceeding';
 }
 
+interface CampaignOption {
+  id: string;
+  campaignName: string;
+}
+
 export default function CampaignReportsPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedCampaignId, setSelectedCampaignId] = useState("all");
   const [filterStatus, setFilterStatus] = useState<'all' | 'on-track' | 'at-risk' | 'exceeding'>('all');
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
 
@@ -61,6 +67,10 @@ export default function CampaignReportsPage() {
 
   const { data, isLoading } = useSWR(
     session?.user ? `/api/reports/campaigns?year=${year}&month=${month}` : null,
+    (url: string) => fetch(url).then(res => res.json())
+  );
+  const { data: campaignOptions = [] } = useSWR<CampaignOption[]>(
+    session?.user ? `/api/goals?month=${month}&year=${year}` : null,
     (url: string) => fetch(url).then(res => res.json())
   );
 
@@ -84,11 +94,12 @@ export default function CampaignReportsPage() {
   const duplicateCount = campaigns.filter(c => isDuplicateName(c.name)).length;
 
   const filteredCampaigns = campaigns
+    .filter(c => selectedCampaignId === 'all' || c.id === selectedCampaignId)
     .filter(c => c.name.toLowerCase().includes(searchTerm.toLowerCase()))
     .filter(c => filterStatus === 'all' || c.status === filterStatus)
     .filter(c => !showDuplicatesOnly || isDuplicateName(c.name));
 
-  const chartData = campaigns.map((c, index) => ({
+  const chartData = filteredCampaigns.map((c, index) => ({
     name: c.name,
     achievement: c.achievement,
     actual: c.mtd,
@@ -96,6 +107,9 @@ export default function CampaignReportsPage() {
     rank: index + 1,
     status: c.status.replace('-', ' ').toUpperCase(),
   }));
+
+  const formatNumber = (value: number) =>
+    Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
 
   const getStatusColor = (status: string) => {
     if (status === 'exceeding') return 'bg-green-100 text-green-800 border-green-300';
@@ -122,6 +136,19 @@ export default function CampaignReportsPage() {
             }}
             className="px-3 py-2 border rounded-md"
           />
+          <Select value={selectedCampaignId} onValueChange={setSelectedCampaignId}>
+            <SelectTrigger className="w-64">
+              <SelectValue placeholder="All Campaigns" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Campaigns</SelectItem>
+              {campaignOptions.map((campaign) => (
+                <SelectItem key={campaign.id} value={campaign.id}>
+                  {campaign.campaignName}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
             <Input
@@ -237,14 +264,14 @@ export default function CampaignReportsPage() {
                       </span>
                     </TableCell>
                     <TableCell className="capitalize">{campaign.kpiMetric}</TableCell>
-                    <TableCell>{campaign.monthlyGoal}</TableCell>
-                    <TableCell className="font-semibold">{Math.round(campaign.mtd)}</TableCell>
+                    <TableCell>{formatNumber(campaign.monthlyGoal)}</TableCell>
+                    <TableCell className="font-semibold">{formatNumber(campaign.mtd)}</TableCell>
                     <TableCell>
                       <span className={cn("font-semibold", kpiColorClass(campaign.achievement))}>
                         {campaign.achievement.toFixed(1)}%
                       </span>
                     </TableCell>
-                    <TableCell>{Math.round(campaign.runRate)}</TableCell>
+                    <TableCell>{formatNumber(campaign.runRate)}</TableCell>
                     <TableCell>{campaign.agentCount}</TableCell>
                     <TableCell>{campaign.avgQuality.toFixed(1)}%</TableCell>
                     <TableCell>

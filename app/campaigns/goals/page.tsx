@@ -66,6 +66,7 @@ type GoalKey = {
 };
 
 type ConfirmAction =
+  | { type: 'soft-delete'; items: GoalKey[] }
   | { type: 'restore'; items: GoalKey[] }
   | { type: 'permanent-delete'; items: GoalKey[] };
 
@@ -518,7 +519,9 @@ export default function GoalsManagement() {
       if (!res.ok) throw new Error(data.error || 'Action failed');
 
       const affected = Number(data.count || 0);
-      if (confirmAction.type === 'restore') {
+      if (confirmAction.type === 'soft-delete') {
+        addToast('success', `Deleted ${affected} goal configuration(s)`);
+      } else if (confirmAction.type === 'restore') {
         addToast('success', `Restored ${affected} goal configuration(s)`);
         setSelectedDeletedGoalKeys(new Set());
       } else if (confirmAction.type === 'permanent-delete') {
@@ -1140,7 +1143,7 @@ export default function GoalsManagement() {
               <span className="rounded-full bg-cyan-100 px-2.5 py-1 text-xs font-bold text-cyan-700">Campaign Setup</span>
               <h3 className="text-lg font-semibold text-slate-950">Select Campaign</h3>
             </div>
-            <p className="mt-1 text-sm text-slate-600">Pick the campaign you want to configure for the selected month.</p>
+            <p className="mt-1 text-sm text-slate-600">Pick the campaign you want to configure.</p>
           </div>
           <span className="inline-flex items-center gap-2 rounded-md border border-cyan-200 bg-white px-3 py-1.5 text-sm font-medium text-cyan-700 shadow-sm">
             {selectCampaignExpanded ? (
@@ -1178,24 +1181,6 @@ export default function GoalsManagement() {
             </button>
           ))}
         </div>
-
-        {/* Month selector — goals are configured per Campaign + Month */}
-        <div className="mt-6 max-w-xs">
-          <Label htmlFor="month">Month</Label>
-          <select
-            id="month"
-            value={selectedMonth}
-            onChange={(e) => setSelectedMonth(Number(e.target.value))}
-            className="mt-1 w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            {MONTHS.map((m, i) => (
-              <option key={m} value={i + 1}>{m} {selectedYear}</option>
-            ))}
-          </select>
-          <p className="mt-1 text-xs text-gray-400">
-            Each campaign keeps independent goals per month.
-          </p>
-        </div>
           </div>
         </div>
       </Card>
@@ -1216,7 +1201,7 @@ export default function GoalsManagement() {
                   <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-700">Goal Configuration</span>
                   <h3 className="text-lg font-semibold text-slate-950">Campaign Goal &amp; Run Rate Settings</h3>
                 </div>
-                <p className="mt-1 text-sm text-slate-600">Set the campaign goal, KPI metric, working days, and run-rate inputs.</p>
+                <p className="mt-1 text-sm text-slate-600">Choose the month, then set the campaign goal, KPI metric, working days, and run-rate inputs.</p>
               </div>
               <span className="inline-flex items-center gap-2 rounded-md border border-amber-200 bg-white px-3 py-1.5 text-sm font-medium text-amber-700 shadow-sm">
                 {campaignGoalExpanded ? (
@@ -1239,6 +1224,29 @@ export default function GoalsManagement() {
               }`}
             >
               <div className="min-h-0 overflow-hidden">
+            <div className="mb-4 rounded-xl border border-amber-200 bg-white p-4">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-700">Monthly Setup</span>
+                <h4 className="font-semibold text-slate-950">Month</h4>
+              </div>
+              <div className="max-w-xs">
+                <Label htmlFor="goal-month">Goal Month</Label>
+                <select
+                  id="goal-month"
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {MONTHS.map((m, i) => (
+                    <option key={m} value={i + 1}>{m} {selectedYear}</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">
+                  Saving creates or updates the goal for {selectedCampaign.campaignName} in {MONTHS[selectedMonth - 1]} {selectedYear}.
+                </p>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
 
               {/* KPI Metric */}
@@ -1659,6 +1667,19 @@ export default function GoalsManagement() {
                           >
                             {isCurrent ? 'Editing' : 'Edit'}
                           </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setConfirmAction({
+                                type: 'soft-delete',
+                                items: [{ campaignId: row.campaignId, month: row.month, year: row.year }],
+                              });
+                            }}
+                            className="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                          >
+                            Delete
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -1838,17 +1859,23 @@ export default function GoalsManagement() {
       <ConfirmDialog
         open={Boolean(confirmAction)}
         title={
-          confirmAction?.type === 'restore'
+          confirmAction?.type === 'soft-delete'
+            ? 'Delete Goal Configuration'
+            : confirmAction?.type === 'restore'
             ? 'Restore Goal Configuration'
             : 'Permanently Delete Goal Configuration'
         }
         description={
-          confirmAction?.type === 'restore'
+          confirmAction?.type === 'soft-delete'
+            ? `Delete ${confirmAction.items.length} selected goal configuration(s)? You can restore deleted records from the trash section.`
+            : confirmAction?.type === 'restore'
             ? `Restore ${confirmAction.items.length} selected goal configuration(s)?`
             : `Permanently delete ${confirmAction?.items.length || 0} selected goal configuration(s)? This cannot be undone.`
         }
         actionLabel={
-          confirmAction?.type === 'restore'
+          confirmAction?.type === 'soft-delete'
+            ? 'Delete'
+            : confirmAction?.type === 'restore'
             ? 'Restore'
             : 'Delete Forever'
         }

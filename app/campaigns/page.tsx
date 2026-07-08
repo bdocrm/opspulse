@@ -31,11 +31,19 @@ import { cn } from "@/lib/utils";
 import type { FilterPeriod } from "@/utils/kpi";
 import { Target, TrendingUp, Activity, BarChart3, ChevronDown, ChevronRight, ClipboardList } from "lucide-react";
 
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
 export default function CampaignsPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const now = new Date();
   const [period, setPeriod] = useState<FilterPeriod>("monthly");
   const [selectedId, setSelectedId] = useState<string>("");
+  const [month, setMonth] = useState<number>(now.getMonth() + 1);
+  const [year, setYear] = useState<number>(now.getFullYear());
   const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
 
   const toggleEntry = (id: string) =>
@@ -58,7 +66,7 @@ export default function CampaignsPage() {
     }
   }, [session, status, router]);
   const { data: campaignsData } = useCampaigns();
-  const { data: detail, isLoading } = useCampaignDetail(selectedId, period);
+  const { data: detail, isLoading } = useCampaignDetail(selectedId, period, month, year);
 
   const campaigns: any[] = Array.isArray(campaignsData)
     ? campaignsData
@@ -68,6 +76,8 @@ export default function CampaignsPage() {
   const dailyTrend = detail?.dailyTrend ?? [];
   const agentBreakdown = detail?.agentBreakdown ?? [];
   const productionEntries: any[] = detail?.productionEntries ?? [];
+  const hasProductionData = Boolean(detail?.hasProductionData);
+  const yearOptions = Array.from(new Set([now.getFullYear(), now.getFullYear() - 1, year])).sort((a, b) => b - a);
 
   return (
     <>
@@ -87,7 +97,27 @@ export default function CampaignsPage() {
             </SelectContent>
           </Select>
           <PeriodFilter value={period} onChange={setPeriod} />
-          <ExportButton endpoint={`/api/export/campaigns?campaignId=${selectedId}&period=${period}`} />
+          <Select value={String(month)} onValueChange={(v) => setMonth(Number(v))}>
+            <SelectTrigger className="w-[140px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MONTH_NAMES.map((name, i) => (
+                <SelectItem key={name} value={String(i + 1)}>{name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={String(year)} onValueChange={(v) => setYear(Number(v))}>
+            <SelectTrigger className="w-[100px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {yearOptions.map((option) => (
+                <SelectItem key={option} value={String(option)}>{option}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <ExportButton endpoint={`/api/export/campaigns?campaignId=${selectedId}&period=${period}&month=${month}&year=${year}`} />
         </div>
       </div>
 
@@ -99,6 +129,14 @@ export default function CampaignsPage() {
         </Card>
       ) : (
         <>
+          {!isLoading && !hasProductionData && (
+            <Card className="mb-6">
+              <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                No production data found for the selected campaign and period.
+              </CardContent>
+            </Card>
+          )}
+
           {/* KPI Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             <KpiCard title="Monthly Goal" value={kpis.goal.toLocaleString()} icon={Target} />
@@ -155,7 +193,7 @@ export default function CampaignsPage() {
                 {kpis.workingDays > 0 && (
                   <span className="text-xs text-muted-foreground">
                     Day {kpis.daysLapsed ?? 0} of {kpis.workingDays} working days
-                    &nbsp;·&nbsp; RR = MTD / {kpis.daysLapsed ?? 0} × {kpis.workingDays}
+                    &nbsp;·&nbsp; RR = MTD / {kpis.daysLapsed ?? 0}; RR Ach = MTD / agent goal
                   </span>
                 )}
               </div>

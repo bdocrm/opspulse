@@ -145,6 +145,8 @@ model ProductionEntry {
   createdBy   String // Collector ID
   periodStart DateTime? // Start of the reporting period (e.g. MTD May 1) for bulk imports
   periodEnd   DateTime? // End of the reporting period (e.g. MTD May 31) for bulk imports
+  importFileName String? // Original uploaded file name for bulk imports
+  importMetricType String? // Metric mode used for the import
   details     ProductionDetail[]
   createdAt   DateTime           @default(now())
 

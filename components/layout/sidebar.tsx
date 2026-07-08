@@ -19,10 +19,18 @@ import {
   Gauge,
   Projector,
   UserCircle,
+  type LucideIcon,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
-const defaultLinks = [
+interface SidebarLink {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  roles?: string[];
+}
+
+const defaultLinks: SidebarLink[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ['CEO', 'OM'] },
   { href: "/campaigns", label: "Campaigns", icon: Megaphone, roles: ['CEO', 'OM'] },
   { href: "/campaigns/goals", label: "Goals Management", icon: Sliders, roles: ['CEO', 'OM'] },
@@ -37,16 +45,42 @@ const defaultLinks = [
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
-const adminLinks = [
+const adminLinks: SidebarLink[] = [
   { href: "/manage-campaigns", label: "Manage Campaigns", icon: Sliders },
   { href: "/manage-users", label: "Manage Users", icon: Users },
 ];
 
-const collectorLinks = [
+const collectorLinks: SidebarLink[] = [
   { href: "/collector/campaign", label: "My Campaign", icon: Megaphone },
   { href: "/collector", label: "Collector Dashboard", icon: BarChart3 },
   { href: "/collector/data-entry", label: "Data Entry", icon: ClipboardList },
   { href: "/collector/bulk-import", label: "Bulk Import", icon: Zap },
+];
+
+const groupedLinkSections = [
+  {
+    label: "Performance",
+    links: [
+      "/agent-summaries",
+      "/analytics/trends",
+      "/analytics/productivity",
+      "/reports/campaigns",
+      "/reports/campaign-performance",
+      "/om-dashboard",
+    ],
+  },
+  {
+    label: "Management",
+    links: ["/campaigns", "/campaigns/goals", "/manage-campaigns", "/manage-users"],
+  },
+  {
+    label: "Reports",
+    links: ["/presentation"],
+  },
+  {
+    label: "Account",
+    links: ["/my-account", "/settings"],
+  },
 ];
 
 interface SidebarProps {
@@ -58,6 +92,36 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
   const { data: session } = useSession();
   const userRole = (session?.user as any)?.role;
+  const allLinks = [...defaultLinks, ...(userRole === 'CEO' ? adminLinks : [])];
+  const visibleLinks = allLinks.filter(({ href, roles }) => {
+    if (roles && !roles.includes(userRole)) {
+      return false;
+    }
+    if (userRole === 'COLLECTOR') {
+      return href !== '/dashboard' && href !== '/campaigns';
+    }
+    return true;
+  });
+
+  const renderLink = ({ href, label, icon: Icon }: SidebarLink) => {
+    const active = pathname.startsWith(href);
+    return (
+      <Link
+        key={href}
+        href={href}
+        onClick={onClose}
+        className={cn(
+          "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+          active
+            ? "bg-primary/10 text-primary"
+            : "text-muted-foreground hover:bg-accent hover:text-foreground"
+        )}
+      >
+        <Icon className="h-5 w-5" />
+        {label}
+      </Link>
+    );
+  };
 
   return (
     <>
@@ -94,80 +158,31 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         </div>
 
         {/* Nav Links */}
-        <nav className="flex-1 space-y-1 px-3 py-4">
+        <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
           {/* Collector Links - Show first for collectors */}
-          {userRole === 'COLLECTOR' && collectorLinks.map(({ href, label, icon: Icon }) => {
-            const active = pathname.startsWith(href);
-            return (
-              <Link
-                key={href}
-                href={href}
-                onClick={onClose}
-                className={cn(
-                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                  active
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                )}
-              >
-                <Icon className="h-5 w-5" />
-                {label}
-              </Link>
-            );
-          })}
-
-          {/* Default Links - Filter by role */}
-          {defaultLinks
-            .filter(({ href, roles }) => {
-              if (roles && !roles.includes(userRole)) {
-                return false;
-              }
-              if (userRole === 'COLLECTOR') {
-                // Hide Dashboard and Campaigns from COLLECTOR view
-                return href !== '/dashboard' && href !== '/campaigns';
-              }
-              return true;
-            })
-            .map(({ href, label, icon: Icon }) => {
-              const active = pathname.startsWith(href);
-              return (
-                <Link
-                  key={href}
-                  href={href}
-                  onClick={onClose}
-                  className={cn(
-                    "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                    active
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                  )}
-                >
-                  <Icon className="h-5 w-5" />
-                  {label}
-                </Link>
-              );
-            })}
-
-          {/* Admin Links - Only for CEO */}
-          {userRole === 'CEO' && adminLinks.map(({ href, label, icon: Icon }) => {
-            const active = pathname.startsWith(href);
-            return (
-              <Link
-                key={href}
-                href={href}
-                onClick={onClose}
-                className={cn(
-                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                  active
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                )}
-              >
-                <Icon className="h-5 w-5" />
-                {label}
-              </Link>
-            );
-          })}
+          {userRole === 'COLLECTOR' ? (
+            <div className="space-y-1">
+              {collectorLinks.map(renderLink)}
+            </div>
+          ) : (
+            <>
+              <div className="space-y-1">
+                {visibleLinks.filter((link) => link.href === "/dashboard").map(renderLink)}
+              </div>
+              {groupedLinkSections.map((section) => {
+                const links = visibleLinks.filter((link) => section.links.includes(link.href));
+                if (links.length === 0) return null;
+                return (
+                  <div key={section.label} className="space-y-1">
+                    <p className="px-3 text-[11px] font-semibold uppercase text-muted-foreground">
+                      {section.label}
+                    </p>
+                    {links.map(renderLink)}
+                  </div>
+                );
+              })}
+            </>
+          )}
         </nav>
 
         {/* Footer */}

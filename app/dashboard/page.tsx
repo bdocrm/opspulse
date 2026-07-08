@@ -29,8 +29,9 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
+  ChevronDown,
   CheckCircle2,
-  LineChart,
+  RefreshCw,
   Target,
   Table2,
   TrendingUp,
@@ -85,7 +86,6 @@ interface DashboardData {
   error?: string;
 }
 
-type ChartView = "chart" | "table";
 type StatusTone = "good" | "attention" | "critical" | "info";
 
 interface ExecutiveRow {
@@ -173,83 +173,50 @@ function NoData({ message = "No data available" }: { message?: string }) {
   return <p className="text-sm text-muted-foreground py-10 text-center">{message}</p>;
 }
 
-function ColorLegend() {
-  const items = [
-    { label: "Green = Good / Above target", className: "bg-green-500" },
-    { label: "Yellow = Needs attention", className: "bg-yellow-500" },
-    { label: "Red = Critical / Below target", className: "bg-red-500" },
-    { label: "Blue = Information / Trend", className: "bg-blue-500" },
-  ];
-
-  return (
-    <div className="flex flex-wrap gap-3 rounded-md border bg-card px-4 py-3 text-xs text-muted-foreground">
-      {items.map((item) => (
-        <div key={item.label} className="flex items-center gap-2">
-          <span className={cn("h-2.5 w-2.5 rounded-full", item.className)} />
-          <span>{item.label}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function StatStrip({ rows, contributionLabel = "Top Contribution" }: { rows: ExecutiveRow[]; contributionLabel?: string }) {
+function ExecutiveSnapshot({ rows, overallStatus }: { rows: ExecutiveRow[]; overallStatus?: { label: string; tone: StatusTone } }) {
   const stats = buildStats(rows);
-  const topContribution = rows.find((row) => row.contribution != null);
-  const topAchievement = [...rows].sort((a, b) => Number(b.achievement ?? 0) - Number(a.achievement ?? 0))[0];
   const items = [
-    { label: "Highest", value: stats.highest ? `${stats.highest.name}: ${formatNumber(stats.highest.actual ?? stats.highest.value)}` : "No data" },
-    { label: "Lowest", value: stats.lowest ? `${stats.lowest.name}: ${formatNumber(stats.lowest.actual ?? stats.lowest.value)}` : "No data" },
+    { label: "Highest", value: stats.highest ? stats.highest.name : "No data", detail: stats.highest ? formatNumber(stats.highest.actual ?? stats.highest.value) : "" },
+    { label: "Lowest", value: stats.lowest ? stats.lowest.name : "No data", detail: stats.lowest ? formatNumber(stats.lowest.actual ?? stats.lowest.value) : "" },
     { label: "Average", value: formatNumber(stats.average) },
-    { label: "Total", value: formatNumber(stats.total) },
     {
-      label: contributionLabel,
-      value: topContribution
-        ? `${topContribution.name}: ${formatPct(topContribution.contribution)}`
-        : topAchievement?.achievement != null
-          ? `${topAchievement.name}: ${formatPct(topAchievement.achievement)}`
-          : "N/A",
+      label: "Overall",
+      value: overallStatus?.label ?? "Information",
+      tone: overallStatus?.tone ?? "info",
     },
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       {items.map((item) => (
-        <div key={item.label} className="rounded-md border bg-muted/30 px-3 py-2">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{item.label}</p>
-          <p className="mt-1 truncate text-sm font-semibold text-foreground" title={item.value}>
-            {item.value}
-          </p>
+        <div key={item.label} className="rounded-xl border border-border/60 bg-muted/20 px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase text-muted-foreground">{item.label}</p>
+          {!("tone" in item) && (
+            <p className="mt-1 truncate text-sm font-semibold text-foreground" title={item.value}>
+              {item.value}
+            </p>
+          )}
+          {"detail" in item && item.detail && (
+            <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
+          )}
+          {"tone" in item && (
+            <span className={cn("mt-2 inline-flex rounded-full px-2 py-0.5 text-xs font-semibold", statusBadgeClass(item.tone ?? "info"))}>
+              {item.value}
+            </span>
+          )}
         </div>
       ))}
     </div>
   );
 }
 
-function ViewToggle({ value, onChange }: { value: ChartView; onChange: (value: ChartView) => void }) {
+function TableToggle({ open, onClick }: { open: boolean; onClick: () => void }) {
   return (
-    <div className="inline-flex rounded-md border bg-muted/30 p-1">
-      <Button
-        type="button"
-        size="sm"
-        variant={value === "chart" ? "default" : "ghost"}
-        className="h-8 gap-1.5 px-2.5"
-        onClick={() => onChange("chart")}
-      >
-        <LineChart className="h-4 w-4" />
-        Chart View
-      </Button>
-      <Button
-        type="button"
-        size="sm"
-        variant={value === "table" ? "default" : "ghost"}
-        className="h-8 gap-1.5 px-2.5"
-        onClick={() => onChange("table")}
-      >
-        <Table2 className="h-4 w-4" />
-        Table View
-      </Button>
-    </div>
+    <Button type="button" size="sm" variant="outline" className="h-9 gap-1.5" onClick={onClick}>
+      <Table2 className="h-4 w-4" />
+      {open ? "Hide Table" : "View Table"}
+      <ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} />
+    </Button>
   );
 }
 
@@ -307,41 +274,42 @@ function ExecutiveChartCard({
   insight,
   explanation,
   rows,
-  view,
-  onViewChange,
+  tableOpen,
+  onTableToggle,
   children,
   valueLabel,
-  contributionLabel,
+  overallStatus,
   noDataMessage = "No data available",
 }: {
   title: string;
   insight: string;
   explanation: string;
   rows: ExecutiveRow[];
-  view: ChartView;
-  onViewChange: (value: ChartView) => void;
+  tableOpen: boolean;
+  onTableToggle: () => void;
   children: ReactNode;
   valueLabel?: string;
-  contributionLabel?: string;
+  overallStatus?: { label: string; tone: StatusTone };
   noDataMessage?: string;
 }) {
   return (
     <Card>
-      <CardHeader className="space-y-3 pb-2">
+      <CardHeader className="space-y-3 pb-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle className="text-base">{title}</CardTitle>
-            <p className="mt-2 rounded-md bg-blue-500/10 px-3 py-2 text-sm font-medium text-blue-700">
-              Key Insight: {insight}
-            </p>
+            <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{insight}</p>
           </div>
-          <ViewToggle value={view} onChange={onViewChange} />
+          <TableToggle open={tableOpen} onClick={onTableToggle} />
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <StatStrip rows={rows} contributionLabel={contributionLabel} />
+      <CardContent className="space-y-5">
+        <ExecutiveSnapshot rows={rows} overallStatus={overallStatus} />
         {rows.length > 0 ? (
-          view === "chart" ? children : <ChartTable rows={rows} valueLabel={valueLabel} noDataMessage={noDataMessage} />
+          <>
+            {children}
+            {tableOpen && <ChartTable rows={rows} valueLabel={valueLabel} noDataMessage={noDataMessage} />}
+          </>
         ) : (
           <NoData message={noDataMessage} />
         )}
@@ -355,11 +323,11 @@ export default function DashboardPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
-  const [chartViews, setChartViews] = useState<Record<string, ChartView>>({
-    campaign: "chart",
-    daily: "chart",
-    distribution: "chart",
-    leaderboard: "chart",
+  const [expandedTables, setExpandedTables] = useState<Record<string, boolean>>({
+    campaign: false,
+    daily: false,
+    distribution: false,
+    leaderboard: false,
   });
 
   const now = new Date();
@@ -377,7 +345,7 @@ export default function DashboardPage() {
   }, [session, status, router]);
 
   const apiUrl = `/api/dashboard?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}`;
-  const { data, isLoading } = useSWR<DashboardData>(apiUrl, fetcher, { refreshInterval: 30000 });
+  const { data, isLoading, mutate } = useSWR<DashboardData>(apiUrl, fetcher, { refreshInterval: 30000 });
 
   const hasUsableData = data && !data.error;
   const availablePeriods: Period[] = hasUsableData ? data.availablePeriods ?? [] : [];
@@ -493,6 +461,7 @@ export default function DashboardPage() {
   const bestCampaign = campaignRows[0];
   const lowestCampaign = [...campaignRows].sort((a, b) => Number(a.achievement ?? 0) - Number(b.achievement ?? 0))[0];
   const weakestCampaign = campaignRows.find((row) => row.statusTone === "critical") ?? campaignRows.find((row) => row.statusTone === "attention");
+  const overallStatusInfo = getStatus(kpis.avgAchievement);
   const overallStatus = kpis.avgAchievement >= 100 ? "above target" : kpis.avgAchievement >= 80 ? "near target" : "below target";
 
   const ceoSummary = campaignRows.length > 0
@@ -508,17 +477,17 @@ export default function DashboardPage() {
       ].filter(Boolean) as string[]
     : ["No data available"];
 
-  const setChartView = (key: string, value: ChartView) => {
-    setChartViews((current) => ({ ...current, [key]: value }));
+  const toggleTable = (key: string) => {
+    setExpandedTables((current) => ({ ...current, [key]: !current[key] }));
   };
 
   if (status === "loading") return <div className="p-6 text-slate-500">Loading...</div>;
 
   return (
     <>
-      <div className="flex flex-col gap-4 mb-6 sm:flex-row sm:items-center sm:justify-between">
+      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <PageTitle title="Dashboard" subtitle="Operational Performance Overview" />
-        <div className="flex flex-wrap items-end justify-end gap-3">
+        <div className="flex flex-wrap items-center justify-end gap-2 rounded-2xl border border-border/70 bg-card p-2 shadow-sm">
           {campaigns.length > 0 && (
             <CampaignSelector
               campaigns={campaigns}
@@ -554,16 +523,19 @@ export default function DashboardPage() {
             endpoint={`/api/export/dashboard?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}`}
             className="h-10"
           />
+          <Button type="button" variant="outline" size="sm" className="h-10 gap-2" onClick={() => mutate()}>
+            <RefreshCw className="h-4 w-4" />
+            Refresh
+          </Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           title="Total MTD"
-          value={kpis.totalMTD.toLocaleString()}
+          value={`₱${kpis.totalMTD.toLocaleString()}`}
           icon={Target}
           pct={kpis.avgAchievement}
-          subtitle="Month-to-date"
         />
         <KpiCard
           title="Achievement %"
@@ -573,10 +545,9 @@ export default function DashboardPage() {
         />
         <KpiCard
           title="Run Rate"
-          value={kpis.avgRunRate.toLocaleString()}
+          value={`₱${kpis.avgRunRate.toLocaleString()}`}
           icon={Activity}
           pct={kpis.avgRRAchievement}
-          subtitle="Projected"
         />
         <KpiCard
           title="RR Achievement %"
@@ -586,27 +557,39 @@ export default function DashboardPage() {
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 mb-6 lg:grid-cols-[1.2fr_0.8fr]">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <CheckCircle2 className="h-4 w-4 text-green-500" />
-              AI/CEO Summary
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+      <Card className="mb-8">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            Operational Insights
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">Executive summary and recommended next actions.</p>
+        </CardHeader>
+        <CardContent className="grid gap-5 lg:grid-cols-[1fr_0.85fr]">
+          <div className="space-y-4">
             <p className="text-sm leading-6 text-muted-foreground">{ceoSummary}</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-base">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <p className="text-xs font-semibold uppercase text-muted-foreground">Top Performer</p>
+                <p className="mt-1 font-semibold">{bestCampaign?.name ?? "No data"}</p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase text-muted-foreground">Needs Attention</p>
+                <p className="mt-1 font-semibold">{weakestCampaign?.name ?? lowestCampaign?.name ?? "No data"}</p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase text-muted-foreground">Overall</p>
+                <span className={cn("mt-1 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold", statusBadgeClass(overallStatusInfo.tone))}>
+                  {overallStatusInfo.label}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-4">
+            <div className="mb-3 flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-yellow-500" />
-              Recommended Actions
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+              <p className="text-sm font-semibold">Recommended Actions</p>
+            </div>
             <ul className="space-y-2 text-sm text-muted-foreground">
               {recommendedActions.map((action) => (
                 <li key={action} className="flex gap-2">
@@ -615,64 +598,65 @@ export default function DashboardPage() {
                 </li>
               ))}
             </ul>
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </CardContent>
+      </Card>
 
-      <div className="mb-6">
-        <ColorLegend />
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 mb-6 lg:grid-cols-2">
+      <div className="mb-8 space-y-8">
         <ExecutiveChartCard
           title="Campaign Achievement"
           insight={`${insightText(campaignRows)} | Overall Status: ${overallStatus}`}
           explanation={campaignRows.length > 0 ? `This chart shows which campaign is closest to or above target this period. ${bestCampaign?.name ?? "The top campaign"} is currently strongest, while ${lowestCampaign?.name ?? "the lowest campaign"} is the lowest performer.` : "No data available"}
           rows={campaignRows}
-          view={chartViews.campaign}
-          onViewChange={(value) => setChartView("campaign", value)}
+          tableOpen={expandedTables.campaign}
+          onTableToggle={() => toggleTable("campaign")}
           valueLabel="Actual"
-          contributionLabel="Best Achievement"
+          overallStatus={overallStatusInfo}
         >
           <CampaignBarChart data={campaignRows.map((row) => ({ ...row, achievement: Number(row.achievement ?? 0) }))} />
         </ExecutiveChartCard>
 
         <ExecutiveChartCard
           title="Daily Trend"
-          insight={dailyRows.length > 0 ? `Highest Day: ${dailyRows[0].name} | Total: ${formatNumber(dailyTotal)} | Overall Status: Information / Trend` : "No data available"}
+          insight={dailyRows.length > 0 ? `Highest Day: ${dailyRows[0].name} | Lowest Day: ${dailyRows[dailyRows.length - 1]?.name ?? "N/A"} | Overall Status: Information / Trend` : "No data available"}
           explanation={dailyRows.length > 0 ? `This chart shows how production moves across the selected period. The strongest day is ${dailyRows[0].name}, which can help compare staffing, volume, and activity patterns.` : "No data available"}
           rows={dailyRows}
-          view={chartViews.daily}
-          onViewChange={(value) => setChartView("daily", value)}
+          tableOpen={expandedTables.daily}
+          onTableToggle={() => toggleTable("daily")}
           valueLabel="Value"
+          overallStatus={{ label: "Information / Trend", tone: "info" }}
         >
           <DailyLineChart data={[...dailyRows].sort((a, b) => String(a.date).localeCompare(String(b.date))).map((row) => ({ ...row, date: String(row.date), value: Number(row.value ?? 0) }))} label="Sales" />
         </ExecutiveChartCard>
 
-        <ExecutiveChartCard
-          title="Distribution"
-          insight={distributionRows.length > 0 ? `Top Contributor: ${distributionRows[0].name} | Share: ${formatPct(distributionRows[0].contribution)} | Main Concern: ${weakestCampaign ? `${weakestCampaign.name} needs attention` : "No immediate concern"}` : "No data available"}
-          explanation={distributionRows.length > 0 ? `This chart shows which campaign contributes the most this period. ${distributionRows[0].name} has the largest share, while ${distributionRows[distributionRows.length - 1]?.name ?? "the smallest contributor"} contributes the least.` : "No data available"}
-          rows={distributionRows}
-          view={chartViews.distribution}
-          onViewChange={(value) => setChartView("distribution", value)}
-          valueLabel="Actual"
-        >
-          <DistributionPieChart data={distributionRows.map((row) => ({ ...row, value: Number(row.value ?? 0) }))} />
-        </ExecutiveChartCard>
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+          <ExecutiveChartCard
+            title="Agent Leaderboard"
+            insight={leaderboardRows.length > 0 ? `Top Agent: #1 ${leaderboardRows[0].name} with ${formatNumber(leaderboardRows[0].value)}` : "No agent data available."}
+            explanation={leaderboardRows.length > 0 ? `This chart shows only the Top ${leaderboardRows.length} agents in the selected period, ranked from highest production to lowest. ${leaderboardRows[0].name} is currently leading.` : "No agent data available."}
+            rows={leaderboardRows}
+            tableOpen={expandedTables.leaderboard}
+            onTableToggle={() => toggleTable("leaderboard")}
+            valueLabel="Actual"
+            overallStatus={{ label: "Top performers", tone: "good" }}
+            noDataMessage="No agent data available."
+          >
+            <LeaderboardChart data={leaderboardRows.map((row) => ({ ...row, value: Number(row.value ?? 0) }))} />
+          </ExecutiveChartCard>
 
-        <ExecutiveChartCard
-          title="Agent Leaderboard"
-          insight={leaderboardRows.length > 0 ? `Top Agent: #1 ${leaderboardRows[0].name} with ${formatNumber(leaderboardRows[0].value)}` : "No agent data available."}
-          explanation={leaderboardRows.length > 0 ? `This chart shows only the Top ${leaderboardRows.length} agents in the selected period, ranked from highest production to lowest. ${leaderboardRows[0].name} is currently leading.` : "No agent data available."}
-          rows={leaderboardRows}
-          view={chartViews.leaderboard}
-          onViewChange={(value) => setChartView("leaderboard", value)}
-          valueLabel="Actual"
-          noDataMessage="No agent data available."
-        >
-          <LeaderboardChart data={leaderboardRows.map((row) => ({ ...row, value: Number(row.value ?? 0) }))} />
-        </ExecutiveChartCard>
+          <ExecutiveChartCard
+            title="Distribution"
+            insight={distributionRows.length > 0 ? `Top Contributor: ${distributionRows[0].name} | Share: ${formatPct(distributionRows[0].contribution)} | Main Concern: ${weakestCampaign ? `${weakestCampaign.name} needs attention` : "No immediate concern"}` : "No data available"}
+            explanation={distributionRows.length > 0 ? `This chart shows which campaign contributes the most this period. ${distributionRows[0].name} has the largest share, while ${distributionRows[distributionRows.length - 1]?.name ?? "the smallest contributor"} contributes the least.` : "No data available"}
+            rows={distributionRows}
+            tableOpen={expandedTables.distribution}
+            onTableToggle={() => toggleTable("distribution")}
+            valueLabel="Actual"
+            overallStatus={overallStatusInfo}
+          >
+            <DistributionPieChart data={distributionRows.map((row) => ({ ...row, value: Number(row.value ?? 0) }))} />
+          </ExecutiveChartCard>
+        </div>
       </div>
 
       <Card>

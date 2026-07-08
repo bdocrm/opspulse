@@ -233,7 +233,7 @@ export async function GET(req: NextRequest) {
         volume: true,
         transaction: true,
         agent: { select: { id: true, name: true, seatNumber: true, monthlyTarget: true } },
-        productionEntry: { select: { date: true } },
+        productionEntry: { select: { date: true, periodEnd: true } },
       },
     });
 
@@ -280,7 +280,7 @@ export async function GET(req: NextRequest) {
       rowTotals.booked = booked;
       rowTotals.volume = volume;
       rowTotals.transaction = transaction;
-      rowTotals.workedDates.add(toBusinessYmd(detail.productionEntry.date));
+      rowTotals.workedDates.add(toBusinessYmd(detail.productionEntry.periodEnd ?? detail.productionEntry.date));
 
       const idTotals = totalsByAgentId.get(detail.agentId) ?? emptyAgentTotals();
       mergeTotals(idTotals, rowTotals);

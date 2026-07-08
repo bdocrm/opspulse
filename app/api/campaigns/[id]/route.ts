@@ -1,6 +1,76 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { groupByWeek } from "@/utils/kpi";
+import { groupByWeek, type KpiMetricKey } from "@/utils/kpi";
+
+const BUSINESS_TIME_ZONE = "Asia/Manila";
+const BUSINESS_TIME_ZONE_OFFSET = "+08:00";
+
+type MetricTotals = {
+  transmittals: number;
+  activations: number;
+  approvals: number;
+  booked: number;
+  volume: number;
+  transaction: number;
+};
+
+function monthRange(year: number, month: number) {
+  const mm = String(month).padStart(2, "0");
+  const lastDay = new Date(year, month, 0).getDate();
+
+  return {
+    start: new Date(`${year}-${mm}-01T00:00:00.000${BUSINESS_TIME_ZONE_OFFSET}`),
+    end: new Date(`${year}-${mm}-${String(lastDay).padStart(2, "0")}T23:59:59.999${BUSINESS_TIME_ZONE_OFFSET}`),
+  };
+}
+
+function toBusinessYmd(value: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+
+  const yyyy = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const mm = parts.find((part) => part.type === "month")?.value ?? "01";
+  const dd = parts.find((part) => part.type === "day")?.value ?? "01";
+
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function normalizeMetric(metric: string | null | undefined): KpiMetricKey {
+  const normalized = (metric ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (["activation", "activations", "activated", "act"].includes(normalized)) return "activations";
+  if (["approval", "approvals", "approved", "appr"].includes(normalized)) return "approvals";
+  if (["book", "booked", "booking", "bookings"].includes(normalized)) return "booked";
+  if (["volume", "vol"].includes(normalized)) return "volume";
+  if (["transaction", "transactions", "txn", "txns"].includes(normalized)) return "transaction";
+  return "transmittals";
+}
+
+function metricValue(metric: KpiMetricKey, totals: MetricTotals) {
+  if (metric === "activations") return totals.activations;
+  if (metric === "approvals") return totals.approvals;
+  if (metric === "booked") return totals.booked;
+  if (metric === "volume") return totals.volume;
+  if (metric === "transaction") return totals.transaction;
+  return totals.transmittals;
+}
+
+function resolveEffectiveMetric(metric: KpiMetricKey, goal: number, totals: MetricTotals, agentGoals: number[]) {
+  const configuredActual = metricValue(metric, totals);
+  const averageAgentGoal =
+    agentGoals.length > 0 ? agentGoals.reduce((sum, value) => sum + value, 0) / agentGoals.length : 0;
+  const looksLikeMoneyGoal = goal >= 1_000_000 || averageAgentGoal >= 1_000_000;
+  const hasMeaningfulVolume = totals.volume > configuredActual && totals.volume > 0;
+
+  if (metric !== "volume" && looksLikeMoneyGoal && hasMeaningfulVolume) {
+    return "volume";
+  }
+
+  return metric;
+}
 
 /** Achievement = (MTD / Goal) × 100 */
 function achievement(mtd: number, goal: number): number {
@@ -8,16 +78,10 @@ function achievement(mtd: number, goal: number): number {
   return (mtd / goal) * 100;
 }
 
-/** Run Rate = (MTD / Days Lapsed) × Working Days */
-function runRate(mtd: number, daysLapsed: number, workingDays: number): number {
+/** Run Rate = MTD / Days Lapsed */
+function runRate(mtd: number, daysLapsed: number): number {
   if (daysLapsed === 0) return 0;
-  return (mtd / daysLapsed) * workingDays;
-}
-
-/** Run Rate Achievement = (Run Rate / Goal) × 100 */
-function rrAchievement(rr: number, goal: number): number {
-  if (goal === 0) return 0;
-  return (rr / goal) * 100;
+  return mtd / daysLapsed;
 }
 
 // ─── GET /api/campaigns/[id] ─────────────────────────────────────────────────
@@ -32,10 +96,7 @@ export async function GET(
     const year = parseInt(searchParams.get("year") ?? String(now.getFullYear()));
     const month = parseInt(searchParams.get("month") ?? String(now.getMonth() + 1));
 
-    const startDate = new Date(year, month - 1, 1);
-    startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(year, month, 0);
-    endDate.setHours(23, 59, 59, 999);
+    const { start: startDate, end: endDate } = monthRange(year, month);
 
     // Fetch base campaign fields via ORM
     const campaign = await prisma.campaign.findUnique({
@@ -57,24 +118,69 @@ export async function GET(
       SELECT "workingDays", "daysLapsed" FROM "Campaign" WHERE id = ${id}
     `;
 
-    const wDays = Number(extras[0]?.workingDays ?? 22);
-    const dLapsed = Number(extras[0]?.daysLapsed ?? 0);
+    const monthlyConfig = await prisma.campaignGoal.findFirst({
+      where: { campaignId: id, month, year },
+      select: {
+        monthlyGoal: true,
+        kpiMetric: true,
+        workingDays: true,
+        daysLapsed: true,
+      },
+    });
+
+    const goal = Number(monthlyConfig?.monthlyGoal ?? campaign.monthlyGoal ?? 0);
+    const configuredMetric = normalizeMetric(monthlyConfig?.kpiMetric ?? campaign.kpiMetric);
+    const wDays = Number(monthlyConfig?.workingDays ?? extras[0]?.workingDays ?? 22);
+    const configuredDaysLapsed = Number(monthlyConfig?.daysLapsed ?? extras[0]?.daysLapsed ?? 0);
 
     // ── Fetch ProductionDetail rows for the period ──────────────────────────
     const rawDetails = await prisma.productionDetail.findMany({
       where: {
         campaignId: id,
-        productionEntry: { date: { gte: startDate, lte: endDate } },
+        productionEntry: {
+          OR: [
+            { date: { gte: startDate, lte: endDate } },
+            {
+              periodStart: { lte: endDate },
+              periodEnd: { gte: startDate },
+            },
+          ],
+        },
       },
       include: {
-        agent: { select: { id: true, name: true, seatNumber: true } },
-        productionEntry: { select: { date: true } },
+        agent: { select: { id: true, name: true, seatNumber: true, monthlyTarget: true } },
+        productionEntry: { select: { date: true, periodStart: true, periodEnd: true } },
       },
     });
 
+    const campaignTotals: MetricTotals = {
+      transmittals: 0,
+      activations: 0,
+      approvals: 0,
+      booked: 0,
+      volume: 0,
+      transaction: 0,
+    };
+
+    rawDetails.forEach((d) => {
+      campaignTotals.transmittals += Number(d.transmittals || 0);
+      campaignTotals.activations += Number(d.activations || 0);
+      campaignTotals.approvals += Number(d.approvals || 0);
+      campaignTotals.booked += Number(d.booked || 0);
+      campaignTotals.volume += Number(d.volume || 0);
+      campaignTotals.transaction += Number(d.transaction || 0);
+    });
+
+    const explicitAgentGoals = rawDetails
+      .map((d) => Number(d.agent.monthlyTarget || 0))
+      .filter((target) => target > 0);
+    const effectiveMetric = resolveEffectiveMetric(configuredMetric, goal, campaignTotals, explicitAgentGoals);
+    const workedDates = new Set(rawDetails.map((d) => toBusinessYmd(d.productionEntry.periodEnd ?? d.productionEntry.date)));
+    const dLapsed = configuredDaysLapsed > 0 ? configuredDaysLapsed : workedDates.size;
+
     // Flatten rows — MTD uses volume (peso amounts) matching the OM Dashboard
     const salesRows = rawDetails.map((d) => ({
-      date: d.productionEntry.date.toISOString(),
+      date: (d.productionEntry.periodEnd ?? d.productionEntry.date).toISOString(),
       transmittals: Number(d.transmittals),
       activations: Number(d.activations),
       approvals: Number(d.approvals),
@@ -86,14 +192,14 @@ export async function GET(
     }));
 
     // ── Campaign-level KPIs (volume = peso gross transmittals) ──────────────
-    const mtd = salesRows.reduce((sum, r) => sum + r.volume, 0);
-    const ach = achievement(mtd, campaign.monthlyGoal);
-    const rr = runRate(mtd, dLapsed, wDays);
-    const rrAch = rrAchievement(rr, campaign.monthlyGoal);
+    const mtd = metricValue(effectiveMetric, campaignTotals);
+    const ach = achievement(mtd, goal);
+    const rr = runRate(mtd, dLapsed);
+    const rrAch = achievement(mtd, goal);
 
     // ── Weekly breakdown (W1–W4) ────────────────────────────────────────────
-    const weekMap = groupByWeek(salesRows as any, "volume");
-    const weeklyData = (["W1", "W2", "W3", "W4"] as const).map((w) => ({
+    const weekMap = groupByWeek(salesRows as any, effectiveMetric);
+    const weeklyData = (["W1", "W2", "W3", "W4", "W5"] as const).map((w) => ({
       week: w,
       value: weekMap[w] ?? 0,
     }));
@@ -102,7 +208,7 @@ export async function GET(
     const dailyMap = new Map<string, number>();
     salesRows.forEach((r) => {
       const key = new Date(r.date).toISOString().slice(0, 10);
-      dailyMap.set(key, (dailyMap.get(key) ?? 0) + r.volume);
+      dailyMap.set(key, (dailyMap.get(key) ?? 0) + Number((r as any)[effectiveMetric] ?? 0));
     });
     const dailyTrend = Array.from(dailyMap.entries())
       .sort()
@@ -111,7 +217,7 @@ export async function GET(
     // ── Per-agent breakdown ─────────────────────────────────────────────────
     const agentMap = new Map<
       string,
-      { name: string; seatNumber: number | null; mtd: number; target: number }
+      { name: string; seatNumber: number | null; totals: MetricTotals; target: number }
     >();
 
     for (const d of rawDetails) {
@@ -120,11 +226,24 @@ export async function GET(
         agentMap.set(aid, {
           name: d.agent.name,
           seatNumber: d.agent.seatNumber,
-          mtd: 0,
-          target: 0,
+          totals: {
+            transmittals: 0,
+            activations: 0,
+            approvals: 0,
+            booked: 0,
+            volume: 0,
+            transaction: 0,
+          },
+          target: Number(d.agent.monthlyTarget || 0),
         });
       }
-      agentMap.get(aid)!.mtd += Number(d.volume);
+      const agentTotals = agentMap.get(aid)!.totals;
+      agentTotals.transmittals += Number(d.transmittals || 0);
+      agentTotals.activations += Number(d.activations || 0);
+      agentTotals.approvals += Number(d.approvals || 0);
+      agentTotals.booked += Number(d.booked || 0);
+      agentTotals.volume += Number(d.volume || 0);
+      agentTotals.transaction += Number(d.transaction || 0);
     }
 
     // Fetch per-agent monthly targets
@@ -140,10 +259,19 @@ export async function GET(
       }
     }
 
+    const explicitTargetTotal = Array.from(agentMap.values()).reduce(
+      (sum, agent) => sum + (agent.target > 0 ? agent.target : 0),
+      0
+    );
+    const agentsWithoutTargets = Array.from(agentMap.values()).filter((agent) => agent.target <= 0);
+    const fallbackGoal =
+      agentsWithoutTargets.length > 0 ? Math.max(goal - explicitTargetTotal, 0) / agentsWithoutTargets.length : 0;
+
     const agentBreakdown = Array.from(agentMap.entries())
-      .map(([userId, { name, seatNumber, mtd: agentMtd, target }]) => {
-        const agentGoal = target > 0 ? target : campaign.monthlyGoal;
-        const agentRr = runRate(agentMtd, dLapsed, wDays);
+      .map(([userId, { name, seatNumber, totals, target }]) => {
+        const agentMtd = metricValue(effectiveMetric, totals);
+        const agentGoal = target > 0 ? target : fallbackGoal;
+        const agentRr = runRate(agentMtd, dLapsed);
         return {
           userId,
           name,
@@ -152,14 +280,23 @@ export async function GET(
           goal: agentGoal,
           achievement: achievement(agentMtd, agentGoal),
           runRate: Math.round(agentRr),
-          rrAchievement: rrAchievement(agentRr, agentGoal),
+          rrAchievement: achievement(agentMtd, agentGoal),
         };
       })
       .sort((a, b) => b.mtd - a.mtd);
 
     // ── Production entries for the period ───────────────────────────────────
     const rawEntries = await prisma.productionEntry.findMany({
-      where: { campaignId: id, date: { gte: startDate, lte: endDate } },
+      where: {
+        campaignId: id,
+        OR: [
+          { date: { gte: startDate, lte: endDate } },
+          {
+            periodStart: { lte: endDate },
+            periodEnd: { gte: startDate },
+          },
+        ],
+      },
       include: {
         details: {
           include: { agent: { select: { id: true, name: true, seatNumber: true } } },
@@ -192,12 +329,12 @@ export async function GET(
       campaign: {
         id: campaign.id,
         campaignName: campaign.campaignName,
-        kpiMetric: campaign.kpiMetric,
+        kpiMetric: effectiveMetric,
         workingDays: wDays,
         daysLapsed: dLapsed,
       },
       kpis: {
-        goal: campaign.monthlyGoal,
+        goal,
         mtd: Math.round(mtd),
         achievement: ach,
         runRate: Math.round(rr),
@@ -209,6 +346,11 @@ export async function GET(
       dailyTrend,
       agentBreakdown,
       productionEntries,
+      hasProductionData: rawDetails.length > 0,
+      dateRange: {
+        start: startDate.toISOString().slice(0, 10),
+        end: endDate.toISOString().slice(0, 10),
+      },
     });
   } catch (error) {
     console.error("Campaign detail API error:", error);

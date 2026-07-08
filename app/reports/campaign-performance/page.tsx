@@ -50,6 +50,7 @@ interface OverallCampaignPerformance {
   targetHit: boolean;
   targetStatus?: "hit" | "near" | "missed";
   campaignCount: number;
+  kpiMetric?: string;
 }
 
 type CampaignPerformanceSummaryMap = Record<string, OverallCampaignPerformance>;
@@ -185,6 +186,7 @@ function CampaignSelectorView({
           acc[result.value.campaign.id] = {
             ...result.value.overallPerformance,
             campaignCount: 1,
+            kpiMetric: result.value.campaign.kpiMetric,
           };
           return acc;
         }, {});
@@ -292,6 +294,7 @@ function CampaignSelectorView({
             const campaignActual = campaignSummary?.totalActual ?? 0;
             const campaignAchievement = campaignSummary?.achievementRate ?? 0;
             const campaignStatus = campaignSummary?.targetStatus ?? (campaignSummary?.targetHit ? "hit" : "missed");
+            const campaignMetric = campaignSummary?.kpiMetric ?? campaign.kpiMetric;
             return (
             <Link
               key={campaign.id}
@@ -311,7 +314,7 @@ function CampaignSelectorView({
                   <div className="flex justify-between">
                     <span>KPI Metric:</span>
                     <span className="font-semibold text-gray-800 capitalize">
-                      {campaign.kpiMetric}
+                      {campaignMetric}
                     </span>
                   </div>
                 </div>
@@ -763,6 +766,7 @@ function CampaignPerformancePageContent() {
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [campaignSearch, setCampaignSearch] = useState("");
   const [agentSearch, setAgentSearch] = useState("");
+  const [didAutoSelectPeriod, setDidAutoSelectPeriod] = useState(false);
 
   useEffect(() => {
     const fetchCampaigns = async () => {
@@ -778,6 +782,30 @@ function CampaignPerformancePageContent() {
 
     fetchCampaigns();
   }, []);
+
+  useEffect(() => {
+    if (didAutoSelectPeriod) return;
+
+    const fetchAvailablePeriods = async () => {
+      try {
+        const res = await fetch("/api/reports/campaign-performance/periods");
+        if (!res.ok) return;
+        const result = await res.json();
+        const periods: Array<{ year: number; month: number }> = result.periods || [];
+        if (periods.length === 0) return;
+
+        const selectedHasData = periods.some((period) => period.year === year && period.month === month);
+        if (!selectedHasData) {
+          setYear(periods[0].year);
+          setMonth(periods[0].month);
+        }
+      } finally {
+        setDidAutoSelectPeriod(true);
+      }
+    };
+
+    fetchAvailablePeriods();
+  }, [didAutoSelectPeriod, year, month]);
 
   useEffect(() => {
     if (!campaignId) {

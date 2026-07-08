@@ -7,6 +7,9 @@ import { runRate, achievementPct, rrAchievementPct, WORKING_DAYS_DEFAULT } from 
 const BUSINESS_TIME_ZONE = 'Asia/Manila';
 const BUSINESS_TIME_ZONE_OFFSET = '+08:00';
 
+type MetricKey = 'transmittals' | 'activations' | 'approvals' | 'booked' | 'volume' | 'transaction';
+type MetricTotals = Record<MetricKey, number>;
+
 function monthRange(year: number, month: number) {
   const mm = String(month).padStart(2, '0');
   const lastDay = new Date(year, month, 0).getDate();
@@ -32,6 +35,16 @@ function toBusinessYmd(value: Date) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function normalizeMetric(metric: string | null | undefined): MetricKey {
+  const normalized = (metric ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (['activation', 'activations', 'activated', 'act'].includes(normalized)) return 'activations';
+  if (['approval', 'approvals', 'approved', 'appr'].includes(normalized)) return 'approvals';
+  if (['book', 'booked', 'booking', 'bookings'].includes(normalized)) return 'booked';
+  if (['volume', 'vol'].includes(normalized)) return 'volume';
+  if (['transaction', 'transactions', 'txn', 'txns'].includes(normalized)) return 'transaction';
+  return 'transmittals';
+}
+
 function metricValue(metric: string, totals: Record<string, number>) {
   if (metric === 'activations') return totals.activations;
   if (metric === 'approvals') return totals.approvals;
@@ -39,6 +52,14 @@ function metricValue(metric: string, totals: Record<string, number>) {
   if (metric === 'volume') return totals.volume;
   if (metric === 'transaction') return totals.transaction;
   return totals.transmittals;
+}
+
+function resolveEffectiveMetric(metric: MetricKey, goal: number, totals: MetricTotals, agentGoal: number) {
+  const configuredActual = metricValue(metric, totals);
+  const looksLikeMoneyGoal = goal >= 1_000_000 || agentGoal >= 1_000_000;
+  const hasMeaningfulVolume = totals.volume > configuredActual && totals.volume > 0;
+
+  return metric !== 'volume' && looksLikeMoneyGoal && hasMeaningfulVolume ? 'volume' : metric;
 }
 
 function percent(numerator: number, denominator: number) {
@@ -67,7 +88,15 @@ export async function GET(request: NextRequest) {
 
     const where: any = {
       ...(campaignId ? { campaignId } : {}),
-      productionEntry: { date: { gte: startDate, lte: endDate } },
+      productionEntry: {
+        OR: [
+          { date: { gte: startDate, lte: endDate } },
+          {
+            periodStart: { lte: endDate },
+            periodEnd: { gte: startDate },
+          },
+        ],
+      },
     };
     if (agentId) {
       where.agentId = agentId;
@@ -86,16 +115,29 @@ export async function GET(request: NextRequest) {
         transaction: true,
         agent: { select: { id: true, name: true, seatNumber: true, monthlyTarget: true } },
         campaign: { select: { id: true, campaignName: true, kpiMetric: true, monthlyGoal: true } },
-        productionEntry: { select: { date: true } },
+        productionEntry: { select: { date: true, periodStart: true, periodEnd: true } },
       },
     });
+
+    const campaignIds = Array.from(new Set(details.map((detail) => detail.campaignId)));
+    const monthlyGoalRows = campaignIds.length > 0
+      ? await prisma.campaignGoal.findMany({
+          where: { campaignId: { in: campaignIds }, month, year },
+          select: {
+            campaignId: true,
+            monthlyGoal: true,
+            kpiMetric: true,
+          },
+        })
+      : [];
+    const monthlyByCampaignId = new Map(monthlyGoalRows.map((row) => [row.campaignId, row]));
 
     const agentMap = new Map();
 
     details.forEach((detail) => {
       if (!detail.agent?.id || !detail.campaign?.id) return;
       const agentId = detail.agentId;
-      const dateKey = toBusinessYmd(detail.productionEntry.date);
+      const dateKey = toBusinessYmd(detail.productionEntry.periodEnd ?? detail.productionEntry.date);
 
       if (!agentMap.has(agentId)) {
         agentMap.set(agentId, {
@@ -132,11 +174,12 @@ export async function GET(request: NextRequest) {
 
       const campId = detail.campaignId;
       if (!agent.campaigns.has(campId)) {
+        const monthlyGoal = monthlyByCampaignId.get(campId);
         agent.campaigns.set(campId, {
           id: detail.campaign.id,
           name: detail.campaign.campaignName,
-          kpiMetric: detail.campaign.kpiMetric,
-          monthlyGoal: detail.campaign.monthlyGoal,
+          kpiMetric: monthlyGoal?.kpiMetric ?? detail.campaign.kpiMetric,
+          monthlyGoal: Number(monthlyGoal?.monthlyGoal ?? detail.campaign.monthlyGoal ?? 0),
           transmittals: 0,
           activations: 0,
           approvals: 0,
@@ -159,19 +202,23 @@ export async function GET(request: NextRequest) {
 
     const agents = Array.from(agentMap.values()).map((agent: any) => {
       const campaigns = Array.from(agent.campaigns.values()).map((camp: any) => {
-        const mtd = metricValue(camp.kpiMetric, camp);
+        const configuredMetric = normalizeMetric(camp.kpiMetric);
+        const agentGoal = Number(agent.monthlyTarget || 0);
+        const effectiveMetric = resolveEffectiveMetric(configuredMetric, camp.monthlyGoal, camp, agentGoal);
+        const goal = agentGoal > 0 ? agentGoal : camp.monthlyGoal;
+        const mtd = metricValue(effectiveMetric, camp);
         const elapsed = camp.workedDates.size;
         const rr = runRate(mtd, elapsed, WORKING_DAYS_DEFAULT);
-        const ach = achievementPct(mtd, camp.monthlyGoal);
-        const rrAch = rrAchievementPct(rr, camp.monthlyGoal);
+        const ach = achievementPct(mtd, goal);
+        const rrAch = rrAchievementPct(rr, goal);
         const avgQuality = percent(camp.approvals, camp.transmittals);
         const avgConversion = percent(camp.booked, camp.transmittals);
 
         return {
           id: camp.id,
           name: camp.name,
-          kpiMetric: camp.kpiMetric,
-          monthlyGoal: camp.monthlyGoal,
+          kpiMetric: effectiveMetric,
+          monthlyGoal: goal,
           mtd,
           runRate: rr,
           achievement: ach,
@@ -198,6 +245,8 @@ export async function GET(request: NextRequest) {
         totalActivations: agent.totalActivations,
         totalApprovals: agent.totalApprovals,
         totalBooked: agent.totalBooked,
+        totalVolume: agent.totalVolume,
+        totalTransaction: agent.totalTransaction,
         avgQualityRate: avgQuality,
         avgConversionRate: avgConversion,
         daysWorked: agent.workedDates.size,

@@ -41,6 +41,18 @@ type MetricTotals = {
   transaction: number;
 };
 
+type MetricKey = keyof MetricTotals;
+
+function normalizeMetric(metric: string | null | undefined): MetricKey {
+  const normalized = (metric ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (['activation', 'activations', 'activated', 'act'].includes(normalized)) return 'activations';
+  if (['approval', 'approvals', 'approved', 'appr'].includes(normalized)) return 'approvals';
+  if (['book', 'booked', 'booking', 'bookings'].includes(normalized)) return 'booked';
+  if (['volume', 'vol'].includes(normalized)) return 'volume';
+  if (['transaction', 'transactions', 'txn', 'txns'].includes(normalized)) return 'transaction';
+  return 'transmittals';
+}
+
 function metricValue(metric: string, totals: MetricTotals) {
   if (metric === 'activations') return totals.activations;
   if (metric === 'approvals') return totals.approvals;
@@ -48,6 +60,14 @@ function metricValue(metric: string, totals: MetricTotals) {
   if (metric === 'volume') return totals.volume;
   if (metric === 'transaction') return totals.transaction;
   return totals.transmittals;
+}
+
+function resolveEffectiveMetric(metric: MetricKey, goal: number, totals: MetricTotals) {
+  const configuredActual = metricValue(metric, totals);
+  const looksLikeMoneyGoal = goal >= 1_000_000;
+  const hasMeaningfulVolume = totals.volume > configuredActual && totals.volume > 0;
+
+  return metric !== 'volume' && looksLikeMoneyGoal && hasMeaningfulVolume ? 'volume' : metric;
 }
 
 function percent(numerator: number, denominator: number) {
@@ -82,7 +102,13 @@ export async function GET(req: NextRequest) {
       where: {
         ...(user.role === 'CEO' ? {} : user.campaignId ? { campaignId: user.campaignId } : {}),
         productionEntry: {
-          date: { gte: startDate, lte: endDate },
+          OR: [
+            { date: { gte: startDate, lte: endDate } },
+            {
+              periodStart: { lte: endDate },
+              periodEnd: { gte: startDate },
+            },
+          ],
         },
       },
       select: {
@@ -102,15 +128,30 @@ export async function GET(req: NextRequest) {
             monthlyGoal: true,
           },
         },
-        productionEntry: { select: { date: true } },
+        productionEntry: { select: { date: true, periodStart: true, periodEnd: true } },
       },
     });
+
+    const campaignIds = Array.from(new Set(details.map((detail) => detail.campaignId)));
+    const monthlyGoalRows = campaignIds.length > 0
+      ? await prisma.campaignGoal.findMany({
+          where: { campaignId: { in: campaignIds }, month, year },
+          select: {
+            campaignId: true,
+            monthlyGoal: true,
+            kpiMetric: true,
+            workingDays: true,
+          },
+        })
+      : [];
+    const monthlyByCampaignId = new Map(monthlyGoalRows.map((row) => [row.campaignId, row]));
 
     const campaignMap = new Map<string, {
       id: string;
       name: string;
       kpiMetric: string;
       monthlyGoal: number;
+      workingDays: number;
       transmittals: number;
       activations: number;
       approvals: number;
@@ -126,11 +167,13 @@ export async function GET(req: NextRequest) {
       if (!campaign?.id) return;
 
       if (!campaignMap.has(campaign.id)) {
+        const monthlyGoal = monthlyByCampaignId.get(campaign.id);
         campaignMap.set(campaign.id, {
           id: campaign.id,
           name: campaign.campaignName,
-          kpiMetric: campaign.kpiMetric,
-          monthlyGoal: campaign.monthlyGoal,
+          kpiMetric: monthlyGoal?.kpiMetric ?? campaign.kpiMetric,
+          monthlyGoal: Number(monthlyGoal?.monthlyGoal ?? campaign.monthlyGoal ?? 0),
+          workingDays: Number(monthlyGoal?.workingDays ?? WORKING_DAYS_DEFAULT),
           transmittals: 0,
           activations: 0,
           approvals: 0,
@@ -150,13 +193,15 @@ export async function GET(req: NextRequest) {
       report.volume += Number(detail.volume || 0);
       report.transaction += Number(detail.transaction || 0);
       report.agentIds.add(detail.agentId);
-      report.workedDates.add(toBusinessYmd(detail.productionEntry.date));
+      report.workedDates.add(toBusinessYmd(detail.productionEntry.periodEnd ?? detail.productionEntry.date));
     });
 
     const campaignReports = Array.from(campaignMap.values()).map((campaign) => {
-      const mtd = metricValue(campaign.kpiMetric, campaign);
+      const configuredMetric = normalizeMetric(campaign.kpiMetric);
+      const effectiveMetric = resolveEffectiveMetric(configuredMetric, campaign.monthlyGoal, campaign);
+      const mtd = metricValue(effectiveMetric, campaign);
       const elapsed = campaign.workedDates.size;
-      const rr = runRate(mtd, elapsed, WORKING_DAYS_DEFAULT);
+      const rr = runRate(mtd, elapsed, campaign.workingDays);
       const ach = achievementPct(mtd, campaign.monthlyGoal);
       const rrAch = rrAchievementPct(rr, campaign.monthlyGoal);
       const avgQuality = percent(campaign.approvals, campaign.transmittals);
@@ -167,7 +212,7 @@ export async function GET(req: NextRequest) {
       return {
         id: campaign.id,
         name: campaign.name,
-        kpiMetric: campaign.kpiMetric,
+        kpiMetric: effectiveMetric,
         monthlyGoal: campaign.monthlyGoal,
         mtd: Math.round(mtd),
         achievement: ach,

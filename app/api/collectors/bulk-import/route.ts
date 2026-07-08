@@ -23,6 +23,78 @@ type ParsedEntry = {
   rowIdx: number;
 };
 
+async function ensureImportMetadataColumns() {
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE "ProductionEntry"
+      ADD COLUMN IF NOT EXISTS "importFileName" TEXT,
+      ADD COLUMN IF NOT EXISTS "importMetricType" TEXT;
+  `);
+}
+
+async function saveImportMetadata(entryId: string, fileName: string, metricType: string) {
+  await prisma.$executeRaw`
+    UPDATE "ProductionEntry"
+    SET "importFileName" = ${fileName},
+        "importMetricType" = ${metricType}
+    WHERE id = ${entryId}
+  `;
+}
+
+function formatImportSummary(row: any) {
+  return {
+    id: row.id,
+    campaignId: row.campaignId,
+    campaignName: row.campaignName,
+    fileName: row.importFileName || 'Imported production data',
+    metricType: row.importMetricType || 'unknown',
+    reportDate: row.date,
+    periodStart: row.periodStart,
+    periodEnd: row.periodEnd,
+    importedAt: row.createdAt,
+    entryTime: row.time,
+    detailCount: Number(row.detailCount || 0),
+    totals: {
+      transmittals: Number(row.transmittals || 0),
+      approvals: Number(row.approvals || 0),
+      booked: Number(row.booked || 0),
+      volume: Number(row.volume || 0),
+      ntb: Number(row.ntb || 0),
+      supplementary: Number(row.supplementary || 0),
+    },
+  };
+}
+
+async function getImportSummary(entryId: string, collectorId: string) {
+  const rows = await prisma.$queryRaw<any[]>`
+    SELECT pe.id,
+           pe."campaignId",
+           c."campaignName",
+           pe.date,
+           pe.time,
+           pe."periodStart",
+           pe."periodEnd",
+           pe."createdAt",
+           pe."importFileName",
+           pe."importMetricType",
+           COUNT(pd.id) AS "detailCount",
+           COALESCE(SUM(pd.transmittals), 0) AS transmittals,
+           COALESCE(SUM(pd.approvals), 0) AS approvals,
+           COALESCE(SUM(pd.booked), 0) AS booked,
+           COALESCE(SUM(pd.volume), 0) AS volume,
+           COALESCE(SUM(pd.ntb), 0) AS ntb,
+           COALESCE(SUM(pd.supplementary), 0) AS supplementary
+    FROM "ProductionEntry" pe
+    JOIN "Campaign" c ON c.id = pe."campaignId"
+    LEFT JOIN "ProductionDetail" pd ON pd."productionEntryId" = pe.id
+    WHERE pe.id = ${entryId}
+      AND pe."createdBy" = ${collectorId}
+    GROUP BY pe.id, c."campaignName"
+    LIMIT 1
+  `;
+
+  return rows[0] ? formatImportSummary(rows[0]) : null;
+}
+
 // Parse BPI PA / ACQ raw Excel rows. Supports three layouts:
 //   1. Simple template: FULL NAME | COUNT/metric | VOLUME
 //   2. BPI wide report:  AGENT CODE | LAST NAME | FIRST NAME | repeating TRANSACTION/VOLUME pairs
@@ -277,6 +349,98 @@ function buildDetailData(row: ParsedEntry, metricType: string): Record<string, a
   return data;
 }
 
+export async function GET(req: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const user = session.user as any;
+    if (user?.role !== 'COLLECTOR') {
+      return NextResponse.json({ error: 'Only collectors can view bulk imports' }, { status: 403 });
+    }
+
+    await ensureImportMetadataColumns();
+
+    const { searchParams } = new URL(req.url);
+    const entryId = searchParams.get('entryId');
+
+    if (entryId) {
+      const summary = await getImportSummary(entryId, user.id);
+      if (!summary) {
+        return NextResponse.json({ error: 'Import file not found' }, { status: 404 });
+      }
+
+      const details = await prisma.productionDetail.findMany({
+        where: { productionEntryId: entryId },
+        select: {
+          id: true,
+          transmittals: true,
+          approvals: true,
+          booked: true,
+          volume: true,
+          ntb: true,
+          supplementary: true,
+          seatCategory: true,
+          agent: { select: { name: true, seatNumber: true } },
+        },
+        orderBy: { agent: { name: 'asc' } },
+      });
+
+      return NextResponse.json({
+        importFile: {
+          ...summary,
+          details: details.map((detail) => ({
+            id: detail.id,
+            agent: detail.agent.name,
+            seatNumber: detail.agent.seatNumber,
+            transmittals: Number(detail.transmittals || 0),
+            approvals: Number(detail.approvals || 0),
+            booked: Number(detail.booked || 0),
+            volume: Number(detail.volume || 0),
+            ntb: Number(detail.ntb || 0),
+            supplementary: Number(detail.supplementary || 0),
+            seatCategory: detail.seatCategory,
+          })),
+        },
+      });
+    }
+
+    const rows = await prisma.$queryRaw<any[]>`
+      SELECT pe.id,
+             pe."campaignId",
+             c."campaignName",
+             pe.date,
+             pe.time,
+             pe."periodStart",
+             pe."periodEnd",
+             pe."createdAt",
+             pe."importFileName",
+             pe."importMetricType",
+             COUNT(pd.id) AS "detailCount",
+             COALESCE(SUM(pd.transmittals), 0) AS transmittals,
+             COALESCE(SUM(pd.approvals), 0) AS approvals,
+             COALESCE(SUM(pd.booked), 0) AS booked,
+             COALESCE(SUM(pd.volume), 0) AS volume,
+             COALESCE(SUM(pd.ntb), 0) AS ntb,
+             COALESCE(SUM(pd.supplementary), 0) AS supplementary
+      FROM "ProductionEntry" pe
+      JOIN "Campaign" c ON c.id = pe."campaignId"
+      LEFT JOIN "ProductionDetail" pd ON pd."productionEntryId" = pe.id
+      WHERE pe."createdBy" = ${user.id}
+      GROUP BY pe.id, c."campaignName"
+      ORDER BY pe."createdAt" DESC
+      LIMIT 50
+    `;
+
+    return NextResponse.json({ imports: rows.map(formatImportSummary) });
+  } catch (error) {
+    console.error('Bulk import history error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -302,6 +466,8 @@ export async function POST(req: NextRequest) {
     const periodStartStr = (formData.get('periodStart') as string) || '';
     const periodEndStr = (formData.get('periodEnd') as string) || '';
     const selectedCampaignId = (formData.get('campaignId') as string) || '';
+
+    await ensureImportMetadataColumns();
 
     // Resolve the target campaign: prefer the one chosen on the import page,
     // otherwise fall back to the collector's assigned campaign.
@@ -496,6 +662,7 @@ export async function POST(req: NextRequest) {
           periodEnd,
         },
       });
+      await saveImportMetadata(entry.id, file.name, metricType);
 
       for (const row of entries) {
         try {
@@ -676,6 +843,7 @@ export async function POST(req: NextRequest) {
         periodEnd,
       },
     });
+    await saveImportMetadata(csvProdEntry.id, file.name, metricType);
 
     for (const row of csvEntries) {
       try {
@@ -740,6 +908,44 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     console.error('Bulk import error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const user = session.user as any;
+    if (user?.role !== 'COLLECTOR') {
+      return NextResponse.json({ error: 'Only collectors can delete bulk imports' }, { status: 403 });
+    }
+
+    const { searchParams } = new URL(req.url);
+    const entryId = searchParams.get('entryId');
+    if (!entryId) {
+      return NextResponse.json({ error: 'Import id is required' }, { status: 400 });
+    }
+
+    const entry = await prisma.productionEntry.findFirst({
+      where: { id: entryId, createdBy: user.id },
+      select: { id: true },
+    });
+    if (!entry) {
+      return NextResponse.json({ error: 'Import file not found' }, { status: 404 });
+    }
+
+    await prisma.$transaction([
+      prisma.productionDetail.deleteMany({ where: { productionEntryId: entryId } }),
+      prisma.productionEntry.deleteMany({ where: { id: entryId, createdBy: user.id } }),
+    ]);
+
+    return NextResponse.json({ deleted: true });
+  } catch (error) {
+    console.error('Bulk import delete error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

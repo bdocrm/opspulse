@@ -16,8 +16,11 @@ export function useCampaigns() {
   return useSWR("/api/campaigns", fetcher);
 }
 
-export function useCampaignDetail(id: string, period: string) {
-  return useSWR(`/api/campaigns/${id}?period=${period}`, fetcher);
+export function useCampaignDetail(id: string, period: string, month?: number, year?: number) {
+  const params = new URLSearchParams({ period });
+  if (month) params.set("month", String(month));
+  if (year) params.set("year", String(year));
+  return useSWR(id ? `/api/campaigns/${id}?${params.toString()}` : null, fetcher);
 }
 
 export function useAgents(period: string, campaignId?: string) {

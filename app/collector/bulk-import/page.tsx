@@ -3,11 +3,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
+import useSWR from 'swr';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { PageTitle } from '@/components/layout/page-title';
 import { SortableDateHeader, compareDateValues, type DateSortDirection } from '@/components/sortable-date-header';
-import { Upload, AlertCircle, CheckCircle, Download, UserPlus, Users, ArrowLeft } from 'lucide-react';
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Upload, AlertCircle, CheckCircle, Download, UserPlus, Users, ArrowLeft, Eye, FileText, Trash2 } from 'lucide-react';
 
 type Step = 'configure' | 'previewing' | 'confirm' | 'importing' | 'done';
 
@@ -38,6 +47,38 @@ interface NewAgent {
   seatCategory?: string;
 }
 
+interface ImportFileSummary {
+  id: string;
+  campaignName: string;
+  fileName: string;
+  metricType: string;
+  reportDate: string;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  importedAt: string;
+  detailCount: number;
+  totals: {
+    transmittals: number;
+    approvals: number;
+    booked: number;
+    volume: number;
+    ntb: number;
+    supplementary: number;
+  };
+  details?: Array<{
+    id: string;
+    agent: string;
+    seatNumber: number | null;
+    transmittals: number;
+    approvals: number;
+    booked: number;
+    volume: number;
+    ntb: number;
+    supplementary: number;
+    seatCategory?: string | null;
+  }>;
+}
+
 const METRIC_LABELS: Record<string, string> = {
   transmittals: 'Transmitted',
   approvals: 'Approvals',
@@ -45,6 +86,24 @@ const METRIC_LABELS: Record<string, string> = {
   all_metrics: 'All (Transmitted, Approvals, Booked)',
   acq: 'ACQ (NTB & Supplementary)',
 };
+
+const formatDateTime = (value?: string | null) =>
+  value
+    ? new Date(value).toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      })
+    : '-';
+
+const formatDate = (value?: string | null) =>
+  value
+    ? new Date(value).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+    : '-';
+
+const metricLabel = (value: string) => METRIC_LABELS[value] || value.replace(/_/g, ' ');
 
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const MONTH_ABBR = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
@@ -98,6 +157,17 @@ export default function BulkImportPage() {
   const [importResult, setImportResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [importDateSort, setImportDateSort] = useState<DateSortDirection>('desc');
+  const [importHistoryDateSort, setImportHistoryDateSort] = useState<DateSortDirection>('desc');
+  const [selectedImport, setSelectedImport] = useState<ImportFileSummary | null>(null);
+  const [loadingImportDetails, setLoadingImportDetails] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ImportFileSummary | null>(null);
+  const [deletingImport, setDeletingImport] = useState(false);
+
+  const fetcher = (url: string) => fetch(url).then((res) => res.json());
+  const { data: importHistoryData, mutate: mutateImportHistory } = useSWR<{ imports: ImportFileSummary[] }>(
+    (session?.user as any)?.role === 'COLLECTOR' ? '/api/collectors/bulk-import' : null,
+    fetcher
+  );
 
   // Load campaigns for the picker and default to the collector's assigned one
   useEffect(() => {
@@ -118,6 +188,14 @@ export default function BulkImportPage() {
         compareDateValues(a.date, b.date, importDateSort)
       ),
     [importResult?.details, importDateSort]
+  );
+  const importFiles = importHistoryData?.imports ?? [];
+  const sortedImportFiles = useMemo(
+    () =>
+      [...importFiles].sort((a, b) =>
+        compareDateValues(a.importedAt, b.importedAt, importHistoryDateSort)
+      ),
+    [importFiles, importHistoryDateSort]
   );
 
   if (status === 'unauthenticated') {
@@ -250,6 +328,7 @@ export default function BulkImportPage() {
 
       setImportResult(data);
       setStep('done');
+      mutateImportHistory();
 
       // If this collector had no campaign before, the import just assigned one.
       // Refresh the session so the dashboard picks it up without a re-login.
@@ -308,6 +387,42 @@ export default function BulkImportPage() {
     const a = document.createElement('a');
     a.href = url; a.download = metricType === 'acq' ? 'acq-import-template.csv' : 'bpi-pa-import-template.csv'; a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleViewImport = async (item: ImportFileSummary) => {
+    setLoadingImportDetails(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/collectors/bulk-import?entryId=${item.id}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load import file');
+      setSelectedImport(data.importFile);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingImportDetails(false);
+    }
+  };
+
+  const handleDeleteImport = async () => {
+    if (!deleteTarget) return;
+
+    setDeletingImport(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/collectors/bulk-import?entryId=${deleteTarget.id}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to delete import file');
+      if (selectedImport?.id === deleteTarget.id) setSelectedImport(null);
+      setDeleteTarget(null);
+      await mutateImportHistory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingImport(false);
+    }
   };
 
   // ─── STEP: CONFIGURE ────────────────────────────────────────────────────────
@@ -428,6 +543,178 @@ export default function BulkImportPage() {
             </Button>
           </CardContent>
         </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <FileText className="h-5 w-5 text-slate-500" />
+                  Imported Files
+                </CardTitle>
+                <CardDescription>Review imported batches, see when they were uploaded, and delete a batch if needed.</CardDescription>
+              </div>
+              <span className="text-xs font-medium text-slate-500">{sortedImportFiles.length} file(s)</span>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {sortedImportFiles.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-200 py-8 text-center text-sm text-slate-500">
+                No imported files yet.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left text-slate-500">
+                    <tr>
+                      <th className="p-2 font-medium">File</th>
+                      <th className="p-2 font-medium">Campaign</th>
+                      <th className="p-2 font-medium">
+                        <SortableDateHeader
+                          label="Imported"
+                          direction={importHistoryDateSort}
+                          onToggle={() => setImportHistoryDateSort((direction) => (direction === 'asc' ? 'desc' : 'asc'))}
+                        />
+                      </th>
+                      <th className="p-2 font-medium">Report Date</th>
+                      <th className="p-2 text-right font-medium">Records</th>
+                      <th className="p-2 text-right font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedImportFiles.map((item, index) => (
+                      <tr key={item.id} className={index % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'}>
+                        <td className="max-w-[260px] p-2">
+                          <p className="truncate font-medium text-slate-900">{item.fileName}</p>
+                          <p className="text-xs capitalize text-slate-500">{metricLabel(item.metricType)}</p>
+                        </td>
+                        <td className="p-2">{item.campaignName}</td>
+                        <td className="p-2">{formatDateTime(item.importedAt)}</td>
+                        <td className="p-2">
+                          <p>{formatDate(item.reportDate)}</p>
+                          {item.periodStart && item.periodEnd && (
+                            <p className="text-xs text-slate-500">
+                              {formatDate(item.periodStart)} - {formatDate(item.periodEnd)}
+                            </p>
+                          )}
+                        </td>
+                        <td className="p-2 text-right">{item.detailCount.toLocaleString()}</td>
+                        <td className="p-2">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="gap-1"
+                              onClick={() => handleViewImport(item)}
+                              disabled={loadingImportDetails}
+                            >
+                              <Eye className="h-4 w-4" />
+                              View
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="gap-1 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                              onClick={() => setDeleteTarget(item)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              Delete
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Dialog open={Boolean(selectedImport)} onOpenChange={(open) => !open && setSelectedImport(null)}>
+          <DialogContent className="max-h-[85vh] max-w-5xl overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{selectedImport?.fileName}</DialogTitle>
+              <DialogDescription>
+                Imported {formatDateTime(selectedImport?.importedAt)} into {selectedImport?.campaignName}
+              </DialogDescription>
+            </DialogHeader>
+            {selectedImport && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+                  <div className="rounded-lg border bg-slate-50 p-3">
+                    <p className="text-xs text-slate-500">Records</p>
+                    <p className="text-lg font-semibold">{selectedImport.detailCount.toLocaleString()}</p>
+                  </div>
+                  <div className="rounded-lg border bg-slate-50 p-3">
+                    <p className="text-xs text-slate-500">Metric</p>
+                    <p className="text-lg font-semibold capitalize">{metricLabel(selectedImport.metricType)}</p>
+                  </div>
+                  <div className="rounded-lg border bg-slate-50 p-3">
+                    <p className="text-xs text-slate-500">Volume</p>
+                    <p className="text-lg font-semibold">PHP {selectedImport.totals.volume.toLocaleString()}</p>
+                  </div>
+                  <div className="rounded-lg border bg-slate-50 p-3">
+                    <p className="text-xs text-slate-500">NTB / Supp</p>
+                    <p className="text-lg font-semibold">{selectedImport.totals.ntb.toLocaleString()} / {selectedImport.totals.supplementary.toLocaleString()}</p>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto rounded-lg border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-100 text-left">
+                      <tr>
+                        <th className="p-2">Agent</th>
+                        <th className="p-2 text-right">Transmitted</th>
+                        <th className="p-2 text-right">Approvals</th>
+                        <th className="p-2 text-right">Booked</th>
+                        <th className="p-2 text-right">Volume</th>
+                        <th className="p-2 text-right">NTB</th>
+                        <th className="p-2 text-right">Supplementary</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(selectedImport.details ?? []).map((detail, index) => (
+                        <tr key={detail.id} className={index % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
+                          <td className="p-2">
+                            <p className="font-medium">{detail.agent}</p>
+                            <p className="text-xs text-slate-500">
+                              {detail.seatNumber ? `Seat ${detail.seatNumber}` : 'No seat'}
+                              {detail.seatCategory ? ` - ${detail.seatCategory}` : ''}
+                            </p>
+                          </td>
+                          <td className="p-2 text-right">{detail.transmittals.toLocaleString()}</td>
+                          <td className="p-2 text-right">{detail.approvals.toLocaleString()}</td>
+                          <td className="p-2 text-right">{detail.booked.toLocaleString()}</td>
+                          <td className="p-2 text-right">PHP {detail.volume.toLocaleString()}</td>
+                          <td className="p-2 text-right">{detail.ntb.toLocaleString()}</td>
+                          <td className="p-2 text-right">{detail.supplementary.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        <ConfirmDialog
+          open={Boolean(deleteTarget)}
+          title="Delete Imported File"
+          description={
+            <>
+              Delete <span className="font-semibold">{deleteTarget?.fileName}</span>? This removes the imported batch and its production records.
+            </>
+          }
+          actionLabel="Delete"
+          isDangerous
+          isLoading={deletingImport}
+          onConfirm={handleDeleteImport}
+          onCancel={() => setDeleteTarget(null)}
+        />
       </div>
     );
   }

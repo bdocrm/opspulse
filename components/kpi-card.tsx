@@ -27,11 +27,11 @@ export function KpiCard({ title, value, subtitle, pct, icon: Icon }: KpiCardProp
 
   return (
     <Card className="overflow-hidden">
-      <CardContent className="p-4 sm:p-6">
+      <CardContent className="min-h-[132px] p-5 sm:p-6">
         <div className="flex items-start justify-between">
-          <div className="space-y-1">
-            <p className="text-xs sm:text-sm font-medium text-muted-foreground">{title}</p>
-            <p className="text-xl sm:text-2xl font-bold">{value}</p>
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase text-muted-foreground">{title}</p>
+            <p className="text-2xl font-bold">{value}</p>
             {subtitle && (
               <p className="text-xs text-muted-foreground">{subtitle}</p>
             )}
