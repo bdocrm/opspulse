@@ -2,16 +2,18 @@
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { FilterPeriod } from "@/utils/kpi";
+import { cn } from "@/lib/utils";
 
 interface PeriodFilterProps {
   value: FilterPeriod;
   onChange: (v: FilterPeriod) => void;
+  className?: string;
 }
 
-export function PeriodFilter({ value, onChange }: PeriodFilterProps) {
+export function PeriodFilter({ value, onChange, className }: PeriodFilterProps) {
   return (
     <Select value={value} onValueChange={(v) => onChange(v as FilterPeriod)}>
-      <SelectTrigger className="w-[140px]">
+      <SelectTrigger className={cn("w-[140px]", className)}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>

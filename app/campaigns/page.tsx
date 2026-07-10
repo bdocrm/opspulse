@@ -81,11 +81,11 @@ export default function CampaignsPage() {
 
   return (
     <>
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-        <PageTitle title="Campaign Monitoring" subtitle="Track campaign performance in real-time" />
-        <div className="flex items-center gap-2 flex-wrap">
+      <div className="mb-6 grid gap-4 xl:grid-cols-[minmax(280px,1fr)_auto] xl:items-start">
+        <PageTitle title="Campaign Monitoring" subtitle="Track campaign performance in real-time" className="mb-0" />
+        <div className="grid w-full gap-2 sm:grid-cols-[minmax(180px,1fr)_140px_140px_100px_auto] xl:w-auto xl:min-w-[720px]">
           <Select value={selectedId} onValueChange={setSelectedId}>
-            <SelectTrigger className="w-[200px]">
+            <SelectTrigger className="w-full">
               <SelectValue placeholder="Select Campaign" />
             </SelectTrigger>
             <SelectContent>
@@ -96,9 +96,9 @@ export default function CampaignsPage() {
               ))}
             </SelectContent>
           </Select>
-          <PeriodFilter value={period} onChange={setPeriod} />
+          <PeriodFilter value={period} onChange={setPeriod} className="w-full sm:w-[140px]" />
           <Select value={String(month)} onValueChange={(v) => setMonth(Number(v))}>
-            <SelectTrigger className="w-[140px]">
+            <SelectTrigger className="w-full sm:w-[140px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -108,7 +108,7 @@ export default function CampaignsPage() {
             </SelectContent>
           </Select>
           <Select value={String(year)} onValueChange={(v) => setYear(Number(v))}>
-            <SelectTrigger className="w-[100px]">
+            <SelectTrigger className="w-full sm:w-[100px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -117,7 +117,10 @@ export default function CampaignsPage() {
               ))}
             </SelectContent>
           </Select>
-          <ExportButton endpoint={`/api/export/campaigns?campaignId=${selectedId}&period=${period}&month=${month}&year=${year}`} />
+          <ExportButton
+            endpoint={`/api/export/campaigns?campaignId=${selectedId}&period=${period}&month=${month}&year=${year}`}
+            className="h-10 whitespace-nowrap"
+          />
         </div>
       </div>
 

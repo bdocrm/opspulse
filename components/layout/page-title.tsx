@@ -1,15 +1,17 @@
 "use client";
 
 import Image from "next/image";
+import { cn } from "@/lib/utils";
 
 interface PageTitleProps {
   title: string;
   subtitle?: string;
+  className?: string;
 }
 
-export function PageTitle({ title, subtitle }: PageTitleProps) {
+export function PageTitle({ title, subtitle, className }: PageTitleProps) {
   return (
-    <div className="flex items-center gap-3 mb-6">
+    <div className={cn("flex items-center gap-3 mb-6", className)}>
       <Image
         src="/ops.png"
         alt="OpsView 360"

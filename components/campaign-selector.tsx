@@ -16,8 +16,10 @@ interface CampaignSelectorProps {
   selectedCampaignId: string | null;
   onCampaignChange: (campaignId: string | null) => void;
   label?: string;
+  labelClassName?: string;
   placeholder?: string;
   className?: string;
+  triggerClassName?: string;
   /** When true, adds an "All Campaigns" option that selects `null`. */
   includeAllOption?: boolean;
   allOptionLabel?: string;
@@ -28,8 +30,10 @@ export function CampaignSelector({
   selectedCampaignId,
   onCampaignChange,
   label = "Campaign",
+  labelClassName,
   placeholder = "Select a campaign",
   className,
+  triggerClassName,
   includeAllOption = false,
   allOptionLabel = "All Campaigns",
 }: CampaignSelectorProps) {
@@ -38,12 +42,12 @@ export function CampaignSelector({
 
   return (
     <div className={cn("space-y-1", className)}>
-      <Label htmlFor="campaign-select" className="text-sm font-medium">{label}</Label>
+      <Label htmlFor="campaign-select" className={cn("text-sm font-medium", labelClassName)}>{label}</Label>
       <Select
         value={value}
         onValueChange={(v) => onCampaignChange(v === ALL_CAMPAIGNS_VALUE ? null : v)}
       >
-        <SelectTrigger id="campaign-select">
+        <SelectTrigger id="campaign-select" className={triggerClassName}>
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>
         <SelectContent>

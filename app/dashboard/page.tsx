@@ -485,21 +485,30 @@ export default function DashboardPage() {
 
   return (
     <>
-      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <PageTitle title="Dashboard" subtitle="Operational Performance Overview" />
-        <div className="flex flex-wrap items-center justify-end gap-2 rounded-2xl border border-border/70 bg-card p-2 shadow-sm">
+      <div className="mb-8 grid gap-4 xl:grid-cols-[minmax(260px,1fr)_auto] xl:items-center">
+        <PageTitle title="Dashboard" subtitle="Operational Performance Overview" className="mb-0" />
+        <div
+          className={cn(
+            "grid w-full items-center gap-2 rounded-2xl border border-border/70 bg-card p-2 shadow-sm xl:w-auto",
+            campaigns.length > 0
+              ? "sm:grid-cols-[minmax(220px,1fr)_140px_100px_auto_auto]"
+              : "sm:grid-cols-[140px_100px_auto_auto]"
+          )}
+        >
           {campaigns.length > 0 && (
             <CampaignSelector
               campaigns={campaigns}
               selectedCampaignId={selectedCampaignId}
               onCampaignChange={setSelectedCampaignId}
               placeholder="Select campaign"
-              className="w-[220px]"
+              className="min-w-0"
+              labelClassName="sr-only"
+              triggerClassName="h-10"
               includeAllOption
             />
           )}
           <Select value={String(month)} onValueChange={(v) => setMonth(Number(v))}>
-            <SelectTrigger className="w-[140px]">
+            <SelectTrigger className="w-full sm:w-[140px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -510,7 +519,7 @@ export default function DashboardPage() {
             </SelectContent>
           </Select>
           <Select value={String(year)} onValueChange={(v) => setYear(Number(v))}>
-            <SelectTrigger className="w-[100px]">
+            <SelectTrigger className="w-full sm:w-[100px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -521,9 +530,9 @@ export default function DashboardPage() {
           </Select>
           <ExportButton
             endpoint={`/api/export/dashboard?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}`}
-            className="h-10"
+            className="h-10 whitespace-nowrap"
           />
-          <Button type="button" variant="outline" size="sm" className="h-10 gap-2" onClick={() => mutate()}>
+          <Button type="button" variant="outline" size="sm" className="h-10 gap-2 whitespace-nowrap" onClick={() => mutate()}>
             <RefreshCw className="h-4 w-4" />
             Refresh
           </Button>
