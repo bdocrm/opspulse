@@ -20,6 +20,25 @@ import { Upload, AlertCircle, CheckCircle, Download, UserPlus, Users, ArrowLeft,
 
 type Step = 'configure' | 'previewing' | 'confirm' | 'importing' | 'done';
 type ImportMode = 'all' | 'worksheets' | 'single';
+type ReportPeriodType = 'daily' | 'monthly' | 'yearly';
+
+interface NormalizedPreviewRecord {
+  fileName?: string;
+  sheet: string;
+  campaignName: string;
+  agent: string;
+  reportPeriodType: ReportPeriodType;
+  reportDate: string;
+  metricType: string;
+  count?: number | null;
+  volume?: number | null;
+  goal?: number | null;
+  actual?: number | null;
+  achievement?: number | null;
+  status: string;
+  validationMessage?: string;
+  row: number;
+}
 
 interface MatchedAgent {
   name: string;
@@ -133,6 +152,8 @@ const METRIC_LABELS: Record<string, string> = {
   transmittals: 'Transmitted',
   approvals: 'Approvals',
   booked: 'Booked',
+  activations: 'Activations',
+  all: 'ALL METRICS',
   all_metrics: 'All (Transmitted, Approvals, Booked)',
   acq: 'ACQ (NTB & Supplementary)',
 };
@@ -193,13 +214,17 @@ export default function BulkImportPage() {
   const [files, setFiles] = useState<File[]>([]);
   const [importMode, setImportMode] = useState<ImportMode>('all');
   const [selectedFileNames, setSelectedFileNames] = useState<string[]>([]);
-  const [metricType, setMetricType] = useState('transmittals');
+  const [metricType, setMetricType] = useState('all');
+  const [lastSingleMetric, setLastSingleMetric] = useState('transmittals');
   const [campaigns, setCampaigns] = useState<{ id: string; campaignName: string }[]>([]);
   const [campaignId, setCampaignId] = useState('');
   const [reportDate, setReportDate] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   });
+  const [reportPeriodType, setReportPeriodType] = useState<ReportPeriodType>('daily');
+  const [reportMonth, setReportMonth] = useState(() => new Date().getMonth() + 1);
+  const [reportYear, setReportYear] = useState(() => new Date().getFullYear());
   const [detectedPeriod, setDetectedPeriod] = useState<{ label: string; startYmd: string; endYmd: string } | null>(null);
 
   // Flow state
@@ -220,6 +245,7 @@ export default function BulkImportPage() {
   const [deletingImport, setDeletingImport] = useState(false);
   const [previewFiles, setPreviewFiles] = useState<Array<{ file: File; index: number }>>([]);
   const [previewFilter, setPreviewFilter] = useState({ file: '', sheet: '', campaign: '', month: '', metric: '', status: '' });
+  const [normalizedPreviewRecords, setNormalizedPreviewRecords] = useState<NormalizedPreviewRecord[]>([]);
 
   const fetcher = (url: string) => fetch(url).then((res) => res.json());
   const { data: importHistoryData, mutate: mutateImportHistory } = useSWR<{ imports: ImportFileSummary[] }>(
@@ -239,6 +265,35 @@ export default function BulkImportPage() {
     const assigned = (session?.user as any)?.campaignId;
     if (assigned) setCampaignId(assigned);
   }, [session]);
+
+  const normalizedReportDate = reportPeriodType === 'daily'
+    ? reportDate
+    : reportPeriodType === 'monthly'
+      ? `${reportYear}-${String(reportMonth).padStart(2, '0')}-01`
+      : `${reportYear}-01-01`;
+
+  const handleImportModeChange = (value: ImportMode) => {
+    setImportMode(value);
+    if (value === 'single') setMetricType(lastSingleMetric || 'transmittals');
+    else setMetricType('all');
+  };
+
+  const handleMetricTypeChange = (value: string) => {
+    if (value === 'all') return;
+    setMetricType(value);
+    setLastSingleMetric(value);
+  };
+
+  const handleReportPeriodChange = (value: ReportPeriodType) => {
+    const dailyDate = reportDate ? new Date(`${reportDate}T00:00:00`) : new Date();
+    const safeDailyDate = Number.isNaN(dailyDate.getTime()) ? new Date() : dailyDate;
+    const nextYear = reportPeriodType === 'daily' ? safeDailyDate.getFullYear() : reportYear;
+    const nextMonth = reportPeriodType === 'daily' ? safeDailyDate.getMonth() + 1 : reportMonth;
+    setReportYear(nextYear);
+    setReportMonth(nextMonth);
+    if (value === 'daily') setReportDate(`${nextYear}-${String(nextMonth).padStart(2, '0')}-01`);
+    setReportPeriodType(value);
+  };
 
   const sortedImportDetails = useMemo(
     () =>
@@ -300,7 +355,12 @@ export default function BulkImportPage() {
     setError(null);
     const period = detectMTDPeriod(accepted[0].name);
     setDetectedPeriod(period);
-    if (period) setReportDate(period.endYmd);
+    if (period) {
+      setReportDate(period.endYmd);
+      const [year, month] = period.startYmd.split('-').map(Number);
+      setReportYear(year);
+      setReportMonth(month);
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -325,8 +385,11 @@ export default function BulkImportPage() {
         fd.append('file', activeFile);
         fd.append('mode', 'preview');
         fd.append('importMode', importMode);
-        fd.append('metricType', importMode === 'single' ? metricType : 'all_metrics');
-        fd.append('reportDate', reportDate);
+        fd.append('metricType', importMode === 'single' ? metricType : 'all');
+        fd.append('reportPeriodType', reportPeriodType);
+        fd.append('reportDate', normalizedReportDate);
+        fd.append('reportMonth', String(reportMonth));
+        fd.append('reportYear', String(reportYear));
         fd.append('campaignId', campaignId);
         const period = detectMTDPeriod(activeFile.name);
         if (period) { fd.append('periodStart', period.startYmd); fd.append('periodEnd', period.endYmd); }
@@ -338,6 +401,7 @@ export default function BulkImportPage() {
       setPreviewFiles(responses.map(({ file: previewFile, index }) => ({ file: previewFile, index })));
       setMatched(responses.flatMap(({ data, file: previewFile }) => (data.matched || []).map((row: any) => ({ ...row, fileName: previewFile.name }))));
       setNewAgents(responses.flatMap(({ data, file: previewFile }) => (data.notFound || []).map((row: any) => ({ ...row, fileName: previewFile.name }))).map((a: any) => ({ ...a, volume: a.volume ?? 0, approved: true })));
+      setNormalizedPreviewRecords(responses.flatMap(({ data, file: previewFile }) => (data.previewRecords || []).map((row: NormalizedPreviewRecord) => ({ ...row, fileName: previewFile.name }))));
       const summaries = responses.map(({ data }) => data.workbookSummary).filter(Boolean);
       setWorkbookSummary(summaries.length ? {
         totalWorksheets: summaries.reduce((n, s) => n + s.totalWorksheets, 0),
@@ -390,7 +454,7 @@ export default function BulkImportPage() {
     }
     return (
       <>
-        {metricType === 'all_metrics' ? (
+        {importMode !== 'single' ? (
           <p className="text-sm font-semibold text-slate-700">
             T: {(a.transmittals ?? 0).toLocaleString()} | A: {(a.approvals ?? 0).toLocaleString()} | B: {(a.booked ?? 0).toLocaleString()}
           </p>
@@ -413,8 +477,11 @@ export default function BulkImportPage() {
         fd.append('file', activeFile);
         fd.append('mode', 'import');
         fd.append('importMode', importMode);
-        fd.append('metricType', importMode === 'single' ? metricType : 'all_metrics');
-        fd.append('reportDate', reportDate);
+        fd.append('metricType', importMode === 'single' ? metricType : 'all');
+        fd.append('reportPeriodType', reportPeriodType);
+        fd.append('reportDate', normalizedReportDate);
+        fd.append('reportMonth', String(reportMonth));
+        fd.append('reportYear', String(reportYear));
         fd.append('campaignId', campaignId);
         const period = detectMTDPeriod(activeFile.name);
         if (period) { fd.append('periodStart', period.startYmd); fd.append('periodEnd', period.endYmd); }
@@ -432,6 +499,8 @@ export default function BulkImportPage() {
         created: results.reduce((n, r) => n + (r.created || 0), 0),
         inserted: results.reduce((n, r) => n + (r.inserted || 0), 0),
         updated: results.reduce((n, r) => n + (r.updated || 0), 0),
+        normalizedImported: results.reduce((n, r) => n + (r.normalizedImported || 0), 0),
+        normalizedDuplicates: results.reduce((n, r) => n + (r.normalizedDuplicates || 0), 0),
         errors: results.flatMap((r) => r.errors || []),
         details: results.flatMap((r) => r.details || []),
         importedFiles: previewFiles.map((item) => item.file.name),
@@ -454,6 +523,7 @@ export default function BulkImportPage() {
     setFiles([]);
     setSelectedFileNames([]);
     setPreviewFiles([]);
+    setNormalizedPreviewRecords([]);
     setMatched([]);
     setNewAgents([]);
     setWorksheetPreviews([]);
@@ -477,7 +547,7 @@ export default function BulkImportPage() {
         `TAAD,AGUILAR,REDJEAN,2021-05-27,BILLABLE,35,18,0,0`,
         `TBGK,BUHAIN,EDMAR,2026-04-06,BUFFER,18,6,0,0`,
       ].join('\n');
-    } else if (metricType === 'all_metrics') {
+    } else if (metricType === 'all' || metricType === 'all_metrics') {
       // Format with separate columns for each metric type
       csv = [
         `,BPI,LEVEL,TRANSMITTED,APPROVALS,BOOKED,VOLUME`,
@@ -587,12 +657,12 @@ export default function BulkImportPage() {
           <CardHeader>
             <CardTitle className="text-lg">Import Settings</CardTitle>
           </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">Import Mode</label>
               <select
                 value={importMode}
-                onChange={e => setImportMode(e.target.value as ImportMode)}
+                onChange={e => handleImportModeChange(e.target.value as ImportMode)}
                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="all">Import All Data (Recommended)</option>
@@ -602,7 +672,7 @@ export default function BulkImportPage() {
               <p className="text-xs text-slate-500">All Data detects supported worksheets and metrics automatically.</p>
             </div>
             <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Fallback Campaign</label>
+              <label className="text-sm font-medium text-slate-700">Campaign</label>
               <select
                 value={campaignId}
                 onChange={e => setCampaignId(e.target.value)}
@@ -613,47 +683,52 @@ export default function BulkImportPage() {
                   <option key={c.id} value={c.id}>{c.campaignName}</option>
                 ))}
               </select>
-              <p className="text-xs text-slate-500">Used when a worksheet cannot be matched automatically.</p>
+              <p className="text-xs text-slate-500">Select the campaign where the imported data belongs.</p>
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">
-                Metric Type {metricType === 'all_metrics' ? '(TRANSMITTED/APPROVALS/BOOKED columns)' : metricType === 'acq' ? '(NTB/SUPPLEMENTARY columns)' : '(COUNT column)'}
+                Metric Type
               </label>
               <select
                 value={metricType}
-                onChange={e => setMetricType(e.target.value)}
+                onChange={e => handleMetricTypeChange(e.target.value)}
                 disabled={importMode !== 'single'}
                 className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
+                <option value="all" disabled={importMode === 'single'}>ALL METRICS</option>
                 <option value="transmittals">Transmitted</option>
                 <option value="approvals">Approvals</option>
                 <option value="booked">Booked</option>
-                <option value="all_metrics">All (Transmitted, Approvals, Booked)</option>
+                <option value="activations">Activations</option>
                 <option value="acq">ACQ (NTB &amp; Supplementary)</option>
               </select>
               <p className="text-xs text-slate-500">
                 {importMode !== 'single'
                   ? 'Automatically detected from each worksheet'
-                  : metricType === 'all_metrics'
-                  ? 'Transmitted, Approvals, and Booked columns will be stored separately'
                   : metricType === 'acq'
                   ? 'Highest NTB & Supplementary per agent stored, with seat category (BILLABLE/BUFFER)'
                   : `The COUNT column will be stored as ${METRIC_LABELS[metricType]}`}
               </p>
             </div>
             <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Report Date</label>
-              <input
-                type="date"
-                value={reportDate}
-                onChange={e => setReportDate(e.target.value)}
-                className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              {detectedPeriod ? (
-                <p className="text-xs text-blue-600">MTD period from file: <span className="font-medium">{detectedPeriod.label}</span></p>
+              <label className="text-sm font-medium text-slate-700">Report Period</label>
+              <select value={reportPeriodType} onChange={(event) => handleReportPeriodChange(event.target.value as ReportPeriodType)} className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="daily">Daily</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option>
+              </select>
+              <p className="text-xs text-slate-500">Controls how the reporting date is normalized.</p>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">{reportPeriodType === 'daily' ? 'Report Date' : reportPeriodType === 'monthly' ? 'Report Month' : 'Report Year'}</label>
+              {reportPeriodType === 'daily' ? (
+                <input type="date" value={reportDate} onChange={e => setReportDate(e.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              ) : reportPeriodType === 'monthly' ? (
+                <input type="month" value={`${reportYear}-${String(reportMonth).padStart(2, '0')}`} onChange={(event) => { const [year, month] = event.target.value.split('-').map(Number); setReportYear(year); setReportMonth(month); }} className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               ) : (
-                <p className="text-xs text-slate-500">Date this data is as-of (used in daily trends)</p>
+                <select value={reportYear} onChange={(event) => setReportYear(Number(event.target.value))} className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  {Array.from({ length: 11 }, (_, index) => new Date().getFullYear() + 5 - index).map((year) => <option key={year} value={year}>{year}</option>)}
+                </select>
               )}
+              <p className="text-xs text-slate-500">{reportPeriodType === 'daily' ? 'Use this date for daily trends and reporting.' : reportPeriodType === 'monthly' ? 'Select the reporting month.' : 'Select the reporting year.'}</p>
             </div>
           </CardContent>
         </Card>
@@ -706,7 +781,7 @@ export default function BulkImportPage() {
             )}
             <Button onClick={handlePreview} disabled={selectedFileNames.length === 0 || !campaignId} className="w-full gap-2">
               <Upload className="h-4 w-4" />
-              Preview All Data
+              {importMode === 'single' ? 'Preview Import' : 'Preview All Data'}
             </Button>
           </CardContent>
         </Card>
@@ -900,7 +975,9 @@ export default function BulkImportPage() {
 
   // ─── STEP: CONFIRM ──────────────────────────────────────────────────────────
   if (step === 'confirm') {
-    const previewRows = [
+    const previewRows: any[] = normalizedPreviewRecords.length ? normalizedPreviewRecords.map((row) => ({
+      ...row, name: row.agent, agentName: row.agent, previewStatus: row.status,
+    })) : [
       ...matched.map((row) => ({ ...row, previewStatus: 'Valid', validationMessage: '' })),
       ...newAgents.map((row) => ({ ...row, previewStatus: 'Mapping Required', validationMessage: 'Agent not found; approve creation or deselect it.' })),
     ];
@@ -1078,11 +1155,11 @@ export default function BulkImportPage() {
             </div>
             <div className="max-h-96 overflow-auto rounded-lg border">
               <table className="w-full min-w-[1100px] text-xs">
-                <thead className="sticky top-0 bg-slate-100 text-left"><tr>{['File', 'Worksheet', 'Campaign', 'Agent', 'Month', 'Metric', 'Count', 'Volume', 'Goal', 'Actual', 'Status', 'Validation Message'].map((label) => <th key={label} className="p-2 font-medium">{label}</th>)}</tr></thead>
+                <thead className="sticky top-0 bg-slate-100 text-left"><tr>{['File', 'Worksheet', 'Campaign', 'Agent', 'Report Period', 'Report Date', 'Metric', 'Count', 'Volume', 'Goal', 'Actual', 'Achievement', 'Status', 'Validation Message'].map((label) => <th key={label} className="p-2 font-medium">{label}</th>)}</tr></thead>
                 <tbody>{filteredPreviewRows.slice(0, 500).map((row, index) => (
                   <tr key={`${row.fileName}-${row.sheet}-${row.row}-${index}`} className="border-t">
                     <td className="max-w-40 truncate p-2">{row.fileName}</td><td className="p-2">{row.sheet}</td><td className="p-2">{row.campaignName}</td><td className="p-2 font-medium">{'agentName' in row ? row.agentName : row.name}</td>
-                    <td className="p-2">{row.reportDate?.slice(0, 7) || '-'}</td><td className="p-2">{metricLabel(row.metricType || metricType)}</td><td className="p-2 text-right">{(row.count || 0).toLocaleString()}</td><td className="p-2 text-right">{(row.volume || 0).toLocaleString()}</td><td className="p-2 text-right">{row.goal?.toLocaleString() || '-'}</td><td className="p-2 text-right">{row.actual?.toLocaleString() || '-'}</td>
+                    <td className="p-2 capitalize">{row.reportPeriodType || reportPeriodType}</td><td className="p-2">{row.reportDate || '-'}</td><td className="p-2">{metricLabel(row.metricType || metricType)}</td><td className="p-2 text-right">{row.count == null ? '-' : row.count.toLocaleString()}</td><td className="p-2 text-right">{row.volume == null ? '-' : row.volume.toLocaleString()}</td><td className="p-2 text-right">{row.goal == null ? '-' : row.goal.toLocaleString()}</td><td className="p-2 text-right">{row.actual == null ? '-' : row.actual.toLocaleString()}</td><td className="p-2 text-right">{row.achievement == null ? '-' : `${(row.achievement * (row.achievement <= 2 ? 100 : 1)).toFixed(1)}%`}</td>
                     <td className={`p-2 font-medium ${row.previewStatus === 'Valid' ? 'text-green-700' : 'text-amber-700'}`}>{row.previewStatus}</td><td className="p-2 text-slate-500">{row.validationMessage || '-'}</td>
                   </tr>
                 ))}</tbody>
@@ -1262,7 +1339,7 @@ export default function BulkImportPage() {
                         onToggle={() => setImportDateSort((direction) => (direction === 'asc' ? 'desc' : 'asc'))}
                       />
                     </th>
-                    {metricType === 'all_metrics' ? (
+                    {importMode !== 'single' ? (
                       <>
                         <th className="text-right p-2">Transmittals</th>
                         <th className="text-right p-2">Approvals</th>
@@ -1285,7 +1362,7 @@ export default function BulkImportPage() {
                     <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
                       <td className="p-2">{d.agent}</td>
                       <td className="p-2">{d.date}</td>
-                      {metricType === 'all_metrics' ? (
+                      {importMode !== 'single' ? (
                         <>
                           <td className="text-right p-2">{(d.transmittals ?? 0).toLocaleString()}</td>
                           <td className="text-right p-2">{(d.approvals ?? 0).toLocaleString()}</td>

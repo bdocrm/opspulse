@@ -14,6 +14,13 @@ async function main() {
       )
     ORDER BY column_name
   `);
+  const normalizedColumns = await prisma.$queryRawUnsafe(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_name = 'ProductionMetricRecord'
+    ORDER BY ordinal_position
+  `);
+  const normalizedRecordCount = await prisma.productionMetricRecord.count();
   const campaigns = await prisma.campaign.findMany({
     select: { campaignName: true },
     orderBy: { campaignName: 'asc' },
@@ -26,7 +33,7 @@ async function main() {
   for (const collector of collectors) {
     if (await bcrypt.compare('password123', collector.password)) testCollectors.push(`${collector.email} (${collector.campaign?.campaignName || 'unassigned'})`);
   }
-  console.log(JSON.stringify({ columns, campaigns: campaigns.map((row) => row.campaignName), bpiPlAgents, sampleAgent, testCollectors }, null, 2));
+  console.log(JSON.stringify({ columns, normalizedColumns, normalizedRecordCount, campaigns: campaigns.map((row) => row.campaignName), bpiPlAgents, sampleAgent, testCollectors }, null, 2));
 }
 
 main().finally(() => prisma.$disconnect());

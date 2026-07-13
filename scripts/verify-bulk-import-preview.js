@@ -44,7 +44,10 @@ async function main() {
   form.append('file', new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'BPI Dashboard 2026.xlsx');
   form.append('mode', 'preview');
   form.append('importMode', 'all');
-  form.append('metricType', 'all_metrics');
+  form.append('metricType', 'all');
+  form.append('reportPeriodType', 'monthly');
+  form.append('reportMonth', '7');
+  form.append('reportYear', '2026');
   form.append('campaignId', campaign.id);
   form.append('reportDate', '2026-12-31');
   const previewResponse = await fetch(`${baseUrl}/api/collectors/bulk-import`, { method: 'POST', headers: { cookie }, body: form });
@@ -55,6 +58,8 @@ async function main() {
     worksheets: preview.worksheetPreviews.map(({ matched, notFound, ...sheet }) => sheet),
     matched: preview.matched.length,
     notFound: preview.notFound.length,
+    normalizedPreviewRecords: preview.previewRecords?.length || 0,
+    normalizedMetricSample: (preview.previewRecords || []).slice(0, 6),
     sample: [...preview.matched, ...preview.notFound].slice(0, 3),
   }, null, 2));
 }
