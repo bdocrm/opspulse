@@ -458,6 +458,7 @@ export default function BulkImportPage() {
   const approvedNew = newAgents.filter(a => a.approved);
   const skippedNew = newAgents.filter(a => !a.approved);
   const selectedWorksheetCount = worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key)).length;
+  const selectedValidWorksheetCount = worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key) && sheet.validRows > 0).length;
 
   // Right-side metric block for an agent row. ACQ imports carry NTB/supplementary
   // and a seat category; everything else shows the transmittals/volume view.
@@ -1058,12 +1059,12 @@ export default function BulkImportPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <CardTitle className="text-lg">Workbook Summary</CardTitle>
                 <div className="flex gap-2">
-                  <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys(worksheetPreviews.filter((sheet) => sheet.validRows > 0).map((sheet) => sheet.key))}>Select All</Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys(worksheetPreviews.map((sheet) => sheet.key))}>Select All</Button>
                   <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys([])}>Clear All</Button>
                 </div>
               </div>
               <CardDescription>
-                {selectedWorksheetCount} worksheet(s) selected for import. Uncheck any worksheet you do not want to import.
+                {selectedWorksheetCount} worksheet(s) selected; {selectedValidWorksheetCount} contain valid records. Empty or unsupported sheets remain selectable for review but are safely skipped during import.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1096,16 +1097,15 @@ export default function BulkImportPage() {
 
               <div className="grid gap-3 lg:grid-cols-2">
                 {worksheetPreviews.map((sheet) => {
-                  const disabled = sheet.validRows === 0;
                   const checked = selectedWorksheetKeys.includes(sheet.key);
                   return (
-                    <label
+                    <div
                       key={sheet.key}
                       className={`rounded-lg border p-3 text-sm transition ${
-                        disabled
-                          ? 'bg-slate-50 opacity-70'
-                          : checked
-                            ? 'border-blue-300 bg-blue-50'
+                        checked
+                          ? 'border-blue-300 bg-blue-50'
+                          : sheet.validRows === 0
+                            ? 'bg-slate-50'
                             : 'bg-white hover:bg-slate-50'
                       }`}
                     >
@@ -1113,7 +1113,6 @@ export default function BulkImportPage() {
                         <input
                           type="checkbox"
                           checked={checked}
-                          disabled={disabled}
                           onChange={() => toggleWorksheet(sheet.key)}
                           className="mt-1 h-4 w-4 accent-blue-600"
                         />
@@ -1124,16 +1123,14 @@ export default function BulkImportPage() {
                             <span className="rounded-full bg-white px-2 py-0.5 text-xs text-slate-600">{sheet.format}</span>
                           </div>
                           {sheet.fileName && <p className="mt-1 truncate text-xs font-medium text-blue-700">{sheet.fileName}</p>}
-                          {sheet.campaignMapping === 'selected' && (
-                            <select
-                              value={worksheetCampaigns[sheet.key] || campaignId}
-                              onChange={(event) => setWorksheetCampaigns((current) => ({ ...current, [sheet.key]: event.target.value }))}
-                              onClick={(event) => event.preventDefault()}
-                              className="mt-2 w-full rounded-md border border-amber-300 bg-white px-2 py-1 text-xs"
-                            >
-                              {availableCampaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.campaignName}</option>)}
-                            </select>
-                          )}
+                          <select
+                            value={worksheetCampaigns[sheet.key] || sheet.campaignId || campaignId}
+                            onChange={(event) => setWorksheetCampaigns((current) => ({ ...current, [sheet.key]: event.target.value }))}
+                            className={`mt-2 w-full rounded-md border bg-white px-2 py-1 text-xs ${sheet.campaignMapping === 'selected' ? 'border-amber-300' : 'border-slate-300'}`}
+                            aria-label={`Campaign for ${sheet.sheetName}`}
+                          >
+                            {availableCampaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.campaignName}</option>)}
+                          </select>
                           <p className="mt-1 text-xs text-slate-500">
                             {sheet.campaignName} ({sheet.campaignMapping === 'sheet' ? 'matched from sheet' : 'selected campaign'}) · {metricLabel(sheet.metricType)} · {formatDate(sheet.reportDate)}
                           </p>
@@ -1147,7 +1144,7 @@ export default function BulkImportPage() {
                           ))}
                         </div>
                       </div>
-                    </label>
+                    </div>
                   );
                 })}
               </div>
@@ -1306,7 +1303,7 @@ export default function BulkImportPage() {
           </Button>
           <Button
             onClick={handleConfirmImport}
-            disabled={(matched.length === 0 && approvedNew.length === 0) || (worksheetPreviews.length > 0 && selectedWorksheetCount === 0)}
+            disabled={(matched.length === 0 && approvedNew.length === 0) || (worksheetPreviews.length > 0 && selectedValidWorksheetCount === 0)}
             className="flex-1 gap-2 bg-green-600 hover:bg-green-700"
           >
             <CheckCircle className="h-4 w-4" />
