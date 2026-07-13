@@ -148,6 +148,15 @@ interface WorkbookSummary {
   totalDuplicateRecords: number;
 }
 
+interface MonthImportSummary {
+  month: string;
+  label: string;
+  reportDate: string;
+  new: number;
+  existing: number;
+  invalid: number;
+}
+
 const METRIC_LABELS: Record<string, string> = {
   transmittals: 'Transmitted',
   approvals: 'Approvals',
@@ -246,6 +255,7 @@ export default function BulkImportPage() {
   const [previewFiles, setPreviewFiles] = useState<Array<{ file: File; index: number }>>([]);
   const [previewFilter, setPreviewFilter] = useState({ file: '', sheet: '', campaign: '', month: '', metric: '', status: '' });
   const [normalizedPreviewRecords, setNormalizedPreviewRecords] = useState<NormalizedPreviewRecord[]>([]);
+  const [monthSummaries, setMonthSummaries] = useState<MonthImportSummary[]>([]);
 
   const fetcher = (url: string) => fetch(url).then((res) => res.json());
   const { data: importHistoryData, mutate: mutateImportHistory } = useSWR<{ imports: ImportFileSummary[] }>(
@@ -402,6 +412,17 @@ export default function BulkImportPage() {
       setMatched(responses.flatMap(({ data, file: previewFile }) => (data.matched || []).map((row: any) => ({ ...row, fileName: previewFile.name }))));
       setNewAgents(responses.flatMap(({ data, file: previewFile }) => (data.notFound || []).map((row: any) => ({ ...row, fileName: previewFile.name }))).map((a: any) => ({ ...a, volume: a.volume ?? 0, approved: true })));
       setNormalizedPreviewRecords(responses.flatMap(({ data, file: previewFile }) => (data.previewRecords || []).map((row: NormalizedPreviewRecord) => ({ ...row, fileName: previewFile.name }))));
+      const combinedMonths = new Map<string, MonthImportSummary>();
+      for (const { data } of responses) {
+        for (const month of (data.monthSummary || []) as MonthImportSummary[]) {
+          const current = combinedMonths.get(month.month) || { ...month, new: 0, existing: 0, invalid: 0 };
+          current.new += month.new;
+          current.existing += month.existing;
+          current.invalid += month.invalid;
+          combinedMonths.set(month.month, current);
+        }
+      }
+      setMonthSummaries([...combinedMonths.values()].sort((a, b) => a.month.localeCompare(b.month)));
       const summaries = responses.map(({ data }) => data.workbookSummary).filter(Boolean);
       setWorkbookSummary(summaries.length ? {
         totalWorksheets: summaries.reduce((n, s) => n + s.totalWorksheets, 0),
@@ -493,14 +514,19 @@ export default function BulkImportPage() {
         if (!res.ok) throw new Error(`${activeFile.name}: ${data.error || 'Import failed'}`);
         results.push(data);
       }
+      const insertedTotal = results.reduce((n, r) => n + (r.inserted || 0), 0);
+      const skippedTotal = results.reduce((n, r) => n + (r.skipped || 0), 0);
+      const invalidTotal = results.reduce((n, r) => n + (r.invalid || 0), 0);
       setImportResult({
-        message: `Imported ${results.reduce((n, r) => n + (r.success || 0), 0)} records from ${results.length} file(s).`,
-        success: results.reduce((n, r) => n + (r.success || 0), 0),
+        message: `Inserted ${insertedTotal}, skipped ${skippedTotal}, and found ${invalidTotal} invalid record(s) across ${results.length} file(s).`,
+        success: insertedTotal,
         created: results.reduce((n, r) => n + (r.created || 0), 0),
-        inserted: results.reduce((n, r) => n + (r.inserted || 0), 0),
+        inserted: insertedTotal,
         updated: results.reduce((n, r) => n + (r.updated || 0), 0),
         normalizedImported: results.reduce((n, r) => n + (r.normalizedImported || 0), 0),
         normalizedDuplicates: results.reduce((n, r) => n + (r.normalizedDuplicates || 0), 0),
+        skipped: skippedTotal,
+        invalid: invalidTotal,
         errors: results.flatMap((r) => r.errors || []),
         details: results.flatMap((r) => r.details || []),
         importedFiles: previewFiles.map((item) => item.file.name),
@@ -524,6 +550,7 @@ export default function BulkImportPage() {
     setSelectedFileNames([]);
     setPreviewFiles([]);
     setNormalizedPreviewRecords([]);
+    setMonthSummaries([]);
     setMatched([]);
     setNewAgents([]);
     setWorksheetPreviews([]);
@@ -1128,6 +1155,29 @@ export default function BulkImportPage() {
           </Card>
         )}
 
+        {monthSummaries.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Detected Month Summary</CardTitle>
+              <CardDescription>
+                Automatically processing {monthSummaries[0].label} through {monthSummaries[monthSummaries.length - 1].label} in chronological order.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+                {monthSummaries.map((month) => (
+                  <div key={month.month} className="rounded-lg border bg-slate-50 p-3 text-sm">
+                    <p className="font-semibold text-slate-800">{month.label}</p>
+                    <p className="mt-1 text-green-700">{month.new.toLocaleString()} new</p>
+                    <p className="text-blue-700">{month.existing.toLocaleString()} existing</p>
+                    {month.invalid > 0 && <p className="text-red-700">{month.invalid.toLocaleString()} invalid</p>}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         <Card>
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1145,7 +1195,7 @@ export default function BulkImportPage() {
                 ['file', 'File', previewOptions('fileName')], ['sheet', 'Worksheet', previewOptions('sheet')],
                 ['campaign', 'Campaign', previewOptions('campaignName')],
                 ['month', 'Month', [...new Set(previewOptions('reportDate').map((value) => value.slice(0, 7)))]],
-                ['metric', 'Metric', previewOptions('metricType')], ['status', 'Status', ['Valid', 'Mapping Required']],
+                ['metric', 'Metric', previewOptions('metricType')], ['status', 'Status', [...new Set(previewRows.map((row) => row.previewStatus).filter(Boolean))].sort()],
               ].map(([key, label, values]) => (
                 <select key={key as string} value={previewFilter[key as keyof typeof previewFilter]} onChange={(event) => setPreviewFilter((current) => ({ ...current, [key as string]: event.target.value }))} className="rounded-md border px-2 py-2 text-xs">
                   <option value="">All {label as string}s</option>
@@ -1154,13 +1204,13 @@ export default function BulkImportPage() {
               ))}
             </div>
             <div className="max-h-96 overflow-auto rounded-lg border">
-              <table className="w-full min-w-[1100px] text-xs">
-                <thead className="sticky top-0 bg-slate-100 text-left"><tr>{['File', 'Worksheet', 'Campaign', 'Agent', 'Report Period', 'Report Date', 'Metric', 'Count', 'Volume', 'Goal', 'Actual', 'Achievement', 'Status', 'Validation Message'].map((label) => <th key={label} className="p-2 font-medium">{label}</th>)}</tr></thead>
+              <table className="w-full min-w-[1200px] text-xs">
+                <thead className="sticky top-0 bg-slate-100 text-left"><tr>{['File', 'Worksheet', 'Campaign', 'Agent', 'Detected Month', 'Report Period', 'Report Date', 'Metric', 'Count', 'Volume', 'Goal', 'Actual', 'Achievement', 'Status', 'Validation Message'].map((label) => <th key={label} className="p-2 font-medium">{label}</th>)}</tr></thead>
                 <tbody>{filteredPreviewRows.slice(0, 500).map((row, index) => (
                   <tr key={`${row.fileName}-${row.sheet}-${row.row}-${index}`} className="border-t">
-                    <td className="max-w-40 truncate p-2">{row.fileName}</td><td className="p-2">{row.sheet}</td><td className="p-2">{row.campaignName}</td><td className="p-2 font-medium">{'agentName' in row ? row.agentName : row.name}</td>
+                    <td className="max-w-40 truncate p-2">{row.fileName}</td><td className="p-2">{row.sheet}</td><td className="p-2">{row.campaignName}</td><td className="p-2 font-medium">{'agentName' in row ? row.agentName : row.name}</td><td className="p-2">{monthSummaries.find((month) => month.month === row.reportDate?.slice(0, 7))?.label || row.reportDate?.slice(0, 7) || '-'}</td>
                     <td className="p-2 capitalize">{row.reportPeriodType || reportPeriodType}</td><td className="p-2">{row.reportDate || '-'}</td><td className="p-2">{metricLabel(row.metricType || metricType)}</td><td className="p-2 text-right">{row.count == null ? '-' : row.count.toLocaleString()}</td><td className="p-2 text-right">{row.volume == null ? '-' : row.volume.toLocaleString()}</td><td className="p-2 text-right">{row.goal == null ? '-' : row.goal.toLocaleString()}</td><td className="p-2 text-right">{row.actual == null ? '-' : row.actual.toLocaleString()}</td><td className="p-2 text-right">{row.achievement == null ? '-' : `${(row.achievement * (row.achievement <= 2 ? 100 : 1)).toFixed(1)}%`}</td>
-                    <td className={`p-2 font-medium ${row.previewStatus === 'Valid' ? 'text-green-700' : 'text-amber-700'}`}>{row.previewStatus}</td><td className="p-2 text-slate-500">{row.validationMessage || '-'}</td>
+                    <td className={`p-2 font-medium ${row.previewStatus === 'Existing' ? 'text-blue-700' : 'text-green-700'}`}>{row.previewStatus}</td><td className="p-2 text-slate-500">{row.validationMessage || '-'}</td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -1299,7 +1349,15 @@ export default function BulkImportPage() {
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
               <p className="text-xl font-bold text-green-700">{importResult?.success ?? 0}</p>
-              <p className="text-xs text-green-600">Records Imported</p>
+              <p className="text-xs text-green-600">Records Inserted</p>
+            </div>
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-center">
+              <p className="text-xl font-bold text-blue-700">{importResult?.skipped ?? 0}</p>
+              <p className="text-xs text-blue-600">Existing Skipped</p>
+            </div>
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
+              <p className="text-xl font-bold text-red-700">{importResult?.invalid ?? 0}</p>
+              <p className="text-xs text-red-600">Invalid</p>
             </div>
             {importResult?.created > 0 && (
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-center">

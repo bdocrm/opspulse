@@ -181,7 +181,7 @@ model ProductionMetricRecord {
   sourceRow         Int?
   createdAt         DateTime        @default(now())
 
-  @@unique([campaignId, agentId, metricType, reportDate])
+  @@unique([campaignId, agentId, metricType, reportPeriodType, reportDate])
   @@index([productionEntryId])
   @@index([campaignId, reportYear, reportMonth])
   @@index([agentId])

@@ -462,23 +462,14 @@ function detectMetricFromText(text: string, fallback: string) {
   return fallback;
 }
 
-function parseReportDateFromRows(rows: any[][], fallback: Date): Date {
+function parseReportDateFromRows(rows: any[][], fallback: Date, context = ''): Date {
   const min = new Date(2020, 0, 1).getTime();
   const max = new Date(2035, 11, 31).getTime();
+  const contextualDate = parseDetectedDate(context, fallback);
+  if (contextualDate && contextualDate.getTime() >= min && contextualDate.getTime() <= max) return contextualDate;
   for (const row of rows.slice(0, 20)) {
     for (const cell of row || []) {
-      let candidate: Date | null = null;
-      if (cell instanceof Date) candidate = cell;
-      else if (typeof cell === 'number' && cell > 30000 && cell < 60000) {
-        const parsed = XLSX.SSF.parse_date_code(cell);
-        if (parsed) candidate = new Date(parsed.y, parsed.m - 1, parsed.d);
-      } else if (typeof cell === 'string') {
-        const match = cell.match(/\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|20\d{2}[/-]\d{1,2}[/-]\d{1,2})\b/);
-        if (match) {
-          const parsed = new Date(match[1]);
-          if (!Number.isNaN(parsed.getTime())) candidate = parsed;
-        }
-      }
+      const candidate = parseDetectedDate(cell, fallback);
       if (candidate && candidate.getTime() >= min && candidate.getTime() <= max) {
         return new Date(candidate.getFullYear(), candidate.getMonth(), candidate.getDate());
       }
@@ -518,6 +509,26 @@ const MONTH_INDEX = new Map([
   ['sep', 8], ['sept', 8], ['oct', 9], ['nov', 10], ['dec', 11],
 ]);
 
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+function monthIndexFromText(value: any): number | undefined {
+  const text = normalizeHeader(value);
+  if (!text) return undefined;
+  for (const token of text.split(/\s+/)) {
+    const month = MONTH_INDEX.get(token);
+    if (month !== undefined) return month;
+  }
+  return undefined;
+}
+
+function yearFromText(value: any): number | undefined {
+  const match = cellText(value).match(/\b(20\d{2})\b/);
+  return match ? Number(match[1]) : undefined;
+}
+
 function parseCellDate(value: any): Date | undefined {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
   if (typeof value === 'number' && value > 30000 && value < 60000) {
@@ -531,15 +542,54 @@ function parseCellDate(value: any): Date | undefined {
   return undefined;
 }
 
+function parseDetectedDate(value: any, fallback: Date): Date | undefined {
+  if (value == null || value === '') return undefined;
+  const month = monthIndexFromText(value);
+  if (month !== undefined) return new Date(yearFromText(value) || fallback.getFullYear(), month, 1);
+  const parsed = parseCellDate(value);
+  return parsed ? new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()) : undefined;
+}
+
+function findDateHeader(rows: any[][], maxRows = 30): { row: number; col: number } | null {
+  const aliases = new Set(['date', 'report date', 'reporting date', 'month', 'report month', 'reporting month', 'period', 'reporting period']);
+  for (let r = 0; r < Math.min(rows.length, maxRows); r++) {
+    for (let c = 0; c < (rows[r] || []).length; c++) {
+      if (aliases.has(normalizeHeader(rows[r][c]))) return { row: r, col: c };
+    }
+  }
+  return null;
+}
+
+function detectedSectionDate(row: any[], fallback: Date): Date | undefined {
+  const populated = (row || []).filter((cell) => cell != null && cellText(cell) !== '');
+  if (!populated.length || populated.length > 3) return undefined;
+  const combined = populated.map(cellText).join(' ');
+  return monthIndexFromText(combined) !== undefined ? parseDetectedDate(combined, fallback) : undefined;
+}
+
+function detectDatesByRow(rows: any[][], fallback: Date, dateCol?: number) {
+  const dates = new Map<number, Date>();
+  let activeDate = fallback;
+  for (let r = 0; r < rows.length; r++) {
+    const sectionDate = detectedSectionDate(rows[r] || [], activeDate);
+    if (sectionDate) {
+      activeDate = sectionDate;
+      continue;
+    }
+    dates.set(r + 1, dateCol === undefined ? activeDate : parseDetectedDate(rows[r]?.[dateCol], activeDate) || activeDate);
+  }
+  return dates;
+}
+
 // Dashboard workbooks use merged month/metric headers. Build a logical header
 // for every column by carrying the last month and parent metric to child columns.
 function parseMonthlyAgentRows(rows: any[][], sheetName: string, campaignName: string, fallbackDate: Date) {
-  const monthHits: Array<{ row: number; col: number; month: number }> = [];
+  const monthHits: Array<{ row: number; col: number; month: number; year?: number }> = [];
   for (let r = 0; r < Math.min(rows.length, 20); r++) {
     for (let c = 0; c < (rows[r] || []).length; c++) {
-      const value = normalizeHeader(rows[r][c]);
-      const month = MONTH_INDEX.get(value);
-      if (month !== undefined) monthHits.push({ row: r, col: c, month });
+      const value = rows[r][c];
+      const month = monthIndexFromText(value);
+      if (month !== undefined) monthHits.push({ row: r, col: c, month, year: yearFromText(value) });
     }
   }
   if (!monthHits.length) return null;
@@ -560,8 +610,10 @@ function parseMonthlyAgentRows(rows: any[][], sheetName: string, campaignName: s
   }
   if (dataStartRow < 0) return null;
   const lastHeaderRow = dataStartRow - 1;
+  const headerMonthHits = monthHits.filter((hit) => hit.row <= lastHeaderRow);
+  if (!headerMonthHits.length) return null;
   const maxCols = Math.max(0, ...rows.slice(0, lastHeaderRow + 1).map((row) => row.length));
-  const sortedMonths = monthHits.sort((a, b) => a.col - b.col || a.row - b.row);
+  const sortedMonths = headerMonthHits.sort((a, b) => a.col - b.col || a.row - b.row);
   const columns: Array<{ col: number; month: number; metric?: string; field: string }> = [];
   let currentMetric = '';
   for (let c = 0; c < maxCols; c++) {
@@ -593,7 +645,7 @@ function parseMonthlyAgentRows(rows: any[][], sheetName: string, campaignName: s
     const row = rows[r] || [];
     const name = cellText(row[nameCol]);
     if (!name || isFooterOrBlankName(name) || /rank|average/i.test(name)) continue;
-    for (const month of [...new Set(columns.map((column) => column.month))]) {
+    for (const month of [...new Set(columns.map((column) => column.month))].sort((a, b) => a - b)) {
       const values = columns.filter((column) => column.month === month);
       const hasMetric = (metric: string) => values.some((item) => item.metric === metric);
       const get = (field: string, metric?: string) => {
@@ -614,7 +666,7 @@ function parseMonthlyAgentRows(rows: any[][], sheetName: string, campaignName: s
       if (![txCount, approvalCount, bookedCount, activationCount, txVolume, approvalVolume, bookedVolume, actual, get('goal').value].some((value) => value !== 0)) continue;
       entries.push({
         name, rowIdx: r + 1, sourceSheet: sheetName, campaignName,
-        reportDate: new Date(year, month + 1, 0), metricType: 'all_metrics',
+        reportDate: new Date([...sortedMonths].reverse().find((hit) => hit.month === month)?.year || year, month, 1), metricType: 'all_metrics',
         count: Math.floor(txCount), volume: Math.round(actual || txVolume || approvalVolume || bookedVolume),
         transmittals: hasMetric('transmittals') ? Math.floor(txCount) : undefined,
         approvals: hasMetric('approvals') ? Math.floor(approvalCount) : undefined,
@@ -665,6 +717,7 @@ function parseDetectedRows(rows: any[][], metricType: string, campaignName: stri
   const achievementHit = findHeaderAlias(rows, ['achievement', 'attainment']);
   const ntbHit = findHeaderAlias(rows, ['ntb']);
   const suppHit = findHeaderAlias(rows, ['supplementary', 'supplemental']);
+  const dateHit = findDateHeader(rows);
   const agentCodeHit = findHeaderAlias(rows, ['agent code']);
   const seatHit = findHeaderAlias(rows, ['seat category', 'seat cat']);
 
@@ -677,23 +730,30 @@ function parseDetectedRows(rows: any[][], metricType: string, campaignName: stri
   }
 
   if (isAcq || (lastHit && firstHit && (ntbHit || suppHit))) {
+    const datesByRow = detectDatesByRow(rows, reportDate, dateHit?.col);
     const parsed = parseExcelRows(rows, 'acq', campaignName);
     const entries = parsed
       .filter((entry) => !isFooterOrBlankName(entry.name))
-      .map((entry) => ({ ...entry, metricType: 'acq', sourceSheet: sheetName, campaignName, reportDate }));
+      .map((entry) => ({ ...entry, metricType: 'acq', sourceSheet: sheetName, campaignName, reportDate: datesByRow.get(entry.rowIdx) || reportDate }));
     return { format: 'ACQ', entries, invalidRows: Math.max(0, parsed.length - entries.length), warnings, errors };
   }
 
-  const headerRow = Math.max(nameHit?.row ?? 0, countHit?.row ?? 0, transmittedHit?.row ?? 0, approvalsHit?.row ?? 0, bookedHit?.row ?? 0, activationsHit?.row ?? 0, goalHit?.row ?? 0, actualHit?.row ?? 0, achievementHit?.row ?? 0, ntbHit?.row ?? 0, suppHit?.row ?? 0, volumeHit?.row ?? 0);
+  const headerRow = Math.max(nameHit?.row ?? 0, countHit?.row ?? 0, transmittedHit?.row ?? 0, approvalsHit?.row ?? 0, bookedHit?.row ?? 0, activationsHit?.row ?? 0, goalHit?.row ?? 0, actualHit?.row ?? 0, achievementHit?.row ?? 0, ntbHit?.row ?? 0, suppHit?.row ?? 0, volumeHit?.row ?? 0, dateHit?.row ?? 0);
   const nameCol = nameHit?.col ?? 1;
   const metric = isAllMetrics ? 'all_metrics' : detectMetricFromText(`${sheetName} ${(rows[headerRow] || []).join(' ')}`, metricType);
   const entries: ParsedEntry[] = [];
   let invalidRows = 0;
   const seenHeaderRows = new Set<string>();
+  let activeSectionDate = reportDate;
 
   for (let i = headerRow + 1; i < rows.length; i++) {
     const row = rows[i] || [];
     if (!rowHasAnyValue(row)) continue;
+    const sectionDate = detectedSectionDate(row, activeSectionDate);
+    if (sectionDate) {
+      activeSectionDate = sectionDate;
+      continue;
+    }
     const normalizedRow = row.map(normalizeHeader).join('|');
     if (seenHeaderRows.has(normalizedRow) || normalizedRow.includes('full name') || normalizedRow.includes('agent name')) {
       seenHeaderRows.add(normalizedRow);
@@ -727,6 +787,7 @@ function parseDetectedRows(rows: any[][], metricType: string, campaignName: stri
       continue;
     }
 
+    const detectedRowDate = dateHit ? parseDetectedDate(row[dateHit.col], activeSectionDate) : undefined;
     entries.push({
       name: rawName,
       count: Math.floor(metric === 'approvals' ? approvals.value || count.value : metric === 'booked' ? booked.value || count.value : transmittals.value || count.value),
@@ -746,7 +807,7 @@ function parseDetectedRows(rows: any[][], metricType: string, campaignName: stri
       metricType: metric,
       sourceSheet: sheetName,
       campaignName,
-      reportDate,
+      reportDate: detectedRowDate || activeSectionDate,
       rowIdx: i + 1,
     });
   }
@@ -944,6 +1005,50 @@ function classifyEntries(entries: ParsedEntry[], agentsByCampaign: Map<string, {
   return { matched, notFound };
 }
 
+function normalizedMetricKey(campaignId: string, agentId: string, metricType: string, reportDate: Date, reportPeriodType: ReportPeriodType) {
+  return `${campaignId}|${agentId}|${metricType}|${reportPeriodType}|${ymd(reportDate)}`;
+}
+
+function legacyMetricTypes(detail: any): string[] {
+  const importedType = detail.productionEntry?.importMetricType;
+  if (importedType && !['all', 'all_metrics', 'acq'].includes(importedType)) return [importedType];
+  if (importedType === 'acq') return ['ntb', 'supplementary'];
+  if (importedType === 'all' || importedType === 'all_metrics') {
+    return ['transmittals', 'approvals', 'booked', 'activations', ...(detail.monthlyGoal != null ? ['goal'] : []), ...(detail.monthlyActual != null ? ['actual'] : []), ...(detail.monthlyAchievement != null ? ['achievement'] : [])];
+  }
+  const inferred: string[] = [];
+  if (Number(detail.transmittals) !== 0) inferred.push('transmittals');
+  if (Number(detail.approvals) !== 0) inferred.push('approvals');
+  if (Number(detail.booked) !== 0) inferred.push('booked');
+  if (Number(detail.activations) !== 0) inferred.push('activations');
+  if (Number(detail.ntb) !== 0) inferred.push('ntb');
+  if (Number(detail.supplementary) !== 0) inferred.push('supplementary');
+  if (detail.monthlyGoal != null) inferred.push('goal');
+  if (detail.monthlyActual != null) inferred.push('actual');
+  if (detail.monthlyAchievement != null) inferred.push('achievement');
+  return inferred;
+}
+
+function monthSummaryFromRecords(records: any[], sheets: SheetPreview[]) {
+  const summary = new Map<string, { month: string; label: string; reportDate: string; new: number; existing: number; invalid: number }>();
+  const get = (date: string) => {
+    const month = date.slice(0, 7);
+    const [year, monthNumber] = month.split('-').map(Number);
+    const current = summary.get(month) || { month, label: `${MONTH_NAMES[monthNumber - 1]} ${year}`, reportDate: `${month}-01`, new: 0, existing: 0, invalid: 0 };
+    summary.set(month, current);
+    return current;
+  };
+  for (const record of records) {
+    const item = get(record.reportDate);
+    if (record.status === 'Existing') item.existing++;
+    else item.new++;
+  }
+  for (const sheet of sheets) {
+    if (sheet.invalidRows > 0) get(sheet.reportDate).invalid += sheet.invalidRows;
+  }
+  return [...summary.values()].sort((a, b) => a.month.localeCompare(b.month));
+}
+
 async function buildWorkbookPreview({
   workbook,
   selectedCampaign,
@@ -981,7 +1086,7 @@ async function buildWorkbookPreview({
     const sheet = workbook.Sheets[sheetName];
     const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null } as any);
     const mapping = mapSheetCampaign(sheetName, selectedCampaign, assignedCampaigns);
-    const reportDate = parseReportDateFromRows(rows, selectedReportDate);
+    const reportDate = parseReportDateFromRows(rows, selectedReportDate, sheetName);
     const detectedMetric = detectMetricFromText(`${sheetName} ${rows.slice(0, 5).flat().join(' ')}`, metricType);
     const parsed = parseDetectedRows(rows, detectedMetric, mapping.campaign.campaignName, sheetName, reportDate);
     const entries: ParsedEntry[] = [];
@@ -992,10 +1097,10 @@ async function buildWorkbookPreview({
     for (const entry of parsed.entries) {
       const effectiveMetric = entry.metricType || detectedMetric;
       const entryDate = entry.reportDate || reportDate;
-      const key = [mapping.campaign.id, normalizeAgentName(entry.name), ymd(entryDate), effectiveMetric, sheetName].join('|');
+      const key = [mapping.campaign.id, normalizeAgentName(entry.name), ymd(normalizePeriodDate(entryDate, reportPeriodType)), effectiveMetric].join('|');
       if (sheetSeen.has(key) || allSeen.has(key)) {
         duplicateRows++;
-        warnings.push(`Row ${entry.rowIdx}: duplicate ${sheetSeen.has(key) ? 'within this sheet' : 'already found in another sheet'}; it will be merged or updated.`);
+        warnings.push(`Row ${entry.rowIdx}: duplicate ${sheetSeen.has(key) ? 'within this sheet' : 'already found in another sheet'}; it will be skipped.`);
         continue;
       }
       sheetSeen.add(key);
@@ -1009,6 +1114,7 @@ async function buildWorkbookPreview({
       });
     }
 
+    entries.sort((a, b) => (a.reportDate?.getTime() || 0) - (b.reportDate?.getTime() || 0) || a.rowIdx - b.rowIdx);
     const { matched, notFound } = classifyEntries(entries, agentsByCampaign);
     const errors = [...parsed.errors];
     if (hiddenByName.get(sheetName) && entries.length === 0) warnings.push('Hidden sheet skipped because no valid production data was found.');
@@ -1025,7 +1131,7 @@ async function buildWorkbookPreview({
       campaignMapping: mapping.source,
       metricType: detectedMetric,
       metricSource: detectedMetric === metricType ? 'selected' : 'sheet',
-      reportDate: ymd(reportDate),
+      reportDate: ymd(entries[0]?.reportDate || reportDate),
       totalRows: rows.filter(rowHasAnyValue).length,
       validRows: entries.length,
       invalidRows: parsed.invalidRows,
@@ -1039,10 +1145,41 @@ async function buildWorkbookPreview({
   });
 
   const accepted = sheets.filter((sheet) => sheet.validRows > 0);
+  const candidateDates = sheets.flatMap((sheet) => sheet.entries.map((entry) => normalizePeriodDate(entry.reportDate || selectedReportDate, reportPeriodType)));
+  const matchedAgentIds = campaignAgents.map((agent) => agent.id);
+  const campaignIdSet = [...new Set(sheets.map((sheet) => sheet.campaignId))];
+  const minDate = candidateDates.length ? new Date(Math.min(...candidateDates.map((date) => date.getTime()))) : selectedReportDate;
+  const maxDate = candidateDates.length ? new Date(Math.max(...candidateDates.map((date) => date.getTime()))) : selectedReportDate;
+  const [existingMetrics, legacyDetails] = matchedAgentIds.length && candidateDates.length ? await Promise.all([
+    prisma.productionMetricRecord.findMany({
+      where: { campaignId: { in: campaignIdSet }, agentId: { in: matchedAgentIds }, reportPeriodType, reportDate: { gte: minDate, lte: maxDate } },
+      select: { campaignId: true, agentId: true, metricType: true, reportDate: true },
+    }),
+    prisma.productionDetail.findMany({
+      where: { campaignId: { in: campaignIdSet }, agentId: { in: matchedAgentIds }, productionEntry: { date: { gte: new Date(minDate.getFullYear(), minDate.getMonth(), 1), lte: new Date(maxDate.getFullYear(), maxDate.getMonth() + 1, 0) } } },
+      select: {
+        campaignId: true, agentId: true, transmittals: true, approvals: true, booked: true, activations: true, ntb: true, supplementary: true,
+        monthlyGoal: true, monthlyActual: true, monthlyAchievement: true,
+        productionEntry: { select: { date: true, reportPeriodType: true, importMetricType: true } },
+      },
+    }),
+  ]) : [[], []];
+  const existingKeys = new Set(existingMetrics.map((record) => normalizedMetricKey(record.campaignId, record.agentId, record.metricType, record.reportDate, reportPeriodType)));
+  for (const detail of legacyDetails) {
+    if (detail.productionEntry.reportPeriodType !== reportPeriodType) continue;
+    const normalizedDate = normalizePeriodDate(detail.productionEntry.date, reportPeriodType);
+    for (const type of legacyMetricTypes(detail)) existingKeys.add(normalizedMetricKey(detail.campaignId, detail.agentId, type, normalizedDate, reportPeriodType));
+  }
+
+  const previewSeen = new Set<string>();
   const previewRecords = sheets.flatMap((sheet) => sheet.entries.flatMap((entry) => {
     const agent = (agentsByCampaign.get(entry.campaignId || '') || []).find((candidate) => agentNameMatches(candidate.name, entry.name));
     const normalizedDate = normalizePeriodDate(entry.reportDate || selectedReportDate, reportPeriodType);
-    return expandEntryMetrics(entry).map((metric) => ({
+    return expandEntryMetrics(entry).flatMap((metric) => {
+      const key = normalizedMetricKey(entry.campaignId || sheet.campaignId, agent?.id || normalizeAgentName(entry.name), metric.metricType, normalizedDate, reportPeriodType);
+      if (previewSeen.has(key)) return [];
+      previewSeen.add(key);
+      return [{
       sheet: entry.sourceSheet || sheet.sheetName,
       campaignName: entry.campaignName || sheet.campaignName,
       agent: agent?.name || entry.name,
@@ -1054,11 +1191,13 @@ async function buildWorkbookPreview({
       goal: metric.goal ?? null,
       actual: metric.actual ?? null,
       achievement: metric.achievement ?? null,
-      status: agent ? 'Valid' : 'Mapping Required',
+      status: agent && existingKeys.has(key) ? 'Existing' : 'New',
       validationMessage: agent ? '' : 'Agent not found; approve creation before import.',
       row: entry.rowIdx,
-    }));
-  }));
+      }];
+    });
+  })).sort((a, b) => a.reportDate.localeCompare(b.reportDate) || a.campaignName.localeCompare(b.campaignName) || a.agent.localeCompare(b.agent));
+  const monthSummary = monthSummaryFromRecords(previewRecords, sheets);
   return {
     workbookSummary: {
       totalWorksheets: sheets.length,
@@ -1072,6 +1211,8 @@ async function buildWorkbookPreview({
     matched: sheets.flatMap((sheet) => sheet.matched),
     notFound: sheets.flatMap((sheet) => sheet.notFound),
     previewRecords,
+    monthSummary,
+    detectedRange: monthSummary.length ? { earliestMonth: monthSummary[0].month, latestMonth: monthSummary[monthSummary.length - 1].month } : null,
   };
 }
 
@@ -1345,6 +1486,8 @@ export async function POST(req: NextRequest) {
           reportMonth: reportDate.getMonth() + 1,
           reportYear: reportDate.getFullYear(),
           previewRecords: preview.previewRecords,
+          monthSummary: preview.monthSummary,
+          detectedRange: preview.detectedRange,
           workbookSummary: preview.workbookSummary,
           worksheetPreviews: preview.sheets.map(({ entries, ...sheet }) => sheet),
         });
@@ -1366,7 +1509,7 @@ export async function POST(req: NextRequest) {
         return sheet.entries.map((entry) => mappedCampaign
           ? { ...entry, campaignId: mappedCampaign.id, campaignName: mappedCampaign.campaignName }
           : entry);
-      });
+      }).sort((a, b) => (a.reportDate?.getTime() || 0) - (b.reportDate?.getTime() || 0) || a.rowIdx - b.rowIdx);
 
       if (entries.length === 0) {
         return NextResponse.json({ error: 'No selected worksheets contain valid rows to import.' }, { status: 400 });
@@ -1381,6 +1524,7 @@ export async function POST(req: NextRequest) {
       const findImportAgent = (name: string, targetCampaignId: string) =>
         importAgents.find((agent) => agent.campaignId === targetCampaignId && agentNameMatches(agent.name, name)) || null;
       const createdAgents: Record<string, string> = {};
+      let createdAgentCount = 0;
       for (const name of confirmedNewAgents) {
         const row = entries.find((entry) => entry.name === name);
         const targetCampaignId = row?.campaignId || effectiveCampaignId;
@@ -1401,20 +1545,57 @@ export async function POST(req: NextRequest) {
           },
         });
         createdAgents[name] = newAgent.id;
+        createdAgentCount++;
         importAgents.push({ id: newAgent.id, name: newAgent.name, campaignId: targetCampaignId });
       }
 
       const results = {
         success: 0,
-        created: confirmedNewAgents.length,
+        created: createdAgentCount,
         errors: [] as string[],
         details: [] as any[],
       };
       const entryByCampaignDate = new Map<string, string>();
       const sheetNames = selectedSheets.map((sheet) => sheet.sheetName);
-      let updatedRecords = 0;
-      let insertedRecords = 0;
+      const createdEntryIds = new Set<string>();
+      let enrichedRecords = 0;
+      let skippedRecords = 0;
+      let insertedLegacyDetails = 0;
       const normalizedRecords: any[] = [];
+      const normalizedDates = entries.map((row) => normalizePeriodDate(row.reportDate || reportDate, reportPeriodType));
+      const earliestDate = new Date(Math.min(...normalizedDates.map((date) => date.getTime())));
+      const latestDate = new Date(Math.max(...normalizedDates.map((date) => date.getTime())));
+      const importAgentIds = importAgents.map((agent) => agent.id);
+      const [storedMetrics, storedDetails] = await Promise.all([
+        tx.productionMetricRecord.findMany({
+          where: { campaignId: { in: targetCampaignIds }, agentId: { in: importAgentIds }, reportPeriodType, reportDate: { gte: earliestDate, lte: latestDate } },
+          select: { id: true, productionEntryId: true, campaignId: true, agentId: true, metricType: true, reportDate: true, count: true, volume: true, goal: true, actual: true, achievement: true },
+        }),
+        tx.productionDetail.findMany({
+          where: {
+            campaignId: { in: targetCampaignIds }, agentId: { in: importAgentIds },
+            productionEntry: { date: { gte: new Date(earliestDate.getFullYear(), earliestDate.getMonth(), 1), lte: new Date(latestDate.getFullYear(), latestDate.getMonth() + 1, 0) } },
+          },
+          select: {
+            id: true, productionEntryId: true, campaignId: true, agentId: true,
+            transmittals: true, approvals: true, booked: true, activations: true, ntb: true, supplementary: true,
+            monthlyGoal: true, monthlyActual: true, monthlyAchievement: true,
+            productionEntry: { select: { date: true, reportPeriodType: true, importMetricType: true } },
+          },
+        }),
+      ]);
+      const storedMetricByKey = new Map<string, any>(storedMetrics.map((record) => [normalizedMetricKey(record.campaignId, record.agentId, record.metricType, record.reportDate, reportPeriodType), record]));
+      const storedDetailByKey = new Map<string, any>();
+      for (const detail of storedDetails) {
+        if (detail.productionEntry.reportPeriodType !== reportPeriodType) continue;
+        const normalizedDate = normalizePeriodDate(detail.productionEntry.date, reportPeriodType);
+        const detailKey = `${detail.campaignId}|${detail.agentId}|${ymd(normalizedDate)}`;
+        if (!storedDetailByKey.has(detailKey)) storedDetailByKey.set(detailKey, detail);
+        for (const type of legacyMetricTypes(detail)) {
+          const key = normalizedMetricKey(detail.campaignId, detail.agentId, type, normalizedDate, reportPeriodType);
+          if (!storedMetricByKey.has(key)) storedMetricByKey.set(key, { productionEntryId: detail.productionEntryId, legacy: true });
+        }
+      }
 
       for (const row of entries) {
         try {
@@ -1424,62 +1605,66 @@ export async function POST(req: NextRequest) {
             results.errors.push(`${row.sourceSheet} row ${row.rowIdx}: Agent not found and not confirmed for creation ("${row.name}")`);
             continue;
           }
-
-          const existingDetail = await tx.productionDetail.findFirst({
-            where: {
-              campaignId: row.campaignId,
-              agentId: agent.id,
-              sourceSheet: row.sourceSheet || null,
-              productionEntry: { date: row.reportDate || reportDate },
-            },
-            select: { id: true, productionEntryId: true },
-          });
-
-          let savedEntryId: string;
-          if (existingDetail) {
-            await tx.productionDetail.update({
-              where: { id: existingDetail.id },
-              data: buildDetailDataForWrite(row, row.metricType || metricType, true),
-            });
-            entryByCampaignDate.set(`${row.campaignId}|${ymd(row.reportDate || reportDate)}`, existingDetail.productionEntryId);
-            savedEntryId = existingDetail.productionEntryId;
-            updatedRecords++;
-          } else {
-            const entryKey = `${row.campaignId}|${ymd(row.reportDate || reportDate)}`;
-            let entryId = entryByCampaignDate.get(entryKey);
-            if (!entryId) {
-              const entry = await tx.productionEntry.create({
-                data: {
-                  campaignId: row.campaignId || effectiveCampaignId,
-                  date: row.reportDate || reportDate,
-                  time: new Date().toLocaleTimeString(),
-                  createdBy: user.id,
-                  reportPeriodType,
-                  periodStart,
-                  periodEnd,
-                },
-              });
-              await saveImportMetadata(entry.id, file.name, row.metricType || metricType, sheetNames, undefined, tx);
-              entryId = entry.id;
-              entryByCampaignDate.set(entryKey, entryId);
+          const normalizedDate = normalizePeriodDate(row.reportDate || reportDate, reportPeriodType);
+          const metrics = expandEntryMetrics(row);
+          const existingForRow = metrics.map((metric) => storedMetricByKey.get(normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType))).filter(Boolean);
+          let rowChanged = false;
+          for (const metric of metrics) {
+            const key = normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType);
+            const existing = storedMetricByKey.get(key);
+            if (!existing) continue;
+            const enrichment: Record<string, any> = {};
+            if (existing.id) {
+              if (existing.count == null && metric.count != null) enrichment.count = BigInt(Math.round(metric.count));
+              if (existing.volume == null && metric.volume != null) enrichment.volume = BigInt(Math.round(metric.volume));
+              if (existing.goal == null && metric.goal != null) enrichment.goal = metric.goal;
+              if (existing.actual == null && metric.actual != null) enrichment.actual = metric.actual;
+              if (existing.achievement == null && metric.achievement != null) enrichment.achievement = metric.achievement;
             }
-            await tx.productionDetail.create({
-              data: {
-                productionEntryId: entryId,
-                agentId: agent.id,
-                campaignId: row.campaignId || effectiveCampaignId,
-                ...buildDetailDataForWrite(row, row.metricType || metricType, false),
-              },
-            });
-            savedEntryId = entryId;
-            insertedRecords++;
+            if (Object.keys(enrichment).length) {
+              await tx.productionMetricRecord.update({ where: { id: existing.id }, data: enrichment });
+              Object.assign(existing, enrichment);
+              enrichedRecords++;
+              rowChanged = true;
+            } else {
+              skippedRecords++;
+            }
           }
 
-          const normalizedDate = normalizePeriodDate(row.reportDate || reportDate, reportPeriodType);
-          for (const metric of expandEntryMetrics(row)) {
+          const missingMetrics = metrics.filter((metric) => !storedMetricByKey.has(normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType)));
+          let savedEntryId = existingForRow.find((record) => record.productionEntryId)?.productionEntryId as string | undefined;
+          const detailKey = `${targetCampaignId}|${agent.id}|${ymd(normalizedDate)}`;
+          const existingDetail = storedDetailByKey.get(detailKey);
+          if (!savedEntryId) savedEntryId = existingDetail?.productionEntryId;
+          const entryKey = `${targetCampaignId}|${ymd(normalizedDate)}`;
+          if (!savedEntryId) savedEntryId = entryByCampaignDate.get(entryKey);
+          if (missingMetrics.length && !savedEntryId) {
+            const entryPeriodStart = reportPeriodType === 'daily' ? periodStart : normalizedDate;
+            const entryPeriodEnd = reportPeriodType === 'monthly' ? new Date(normalizedDate.getFullYear(), normalizedDate.getMonth() + 1, 0)
+              : reportPeriodType === 'yearly' ? new Date(normalizedDate.getFullYear(), 11, 31) : periodEnd;
+            const entry = await tx.productionEntry.create({
+              data: {
+                campaignId: targetCampaignId, date: normalizedDate, time: new Date().toLocaleTimeString(), createdBy: user.id,
+                reportPeriodType, periodStart: entryPeriodStart, periodEnd: entryPeriodEnd,
+              },
+            });
+            savedEntryId = entry.id;
+            createdEntryIds.add(entry.id);
+            entryByCampaignDate.set(entryKey, entry.id);
+          }
+          if (missingMetrics.length && !existingDetail && existingForRow.length === 0 && savedEntryId) {
+            const detail = await tx.productionDetail.create({
+              data: { productionEntryId: savedEntryId, agentId: agent.id, campaignId: targetCampaignId, ...buildDetailDataForWrite(row, row.metricType || metricType, false) },
+              select: { id: true, productionEntryId: true },
+            });
+            storedDetailByKey.set(detailKey, detail);
+            insertedLegacyDetails++;
+          }
+          for (const metric of missingMetrics) {
+            const key = normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType);
             normalizedRecords.push({
-              productionEntryId: savedEntryId,
-              campaignId: row.campaignId || effectiveCampaignId,
+              productionEntryId: savedEntryId!,
+              campaignId: targetCampaignId,
               agentId: agent.id,
               reportPeriodType,
               reportDate: normalizedDate,
@@ -1495,10 +1680,14 @@ export async function POST(req: NextRequest) {
               sourceSheet: row.sourceSheet || '',
               sourceRow: row.rowIdx,
             });
+            storedMetricByKey.set(key, { productionEntryId: savedEntryId, pending: true });
+            rowChanged = true;
           }
 
-          results.success++;
-          results.details.push(detailResponse(row, agent.name, row.metricType || metricType));
+          if (rowChanged) {
+            results.success++;
+            results.details.push(detailResponse({ ...row, reportDate: normalizedDate }, agent.name, row.metricType || metricType));
+          }
         } catch (rowError) {
           throw new Error(`${row.sourceSheet} row ${row.rowIdx}: Database write failed.`, { cause: rowError });
         }
@@ -1507,6 +1696,7 @@ export async function POST(req: NextRequest) {
       const normalizedInsert = normalizedRecords.length
         ? await tx.productionMetricRecord.createMany({ data: normalizedRecords, skipDuplicates: true })
         : { count: 0 };
+      skippedRecords += normalizedRecords.length - normalizedInsert.count;
 
       const auditLog = {
         fileName: file.name,
@@ -1517,32 +1707,31 @@ export async function POST(req: NextRequest) {
         selectedReportDate: ymd(reportDate),
         workbookSheetNames: workbook.SheetNames,
         perSheetResult: selectedSheets.map(({ entries: _entries, matched: _matched, notFound: _notFound, ...sheet }) => sheet),
-        insertedRecords,
-        updatedRecords,
+        insertedRecords: normalizedInsert.count,
+        enrichedRecords,
+        insertedLegacyDetails,
         normalizedRecords: normalizedInsert.count,
-        skippedRecords: preview.workbookSummary.totalDuplicateRecords,
+        skippedRecords: skippedRecords + preview.workbookSummary.totalDuplicateRecords,
         invalidRecords: preview.workbookSummary.totalInvalidRecords,
         errorSummary: results.errors.slice(0, 50),
       };
-      for (const entryId of entryByCampaignDate.values()) {
+      for (const entryId of createdEntryIds) {
         await saveImportMetadata(entryId, file.name, metricType, sheetNames, auditLog, tx);
       }
 
-      results.details.sort((a, b) => {
-        if (b.volume !== a.volume) return b.volume - a.volume;
-        const aMetric = a.transmittals ?? a.approvals ?? a.booked ?? a.ntb ?? a.count ?? 0;
-        const bMetric = b.transmittals ?? b.approvals ?? b.booked ?? b.ntb ?? b.count ?? 0;
-        return bMetric - aMetric;
-      });
+      results.details.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.agent.localeCompare(b.agent));
 
       return {
-        message: `Imported ${results.success} records from ${selectedSheets.length} worksheet(s). ${results.created} new agent(s) created.`,
+        message: `Inserted ${normalizedInsert.count}, skipped ${skippedRecords + preview.workbookSummary.totalDuplicateRecords}, and found ${preview.workbookSummary.totalInvalidRecords + results.errors.length} invalid record(s) across ${selectedSheets.length} worksheet(s).`,
         workbookSummary: preview.workbookSummary,
         worksheetPreviews: selectedSheets.map(({ entries: _entries, matched: _matched, notFound: _notFound, ...sheet }) => sheet),
-        inserted: insertedRecords,
-        updated: updatedRecords,
+        inserted: normalizedInsert.count,
+        updated: enrichedRecords,
+        skipped: skippedRecords + preview.workbookSummary.totalDuplicateRecords,
+        invalid: preview.workbookSummary.totalInvalidRecords + results.errors.length,
+        insertedLegacyDetails,
         normalizedImported: normalizedInsert.count,
-        normalizedDuplicates: normalizedRecords.length - normalizedInsert.count,
+        normalizedDuplicates: skippedRecords + preview.workbookSummary.totalDuplicateRecords,
         ...results,
       };
       }, { timeout: 120000 });
@@ -1769,7 +1958,21 @@ export async function POST(req: NextRequest) {
       })
     );
 
-    const csvEntries = parseExcelRows(csvRows, metricType, campaignName);
+    const csvSheetName = file.name.replace(/[\r\n\t]/g, ' ').slice(0, 80) || 'CSV';
+    const csvWorkbook = {
+      SheetNames: [csvSheetName],
+      Sheets: { [csvSheetName]: XLSX.utils.aoa_to_sheet(csvRows) },
+    } as XLSX.WorkBook;
+    const csvPreview = await buildWorkbookPreview({
+      workbook: csvWorkbook,
+      selectedCampaign: campaignExists,
+      assignedCampaigns,
+      metricType,
+      selectedReportDate: reportDate,
+      reportPeriodType,
+    });
+    const csvEntries = csvPreview.sheets.flatMap((sheet) => sheet.entries)
+      .sort((a, b) => (a.reportDate?.getTime() || 0) - (b.reportDate?.getTime() || 0) || a.rowIdx - b.rowIdx);
 
     if (csvEntries.length === 0) {
       return NextResponse.json({ error: 'No data rows found. Check that your CSV matches the BPI PA template format.' }, { status: 400 });
@@ -1777,50 +1980,19 @@ export async function POST(req: NextRequest) {
 
     // Preview mode for CSV
     if (mode === 'preview') {
-      const matched: any[] = [];
-      const notFound: any[] = [];
-      const previewRecords: any[] = [];
-
-      for (const entry of csvEntries) {
-        const agent = findExistingAgent(entry.name);
-
-        const baseData: any = { name: entry.name, count: entry.count, volume: entry.volume };
-        if (metricType === 'all_metrics') {
-          baseData.transmittals = entry.transmittals;
-          baseData.approvals = entry.approvals;
-          baseData.booked = entry.booked;
-        }
-        if (entry.ntb !== undefined || entry.seatCategory !== undefined) {
-          baseData.ntb = entry.ntb ?? 0;
-          baseData.supplementary = entry.supplementary ?? 0;
-          baseData.seatCategory = entry.seatCategory ?? '';
-        }
-
-        if (agent) matched.push({ ...baseData, agentId: agent.id, agentName: agent.name });
-        else notFound.push(baseData);
-        for (const metric of expandEntryMetrics(entry)) {
-          previewRecords.push({
-            sheet: 'CSV', campaignName, agent: agent?.name || entry.name,
-            reportPeriodType, reportDate: ymd(normalizePeriodDate(reportDate, reportPeriodType)),
-            metricType: metric.metricType, count: metric.count ?? null, volume: metric.volume ?? null,
-            goal: metric.goal ?? null, actual: metric.actual ?? null, achievement: metric.achievement ?? null,
-            status: agent ? 'Valid' : 'Mapping Required',
-            validationMessage: agent ? '' : 'Agent not found; approve creation before import.', row: entry.rowIdx,
-          });
-        }
-      }
-
-      // Sort by volume descending, then by count/metrics descending
-      matched.sort((a, b) => {
-        if (b.volume !== a.volume) return b.volume - a.volume;
-        return b.count - a.count;
+      return NextResponse.json({
+        preview: true,
+        matched: csvPreview.matched,
+        notFound: csvPreview.notFound,
+        previewRecords: csvPreview.previewRecords,
+        monthSummary: csvPreview.monthSummary,
+        detectedRange: csvPreview.detectedRange,
+        workbookSummary: csvPreview.workbookSummary,
+        worksheetPreviews: csvPreview.sheets.map(({ entries, ...sheet }) => sheet),
+        metricType,
+        reportPeriodType,
+        reportDate: ymd(reportDate),
       });
-      notFound.sort((a, b) => {
-        if (b.volume !== a.volume) return b.volume - a.volume;
-        return b.count - a.count;
-      });
-
-      return NextResponse.json({ preview: true, matched, notFound, previewRecords, metricType, reportPeriodType, reportDate: ymd(reportDate) });
     }
 
     // Import mode for CSV
@@ -1850,19 +2022,42 @@ export async function POST(req: NextRequest) {
       details: [] as any[],
     };
 
-    const csvProdEntry = await tx.productionEntry.create({
-      data: {
-        campaignId: effectiveCampaignId,
-        date: reportDate,
-        time: new Date().toLocaleTimeString(),
-        createdBy: user.id,
-        reportPeriodType,
-        periodStart,
-        periodEnd,
-      },
-    });
-    await saveImportMetadata(csvProdEntry.id, file.name, metricType, undefined, undefined, tx);
     const normalizedCsvRecords: any[] = [];
+    const csvEntryByDate = new Map<string, string>();
+    const csvCreatedEntryIds = new Set<string>();
+    let csvEnriched = 0;
+    let csvSkipped = 0;
+    const csvDates = csvEntries.map((row) => normalizePeriodDate(row.reportDate || reportDate, reportPeriodType));
+    const csvEarliest = new Date(Math.min(...csvDates.map((date) => date.getTime())));
+    const csvLatest = new Date(Math.max(...csvDates.map((date) => date.getTime())));
+    const csvAgentIds = campaignAgents.map((agent) => agent.id);
+    const [csvStoredMetrics, csvStoredDetails] = await Promise.all([
+      tx.productionMetricRecord.findMany({
+        where: { campaignId: effectiveCampaignId, agentId: { in: csvAgentIds }, reportPeriodType, reportDate: { gte: csvEarliest, lte: csvLatest } },
+        select: { id: true, productionEntryId: true, campaignId: true, agentId: true, metricType: true, reportDate: true, count: true, volume: true, goal: true, actual: true, achievement: true },
+      }),
+      tx.productionDetail.findMany({
+        where: { campaignId: effectiveCampaignId, agentId: { in: csvAgentIds }, productionEntry: { date: { gte: new Date(csvEarliest.getFullYear(), csvEarliest.getMonth(), 1), lte: new Date(csvLatest.getFullYear(), csvLatest.getMonth() + 1, 0) } } },
+        select: {
+          id: true, productionEntryId: true, campaignId: true, agentId: true,
+          transmittals: true, approvals: true, booked: true, activations: true, ntb: true, supplementary: true,
+          monthlyGoal: true, monthlyActual: true, monthlyAchievement: true,
+          productionEntry: { select: { date: true, reportPeriodType: true, importMetricType: true } },
+        },
+      }),
+    ]);
+    const csvMetricByKey = new Map<string, any>(csvStoredMetrics.map((record) => [normalizedMetricKey(record.campaignId, record.agentId, record.metricType, record.reportDate, reportPeriodType), record]));
+    const csvDetailByKey = new Map<string, any>();
+    for (const detail of csvStoredDetails) {
+      if (detail.productionEntry.reportPeriodType !== reportPeriodType) continue;
+      const date = normalizePeriodDate(detail.productionEntry.date, reportPeriodType);
+      const detailKey = `${detail.campaignId}|${detail.agentId}|${ymd(date)}`;
+      if (!csvDetailByKey.has(detailKey)) csvDetailByKey.set(detailKey, detail);
+      for (const type of legacyMetricTypes(detail)) {
+        const key = normalizedMetricKey(detail.campaignId, detail.agentId, type, date, reportPeriodType);
+        if (!csvMetricByKey.has(key)) csvMetricByKey.set(key, { productionEntryId: detail.productionEntryId, legacy: true });
+      }
+    }
 
     for (const row of csvEntries) {
       try {
@@ -1875,51 +2070,70 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        const metricData = buildDetailData(row, metricType);
-
-        const existingDetail = await tx.productionDetail.findUnique({
-          where: { productionEntryId_agentId: { productionEntryId: csvProdEntry.id, agentId: agent.id } },
-        });
-        if (existingDetail) {
-          await tx.productionDetail.update({ where: { id: existingDetail.id }, data: metricData });
-        } else {
-          await tx.productionDetail.create({
-            data: { productionEntryId: csvProdEntry.id, agentId: agent.id, campaignId: effectiveCampaignId, ...metricData },
+        const normalizedDate = normalizePeriodDate(row.reportDate || reportDate, reportPeriodType);
+        const metrics = expandEntryMetrics(row);
+        const existingForRow = metrics.map((metric) => csvMetricByKey.get(normalizedMetricKey(effectiveCampaignId, agent!.id, metric.metricType, normalizedDate, reportPeriodType))).filter(Boolean);
+        let rowChanged = false;
+        for (const metric of metrics) {
+          const key = normalizedMetricKey(effectiveCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType);
+          const existing = csvMetricByKey.get(key);
+          if (!existing) continue;
+          const enrichment: Record<string, any> = {};
+          if (existing.id) {
+            if (existing.count == null && metric.count != null) enrichment.count = BigInt(Math.round(metric.count));
+            if (existing.volume == null && metric.volume != null) enrichment.volume = BigInt(Math.round(metric.volume));
+            if (existing.goal == null && metric.goal != null) enrichment.goal = metric.goal;
+            if (existing.actual == null && metric.actual != null) enrichment.actual = metric.actual;
+            if (existing.achievement == null && metric.achievement != null) enrichment.achievement = metric.achievement;
+          }
+          if (Object.keys(enrichment).length) {
+            await tx.productionMetricRecord.update({ where: { id: existing.id }, data: enrichment });
+            Object.assign(existing, enrichment);
+            csvEnriched++;
+            rowChanged = true;
+          } else csvSkipped++;
+        }
+        const missingMetrics = metrics.filter((metric) => !csvMetricByKey.has(normalizedMetricKey(effectiveCampaignId, agent!.id, metric.metricType, normalizedDate, reportPeriodType)));
+        const detailKey = `${effectiveCampaignId}|${agent.id}|${ymd(normalizedDate)}`;
+        const existingDetail = csvDetailByKey.get(detailKey);
+        let savedEntryId = existingForRow.find((record) => record.productionEntryId)?.productionEntryId || existingDetail?.productionEntryId || csvEntryByDate.get(ymd(normalizedDate));
+        if (missingMetrics.length && !savedEntryId) {
+          const entry = await tx.productionEntry.create({
+            data: {
+              campaignId: effectiveCampaignId, date: normalizedDate, time: new Date().toLocaleTimeString(), createdBy: user.id, reportPeriodType,
+              periodStart: reportPeriodType === 'daily' ? periodStart : normalizedDate,
+              periodEnd: reportPeriodType === 'monthly' ? new Date(normalizedDate.getFullYear(), normalizedDate.getMonth() + 1, 0) : reportPeriodType === 'yearly' ? new Date(normalizedDate.getFullYear(), 11, 31) : periodEnd,
+            },
           });
+          savedEntryId = entry.id;
+          csvEntryByDate.set(ymd(normalizedDate), entry.id);
+          csvCreatedEntryIds.add(entry.id);
         }
-
-        csvResults.success++;
-        const detail: any = {
-          row: row.rowIdx,
-          agent: agent.name,
-          date: reportDate.toLocaleDateString(),
-          volume: row.volume,
-        };
-        if (metricType === 'all_metrics') {
-          detail.transmittals = row.transmittals;
-          detail.approvals = row.approvals;
-          detail.booked = row.booked;
-        } else {
-          detail[metricType] = row.count;
+        if (missingMetrics.length && !existingDetail && existingForRow.length === 0 && savedEntryId) {
+          const detail = await tx.productionDetail.create({
+            data: { productionEntryId: savedEntryId, agentId: agent.id, campaignId: effectiveCampaignId, ...buildDetailDataForWrite(row, row.metricType || metricType, false) },
+            select: { id: true, productionEntryId: true },
+          });
+          csvDetailByKey.set(detailKey, detail);
         }
-        if (row.ntb !== undefined) {
-          detail.ntb = row.ntb;
-          detail.supplementary = row.supplementary;
-          detail.seatCategory = row.seatCategory;
-        }
-        csvResults.details.push(detail);
-        const normalizedDate = normalizePeriodDate(reportDate, reportPeriodType);
-        for (const metric of expandEntryMetrics(row)) {
+        for (const metric of missingMetrics) {
+          const key = normalizedMetricKey(effectiveCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType);
           normalizedCsvRecords.push({
-            productionEntryId: csvProdEntry.id, campaignId: effectiveCampaignId, agentId: agent.id,
+            productionEntryId: savedEntryId!, campaignId: effectiveCampaignId, agentId: agent.id,
             reportPeriodType, reportDate: normalizedDate,
             reportMonth: reportPeriodType === 'yearly' ? null : normalizedDate.getMonth() + 1,
             reportYear: normalizedDate.getFullYear(), metricType: metric.metricType,
             count: metric.count == null ? null : BigInt(Math.round(metric.count)),
             volume: metric.volume == null ? null : BigInt(Math.round(metric.volume)),
             goal: metric.goal ?? null, actual: metric.actual ?? null, achievement: metric.achievement ?? null,
-            sourceFile: file.name, sourceSheet: 'CSV', sourceRow: row.rowIdx,
+            sourceFile: file.name, sourceSheet: row.sourceSheet || 'CSV', sourceRow: row.rowIdx,
           });
+          csvMetricByKey.set(key, { productionEntryId: savedEntryId, pending: true });
+          rowChanged = true;
+        }
+        if (rowChanged) {
+          csvResults.success++;
+          csvResults.details.push(detailResponse({ ...row, reportDate: normalizedDate }, agent.name, row.metricType || metricType));
         }
       } catch (rowError) {
         throw new Error(`Row ${row.rowIdx}: Database write failed.`, { cause: rowError });
@@ -1928,19 +2142,19 @@ export async function POST(req: NextRequest) {
     const normalizedCsvInsert = normalizedCsvRecords.length
       ? await tx.productionMetricRecord.createMany({ data: normalizedCsvRecords, skipDuplicates: true })
       : { count: 0 };
+    csvSkipped += normalizedCsvRecords.length - normalizedCsvInsert.count;
+    for (const entryId of csvCreatedEntryIds) await saveImportMetadata(entryId, file.name, metricType, [csvSheetName], undefined, tx);
 
-    // Sort results by volume descending, then by the primary metric
-    csvResults.details.sort((a, b) => {
-      if (b.volume !== a.volume) return b.volume - a.volume;
-      const aMetric = metricType === 'all_metrics' ? a.transmittals : a[metricType] || a.count || 0;
-      const bMetric = metricType === 'all_metrics' ? b.transmittals : b[metricType] || b.count || 0;
-      return bMetric - aMetric;
-    });
+    csvResults.details.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.agent.localeCompare(b.agent));
 
     return {
-      message: `Imported ${csvResults.success} records. ${csvResults.created} new agent(s) created.`,
+      message: `Inserted ${normalizedCsvInsert.count}, skipped ${csvSkipped + csvPreview.workbookSummary.totalDuplicateRecords}, and found ${csvPreview.workbookSummary.totalInvalidRecords + csvResults.errors.length} invalid record(s).`,
+      inserted: normalizedCsvInsert.count,
+      updated: csvEnriched,
+      skipped: csvSkipped + csvPreview.workbookSummary.totalDuplicateRecords,
+      invalid: csvPreview.workbookSummary.totalInvalidRecords + csvResults.errors.length,
       normalizedImported: normalizedCsvInsert.count,
-      normalizedDuplicates: normalizedCsvRecords.length - normalizedCsvInsert.count,
+      normalizedDuplicates: csvSkipped + csvPreview.workbookSummary.totalDuplicateRecords,
       ...csvResults,
     };
     }, { timeout: 120000 });
