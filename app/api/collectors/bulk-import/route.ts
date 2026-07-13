@@ -4,11 +4,22 @@ import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import * as XLSX from 'xlsx';
 import bcrypt from 'bcryptjs';
+import { canonicalCampaignName } from '@/lib/campaign-import-mapping';
 
 type ParsedEntry = {
   name: string; count: number; volume: number;
   transmittals?: number; approvals?: number; booked?: number;
+  transmittedVolume?: number; approvalsVolume?: number; bookedVolume?: number;
   ntb?: number; supplementary?: number; seatCategory?: string;
+  agentLevel?: string; dateHired?: Date; agentType?: string;
+  monthlyGoal?: number; monthlyActual?: number; monthlyAchievement?: number;
+  overallGoal?: number; overallActual?: number; overallAchievement?: number;
+  metricType?: string;
+  sourceSheet?: string;
+  campaignId?: string;
+  campaignName?: string;
+  reportDate?: Date;
+  validationErrors?: string[];
   // MB PL wide-format per-category totals (transaction + volume)
   bauPayrollTxn?: number; bauPayrollVol?: number;
   bauDepositorTxn?: number; bauDepositorVol?: number;
@@ -23,19 +34,64 @@ type ParsedEntry = {
   rowIdx: number;
 };
 
+type AssignedCampaign = { id: string; campaignName: string };
+
+type SheetPreview = {
+  key: string;
+  sheetName: string;
+  hidden: boolean;
+  selected: boolean;
+  format: string;
+  campaignId: string;
+  campaignName: string;
+  campaignMapping: 'sheet' | 'selected';
+  metricType: string;
+  metricSource: 'sheet' | 'selected';
+  reportDate: string;
+  totalRows: number;
+  validRows: number;
+  invalidRows: number;
+  duplicateRows: number;
+  warnings: string[];
+  errors: string[];
+  matched: any[];
+  notFound: any[];
+  entries: ParsedEntry[];
+};
+
 async function ensureImportMetadataColumns() {
   await prisma.$executeRawUnsafe(`
     ALTER TABLE "ProductionEntry"
       ADD COLUMN IF NOT EXISTS "importFileName" TEXT,
-      ADD COLUMN IF NOT EXISTS "importMetricType" TEXT;
+      ADD COLUMN IF NOT EXISTS "importMetricType" TEXT,
+      ADD COLUMN IF NOT EXISTS "importWorkbookSheets" TEXT,
+      ADD COLUMN IF NOT EXISTS "importAuditLog" JSONB;
+  `);
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE "ProductionDetail"
+      ADD COLUMN IF NOT EXISTS "transmittedVolume" BIGINT NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS "approvalsVolume" BIGINT NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS "bookedVolume" BIGINT NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS "sourceSheet" TEXT,
+      ADD COLUMN IF NOT EXISTS "agentLevel" TEXT,
+      ADD COLUMN IF NOT EXISTS "dateHired" TIMESTAMP(3),
+      ADD COLUMN IF NOT EXISTS "agentType" TEXT,
+      ADD COLUMN IF NOT EXISTS "monthlyGoal" DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS "monthlyActual" DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS "monthlyAchievement" DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS "overallGoal" DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS "overallActual" DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS "overallAchievement" DOUBLE PRECISION;
   `);
 }
 
-async function saveImportMetadata(entryId: string, fileName: string, metricType: string) {
+async function saveImportMetadata(entryId: string, fileName: string, metricType: string, sheetNames?: string[], auditLog?: any) {
   await prisma.$executeRaw`
     UPDATE "ProductionEntry"
     SET "importFileName" = ${fileName},
-        "importMetricType" = ${metricType}
+        "importMetricType" = ${metricType},
+        "importWorkbookSheets" = ${sheetNames?.join(', ') || null},
+        "importAuditLog" = ${auditLog ? JSON.stringify(auditLog) : null}::jsonb
     WHERE id = ${entryId}
   `;
 }
@@ -301,6 +357,330 @@ function agentNameMatches(savedName: string, importedName: string): boolean {
   return importedTokens.length > 0 && importedTokens.every((token) => saved.includes(token));
 }
 
+function normalizeHeader(value: any): string {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/gi, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeSheetName(value: string): string {
+  return normalizeHeader(value).replace(/\b(raw|mtd|sheet|worksheet|data|report|production)\b/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function cellText(value: any): string {
+  if (value == null) return '';
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).trim();
+}
+
+function parseNumberSafe(value: any): { value: number; error?: string } {
+  if (value == null || value === '') return { value: 0 };
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return { value: 0, error: 'Invalid number' };
+    if (value < 0) return { value: 0, error: 'Negative values are not allowed' };
+    return { value };
+  }
+  if (/^(?:-|n\/?a|none|null)$/i.test(String(value).trim())) return { value: 0 };
+  const cleaned = String(value).replace(/[₱,$\s]/g, '').replace(/[()]/g, '-').trim();
+  if (!cleaned) return { value: 0 };
+  const parsed = Number(cleaned.replace(/%$/, '')) / (cleaned.endsWith('%') ? 100 : 1);
+  if (!Number.isFinite(parsed)) return { value: 0, error: `Invalid number "${String(value).slice(0, 30)}"` };
+  if (parsed < 0) return { value: 0, error: 'Negative values are not allowed' };
+  return { value: parsed };
+}
+
+function isFooterOrBlankName(value: string) {
+  const normalized = normalizeHeader(value);
+  return !normalized || ['total', 'grand total', 'subtotal', 'summary', 'overall'].some((word) => normalized === word || normalized.startsWith(`${word} `));
+}
+
+function findHeaderAlias(rows: any[][], aliases: string[], maxRows = 20): { row: number; col: number } | null {
+  const normalizedAliases = aliases.map(normalizeHeader);
+  for (let r = 0; r < Math.min(rows.length, maxRows); r++) {
+    const row = rows[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const value = normalizeHeader(row[c]);
+      if (normalizedAliases.some((alias) => value === alias || value.includes(alias))) return { row: r, col: c };
+    }
+  }
+  return null;
+}
+
+function detectMetricFromText(text: string, fallback: string) {
+  const normalized = normalizeHeader(text);
+  if (/\bapproval(s)?\b/.test(normalized)) return 'approvals';
+  if (/\bbook(ed|ing)?\b/.test(normalized)) return 'booked';
+  if (/\b(transmitted|transmittal|transmittals)\b/.test(normalized)) return 'transmittals';
+  if (/\bntb\b|\bsupplementary\b|\bacq\b/.test(normalized)) return 'acq';
+  if (/\ball metrics\b/.test(normalized)) return 'all_metrics';
+  return fallback;
+}
+
+function parseReportDateFromRows(rows: any[][], fallback: Date): Date {
+  const min = new Date(2020, 0, 1).getTime();
+  const max = new Date(2035, 11, 31).getTime();
+  for (const row of rows.slice(0, 20)) {
+    for (const cell of row || []) {
+      let candidate: Date | null = null;
+      if (cell instanceof Date) candidate = cell;
+      else if (typeof cell === 'number' && cell > 30000 && cell < 60000) {
+        const parsed = XLSX.SSF.parse_date_code(cell);
+        if (parsed) candidate = new Date(parsed.y, parsed.m - 1, parsed.d);
+      } else if (typeof cell === 'string') {
+        const match = cell.match(/\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|20\d{2}[/-]\d{1,2}[/-]\d{1,2})\b/);
+        if (match) {
+          const parsed = new Date(match[1]);
+          if (!Number.isNaN(parsed.getTime())) candidate = parsed;
+        }
+      }
+      if (candidate && candidate.getTime() >= min && candidate.getTime() <= max) {
+        return new Date(candidate.getFullYear(), candidate.getMonth(), candidate.getDate());
+      }
+    }
+  }
+  return fallback;
+}
+
+function ymd(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function mapSheetCampaign(sheetName: string, selectedCampaign: AssignedCampaign, assignedCampaigns: AssignedCampaign[]) {
+  const normalizedSheet = normalizeSheetName(sheetName);
+  const canonical = canonicalCampaignName(sheetName);
+  const match = assignedCampaigns
+    .map((campaign) => ({ campaign, normalized: normalizeSheetName(campaign.campaignName) }))
+    .filter(({ campaign, normalized }) => {
+      const campaignCanonical = canonicalCampaignName(campaign.campaignName);
+      return normalized && (
+        normalizedSheet.includes(normalized) || normalized.includes(normalizedSheet) ||
+        Boolean(canonical && campaignCanonical === canonical)
+      );
+    })
+    .sort((a, b) => b.normalized.length - a.normalized.length)[0]?.campaign;
+  return match ? { campaign: match, source: 'sheet' as const } : { campaign: selectedCampaign, source: 'selected' as const };
+}
+
+function rowHasAnyValue(row: any[]) {
+  return (row || []).some((cell) => cell != null && String(cell).trim() !== '');
+}
+
+const MONTH_INDEX = new Map([
+  ['january', 0], ['february', 1], ['march', 2], ['april', 3], ['may', 4], ['june', 5],
+  ['july', 6], ['august', 7], ['september', 8], ['october', 9], ['november', 10], ['december', 11],
+  ['jan', 0], ['feb', 1], ['mar', 2], ['apr', 3], ['jun', 5], ['jul', 6], ['aug', 7],
+  ['sep', 8], ['sept', 8], ['oct', 9], ['nov', 10], ['dec', 11],
+]);
+
+function parseCellDate(value: any): Date | undefined {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === 'number' && value > 30000 && value < 60000) {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed) return new Date(parsed.y, parsed.m - 1, parsed.d);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return undefined;
+}
+
+// Dashboard workbooks use merged month/metric headers. Build a logical header
+// for every column by carrying the last month and parent metric to child columns.
+function parseMonthlyAgentRows(rows: any[][], sheetName: string, campaignName: string, fallbackDate: Date) {
+  const monthHits: Array<{ row: number; col: number; month: number }> = [];
+  for (let r = 0; r < Math.min(rows.length, 20); r++) {
+    for (let c = 0; c < (rows[r] || []).length; c++) {
+      const value = normalizeHeader(rows[r][c]);
+      const month = MONTH_INDEX.get(value);
+      if (month !== undefined) monthHits.push({ row: r, col: c, month });
+    }
+  }
+  if (!monthHits.length) return null;
+
+  let headerRow = -1;
+  let nameCol = -1;
+  for (let r = 0; r < Math.min(rows.length, 30); r++) {
+    const cells = (rows[r] || []).map(normalizeHeader);
+    const candidate = cells.findIndex((value) => ['agent', 'agent name', 'name', 'full name'].includes(value));
+    if (candidate >= 0) { headerRow = r; nameCol = candidate; break; }
+  }
+  if (headerRow < 0 || nameCol < 0) return null;
+
+  let dataStartRow = -1;
+  for (let r = headerRow + 1; r < rows.length; r++) {
+    const value = cellText(rows[r]?.[nameCol]);
+    if (value && !['agent', 'agent name', 'name', 'full name'].includes(normalizeHeader(value))) { dataStartRow = r; break; }
+  }
+  if (dataStartRow < 0) return null;
+  const lastHeaderRow = dataStartRow - 1;
+  const maxCols = Math.max(0, ...rows.slice(0, lastHeaderRow + 1).map((row) => row.length));
+  const sortedMonths = monthHits.sort((a, b) => a.col - b.col || a.row - b.row);
+  const columns: Array<{ col: number; month: number; metric?: string; field: string }> = [];
+  let currentMetric = '';
+  for (let c = 0; c < maxCols; c++) {
+    const monthHit = [...sortedMonths].reverse().find((hit) => hit.col <= c);
+    if (!monthHit || c === nameCol) continue;
+    const labels = rows.slice(0, lastHeaderRow + 1).map((row) => normalizeHeader(row[c])).filter(Boolean);
+    const text = labels.join(' ');
+    const parent = /transmitted|transmittal/.test(text) ? 'transmittals' : /approval/.test(text) ? 'approvals' : /booked|booking/.test(text) ? 'booked' : '';
+    if (parent) currentMetric = parent;
+    const field = /achievement|achieve/.test(text) ? 'achievement'
+      : /actual/.test(text) ? 'actual'
+      : /goal|target/.test(text) ? 'goal'
+      : /volume|amount/.test(text) ? 'volume'
+      : /count|transaction/.test(text) ? 'count' : '';
+    if (field) columns.push({ col: c, month: monthHit.month, metric: parent || currentMetric || undefined, field });
+  }
+  if (!columns.length) return null;
+
+  const explicitYear = rows.slice(0, dataStartRow).flat().map(cellText).find((value) => /^20\d{2}$/.test(value));
+  const year = Number(explicitYear) || fallbackDate.getFullYear();
+  const levelHit = findHeaderAlias(rows, ['level'], 30);
+  const dateHiredHit = findHeaderAlias(rows, ['date hired', 'date onboard'], 30);
+  const typeHit = findHeaderAlias(rows, ['type', 'status'], 30);
+  const entries: ParsedEntry[] = [];
+  let invalidRows = 0;
+  const warnings: string[] = [];
+
+  for (let r = dataStartRow; r < rows.length; r++) {
+    const row = rows[r] || [];
+    const name = cellText(row[nameCol]);
+    if (!name || isFooterOrBlankName(name) || /rank|average/i.test(name)) continue;
+    for (const month of [...new Set(columns.map((column) => column.month))]) {
+      const values = columns.filter((column) => column.month === month);
+      const get = (field: string, metric?: string) => {
+        const column = values.find((item) => item.field === field && (!metric || item.metric === metric));
+        return column ? parseNumberSafe(row[column.col]) : { value: 0 };
+      };
+      const parsed = values.map((column) => parseNumberSafe(row[column.col]));
+      const errors = parsed.flatMap((item) => item.error ? [item.error] : []);
+      if (errors.length) { invalidRows++; warnings.push(`Row ${r + 1}: ${errors.join(', ')}`); continue; }
+      const txCount = get('count', 'transmittals').value;
+      const approvalCount = get('count', 'approvals').value;
+      const bookedCount = get('count', 'booked').value;
+      const txVolume = get('volume', 'transmittals').value;
+      const approvalVolume = get('volume', 'approvals').value;
+      const bookedVolume = get('volume', 'booked').value;
+      const actual = get('actual').value;
+      if (![txCount, approvalCount, bookedCount, txVolume, approvalVolume, bookedVolume, actual, get('goal').value].some((value) => value !== 0)) continue;
+      entries.push({
+        name, rowIdx: r + 1, sourceSheet: sheetName, campaignName,
+        reportDate: new Date(year, month + 1, 0), metricType: 'all_metrics',
+        count: Math.floor(txCount), volume: Math.round(actual || txVolume || approvalVolume || bookedVolume),
+        transmittals: Math.floor(txCount), approvals: Math.floor(approvalCount), booked: Math.floor(bookedCount),
+        transmittedVolume: Math.round(txVolume), approvalsVolume: Math.round(approvalVolume), bookedVolume: Math.round(bookedVolume),
+        agentLevel: levelHit ? cellText(row[levelHit.col]) : undefined,
+        dateHired: dateHiredHit ? parseCellDate(row[dateHiredHit.col]) : undefined,
+        agentType: typeHit ? cellText(row[typeHit.col]) : undefined,
+        monthlyGoal: get('goal').value, monthlyActual: actual, monthlyAchievement: get('achievement').value,
+      });
+    }
+  }
+  return { format: 'Monthly Dashboard', entries, invalidRows, warnings, errors: [] as string[] };
+}
+
+function parseDetectedRows(rows: any[][], metricType: string, campaignName: string, sheetName: string, reportDate: Date): {
+  format: string;
+  entries: ParsedEntry[];
+  invalidRows: number;
+  warnings: string[];
+  errors: string[];
+} {
+  const monthly = parseMonthlyAgentRows(rows, sheetName, campaignName, reportDate);
+  if (monthly?.entries.length) return monthly;
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const nameHit = findHeaderAlias(rows, ['full name', 'agent name']);
+  const lastHit = findHeaderAlias(rows, ['last name']);
+  const firstHit = findHeaderAlias(rows, ['first name']);
+  const countHit = findHeaderAlias(rows, ['count']);
+  const volumeHit = findHeaderAlias(rows, ['volume', 'total volume']);
+  const transmittedHit = findHeaderAlias(rows, ['transmitted', 'transmittals', 'transmittal']);
+  const approvalsHit = findHeaderAlias(rows, ['approval', 'approvals']);
+  const bookedHit = findHeaderAlias(rows, ['booked', 'booking']);
+  const ntbHit = findHeaderAlias(rows, ['ntb']);
+  const suppHit = findHeaderAlias(rows, ['supplementary', 'supplemental']);
+  const agentCodeHit = findHeaderAlias(rows, ['agent code']);
+  const seatHit = findHeaderAlias(rows, ['seat category', 'seat cat']);
+
+  const isAcq = Boolean(agentCodeHit && lastHit && firstHit && (ntbHit || suppHit));
+  const isAllMetrics = Boolean(nameHit && (transmittedHit || approvalsHit || bookedHit));
+  const isSingleMetric = Boolean(nameHit && (countHit || volumeHit || transmittedHit || approvalsHit || bookedHit));
+
+  if (!isAcq && !isAllMetrics && !isSingleMetric) {
+    return { format: 'Unsupported', entries: [], invalidRows: 0, warnings, errors: ['Supported headers were not found.'] };
+  }
+
+  if (isAcq || (lastHit && firstHit && (ntbHit || suppHit))) {
+    const parsed = parseExcelRows(rows, 'acq', campaignName);
+    const entries = parsed
+      .filter((entry) => !isFooterOrBlankName(entry.name))
+      .map((entry) => ({ ...entry, metricType: 'acq', sourceSheet: sheetName, campaignName, reportDate }));
+    return { format: 'ACQ', entries, invalidRows: Math.max(0, parsed.length - entries.length), warnings, errors };
+  }
+
+  const headerRow = Math.max(nameHit?.row ?? 0, countHit?.row ?? 0, transmittedHit?.row ?? 0, approvalsHit?.row ?? 0, bookedHit?.row ?? 0, volumeHit?.row ?? 0);
+  const nameCol = nameHit?.col ?? 1;
+  const metric = isAllMetrics ? 'all_metrics' : detectMetricFromText(`${sheetName} ${(rows[headerRow] || []).join(' ')}`, metricType);
+  const entries: ParsedEntry[] = [];
+  let invalidRows = 0;
+  const seenHeaderRows = new Set<string>();
+
+  for (let i = headerRow + 1; i < rows.length; i++) {
+    const row = rows[i] || [];
+    if (!rowHasAnyValue(row)) continue;
+    const normalizedRow = row.map(normalizeHeader).join('|');
+    if (seenHeaderRows.has(normalizedRow) || normalizedRow.includes('full name') || normalizedRow.includes('agent name')) {
+      seenHeaderRows.add(normalizedRow);
+      continue;
+    }
+    const rawName = cellText(row[nameCol]);
+    if (isFooterOrBlankName(rawName)) continue;
+
+    const rowErrors: string[] = [];
+    const volume = parseNumberSafe(row[volumeHit?.col ?? 4]);
+    if (volume.error) rowErrors.push(volume.error);
+    const count = parseNumberSafe(row[countHit?.col ?? transmittedHit?.col ?? approvalsHit?.col ?? bookedHit?.col ?? 3]);
+    if (count.error) rowErrors.push(count.error);
+    const transmittals = parseNumberSafe(row[transmittedHit?.col ?? -1]);
+    const approvals = parseNumberSafe(row[approvalsHit?.col ?? -1]);
+    const booked = parseNumberSafe(row[bookedHit?.col ?? -1]);
+    for (const parsed of [transmittals, approvals, booked]) if (parsed.error) rowErrors.push(parsed.error);
+
+    if (rowErrors.length > 0) {
+      invalidRows++;
+      warnings.push(`Row ${i + 1}: ${rowErrors.join(', ')}`);
+      continue;
+    }
+
+    entries.push({
+      name: rawName,
+      count: Math.floor(metric === 'approvals' ? approvals.value || count.value : metric === 'booked' ? booked.value || count.value : transmittals.value || count.value),
+      volume: Math.round(volume.value),
+      transmittals: isAllMetrics ? Math.floor(transmittals.value) : undefined,
+      approvals: isAllMetrics ? Math.floor(approvals.value) : undefined,
+      booked: isAllMetrics ? Math.floor(booked.value) : undefined,
+      metricType: metric,
+      sourceSheet: sheetName,
+      campaignName,
+      reportDate,
+      rowIdx: i + 1,
+    });
+  }
+
+  return {
+    format: isAllMetrics ? 'All Metrics' : 'Single Metric',
+    entries,
+    invalidRows,
+    warnings,
+    errors,
+  };
+}
+
 // Build the ProductionDetail write payload from a parsed row, mapping the
 // selected metric plus any ACQ fields (NTB / supplementary / seat category).
 function buildDetailData(row: ParsedEntry, metricType: string): Record<string, any> {
@@ -322,6 +702,19 @@ function buildDetailData(row: ParsedEntry, metricType: string): Record<string, a
   if (row.ntb !== undefined) data.ntb = BigInt(row.ntb || 0);
   if (row.supplementary !== undefined) data.supplementary = BigInt(row.supplementary || 0);
   if (row.seatCategory) data.seatCategory = row.seatCategory;
+  if (row.sourceSheet) data.sourceSheet = row.sourceSheet;
+  if (row.agentLevel) data.agentLevel = row.agentLevel;
+  if (row.dateHired) data.dateHired = row.dateHired;
+  if (row.agentType) data.agentType = row.agentType;
+  if (row.monthlyGoal !== undefined) data.monthlyGoal = row.monthlyGoal;
+  if (row.monthlyActual !== undefined) data.monthlyActual = row.monthlyActual;
+  if (row.monthlyAchievement !== undefined) data.monthlyAchievement = row.monthlyAchievement;
+  if (row.overallGoal !== undefined) data.overallGoal = row.overallGoal;
+  if (row.overallActual !== undefined) data.overallActual = row.overallActual;
+  if (row.overallAchievement !== undefined) data.overallAchievement = row.overallAchievement;
+  if (row.transmittedVolume !== undefined) data.transmittedVolume = BigInt(row.transmittedVolume || 0);
+  if (row.approvalsVolume !== undefined) data.approvalsVolume = BigInt(row.approvalsVolume || 0);
+  if (row.bookedVolume !== undefined) data.bookedVolume = BigInt(row.bookedVolume || 0);
   // MB PL wide-format per-category totals
   if (row.bauPayrollTxn !== undefined) {
     data.bauPayrollTxn = BigInt(row.bauPayrollTxn || 0);
@@ -347,6 +740,232 @@ function buildDetailData(row: ParsedEntry, metricType: string): Record<string, a
     data.grandTotalVol = BigInt(row.grandTotalVol || 0);
   }
   return data;
+}
+
+function buildDetailDataForWrite(row: ParsedEntry, metricType: string, partial = false): Record<string, any> {
+  const effectiveMetric = row.metricType || metricType;
+  const data: Record<string, any> = partial ? {} : {
+    transmittals: BigInt(0),
+    approvals: BigInt(0),
+    booked: BigInt(0),
+    volume: BigInt(0),
+  };
+
+  if (!partial || row.volume !== undefined) data.volume = BigInt(Math.round(row.volume || 0));
+  if (effectiveMetric === 'transmittals') data.transmittals = BigInt(row.count || 0);
+  else if (effectiveMetric === 'approvals') data.approvals = BigInt(row.count || 0);
+  else if (effectiveMetric === 'booked') data.booked = BigInt(row.count || 0);
+  else if (effectiveMetric === 'all_metrics') {
+    data.transmittals = BigInt(row.transmittals || 0);
+    data.approvals = BigInt(row.approvals || 0);
+    data.booked = BigInt(row.booked || 0);
+  }
+  if (row.ntb !== undefined) data.ntb = BigInt(row.ntb || 0);
+  if (row.supplementary !== undefined) data.supplementary = BigInt(row.supplementary || 0);
+  if (row.seatCategory) data.seatCategory = row.seatCategory;
+  if (row.sourceSheet) data.sourceSheet = row.sourceSheet;
+  if (row.agentLevel) data.agentLevel = row.agentLevel;
+  if (row.dateHired) data.dateHired = row.dateHired;
+  if (row.agentType) data.agentType = row.agentType;
+  for (const key of ['monthlyGoal', 'monthlyActual', 'monthlyAchievement', 'overallGoal', 'overallActual', 'overallAchievement'] as const) {
+    if (row[key] !== undefined) data[key] = row[key];
+  }
+  if (row.transmittedVolume !== undefined) data.transmittedVolume = BigInt(row.transmittedVolume || 0);
+  if (row.approvalsVolume !== undefined) data.approvalsVolume = BigInt(row.approvalsVolume || 0);
+  if (row.bookedVolume !== undefined) data.bookedVolume = BigInt(row.bookedVolume || 0);
+
+  for (const key of [
+    'bauPayrollTxn', 'bauPayrollVol', 'bauDepositorTxn', 'bauDepositorVol',
+    'topupPayrollTxn', 'topupPayrollVol', 'topupDepositorTxn', 'topupDepositorVol',
+    'openMarketTxn', 'openMarketVol', 'c2gTxn', 'c2gVol', 'btTxn', 'btVol',
+    'balconTxn', 'balconVol', 'grandTotalTxn', 'grandTotalVol',
+  ] as const) {
+    if (row[key] !== undefined) data[key] = BigInt(row[key] || 0);
+  }
+  return data;
+}
+
+function detailResponse(row: ParsedEntry, agentName: string, metricType: string) {
+  const effectiveMetric = row.metricType || metricType;
+  const detail: any = {
+    row: row.rowIdx,
+    sheet: row.sourceSheet,
+    campaign: row.campaignName,
+    agent: agentName,
+    date: row.reportDate ? ymd(row.reportDate) : '',
+    volume: row.volume,
+  };
+  if (effectiveMetric === 'all_metrics') {
+    detail.transmittals = row.transmittals;
+    detail.approvals = row.approvals;
+    detail.booked = row.booked;
+  } else if (effectiveMetric === 'acq') {
+    detail.ntb = row.ntb;
+    detail.supplementary = row.supplementary;
+    detail.seatCategory = row.seatCategory;
+  } else {
+    detail[effectiveMetric] = row.count;
+  }
+  return detail;
+}
+
+async function getAssignedCampaigns(userId: string, primaryCampaignId?: string | null): Promise<AssignedCampaign[]> {
+  const assigned = await prisma.userCampaign.findMany({
+    where: { userId },
+    select: { campaign: { select: { id: true, campaignName: true } } },
+  });
+  const campaigns = assigned.map((row) => row.campaign);
+  if (primaryCampaignId && !campaigns.some((campaign) => campaign.id === primaryCampaignId)) {
+    const primary = await prisma.campaign.findUnique({ where: { id: primaryCampaignId }, select: { id: true, campaignName: true } });
+    if (primary) campaigns.push(primary);
+  }
+  return campaigns;
+}
+
+function classifyEntries(entries: ParsedEntry[], agentsByCampaign: Map<string, { id: string; name: string }[]>) {
+  const matched: any[] = [];
+  const notFound: any[] = [];
+  for (const entry of entries) {
+    const agent = (agentsByCampaign.get(entry.campaignId || '') || []).find((candidate) => agentNameMatches(candidate.name, entry.name));
+    const baseData: any = {
+      name: entry.name,
+      count: entry.count,
+      volume: entry.volume,
+      sheet: entry.sourceSheet,
+      campaignId: entry.campaignId,
+      campaignName: entry.campaignName,
+      metricType: entry.metricType,
+      reportDate: entry.reportDate ? ymd(entry.reportDate) : '',
+      row: entry.rowIdx,
+      goal: entry.monthlyGoal,
+      actual: entry.monthlyActual,
+      achievement: entry.monthlyAchievement,
+    };
+    if (entry.metricType === 'all_metrics') {
+      baseData.transmittals = entry.transmittals;
+      baseData.approvals = entry.approvals;
+      baseData.booked = entry.booked;
+    }
+    if (entry.ntb !== undefined || entry.seatCategory !== undefined) {
+      baseData.ntb = entry.ntb ?? 0;
+      baseData.supplementary = entry.supplementary ?? 0;
+      baseData.seatCategory = entry.seatCategory ?? '';
+    }
+    if (agent) matched.push({ ...baseData, agentId: agent.id, agentName: agent.name });
+    else notFound.push(baseData);
+  }
+  const sorter = (a: any, b: any) => (b.volume !== a.volume ? b.volume - a.volume : b.count - a.count);
+  matched.sort(sorter);
+  notFound.sort(sorter);
+  return { matched, notFound };
+}
+
+async function buildWorkbookPreview({
+  workbook,
+  selectedCampaign,
+  assignedCampaigns,
+  metricType,
+  selectedReportDate,
+}: {
+  workbook: XLSX.WorkBook;
+  selectedCampaign: AssignedCampaign;
+  assignedCampaigns: AssignedCampaign[];
+  metricType: string;
+  selectedReportDate: Date;
+}) {
+  const campaignIds = assignedCampaigns.map((campaign) => campaign.id);
+  const campaignAgents = await prisma.user.findMany({
+    where: { role: 'AGENT', campaignId: { in: campaignIds } },
+    select: { id: true, name: true, campaignId: true },
+  });
+  const agentsByCampaign = new Map<string, { id: string; name: string }[]>();
+  for (const agent of campaignAgents) {
+    const bucket = agentsByCampaign.get(agent.campaignId || '') || [];
+    bucket.push({ id: agent.id, name: agent.name });
+    agentsByCampaign.set(agent.campaignId || '', bucket);
+  }
+
+  const hiddenByName = new Map<string, boolean>();
+  workbook.Workbook?.Sheets?.forEach((sheetInfo: any, index: number) => {
+    hiddenByName.set(workbook.SheetNames[index], Boolean(sheetInfo?.Hidden));
+  });
+
+  const allSeen = new Set<string>();
+  const sheets: SheetPreview[] = workbook.SheetNames.map((sheetName, index) => {
+    const sheet = workbook.Sheets[sheetName];
+    const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null } as any);
+    const mapping = mapSheetCampaign(sheetName, selectedCampaign, assignedCampaigns);
+    const reportDate = parseReportDateFromRows(rows, selectedReportDate);
+    const detectedMetric = detectMetricFromText(`${sheetName} ${rows.slice(0, 5).flat().join(' ')}`, metricType);
+    const parsed = parseDetectedRows(rows, detectedMetric, mapping.campaign.campaignName, sheetName, reportDate);
+    const entries: ParsedEntry[] = [];
+    let duplicateRows = 0;
+    const warnings = [...parsed.warnings];
+    const sheetSeen = new Set<string>();
+
+    for (const entry of parsed.entries) {
+      const effectiveMetric = entry.metricType || detectedMetric;
+      const entryDate = entry.reportDate || reportDate;
+      const key = [mapping.campaign.id, normalizeAgentName(entry.name), ymd(entryDate), effectiveMetric, sheetName].join('|');
+      if (sheetSeen.has(key) || allSeen.has(key)) {
+        duplicateRows++;
+        warnings.push(`Row ${entry.rowIdx}: duplicate ${sheetSeen.has(key) ? 'within this sheet' : 'already found in another sheet'}; it will be merged or updated.`);
+        continue;
+      }
+      sheetSeen.add(key);
+      allSeen.add(key);
+      entries.push({
+        ...entry,
+        campaignId: mapping.campaign.id,
+        campaignName: mapping.campaign.campaignName,
+        metricType: effectiveMetric,
+        reportDate: entryDate,
+      });
+    }
+
+    const { matched, notFound } = classifyEntries(entries, agentsByCampaign);
+    const errors = [...parsed.errors];
+    if (hiddenByName.get(sheetName) && entries.length === 0) warnings.push('Hidden sheet skipped because no valid production data was found.');
+    if (mapping.source === 'selected') warnings.push(`Campaign Mapping Required. No campaign alias matched this worksheet; selected fallback is ${selectedCampaign.campaignName}.`);
+
+    return {
+      key: `${index}:${sheetName}`,
+      sheetName: sheetName.replace(/[\r\n\t]/g, ' ').slice(0, 80),
+      hidden: Boolean(hiddenByName.get(sheetName)),
+      selected: entries.length > 0,
+      format: entries.length > 0 ? parsed.format : 'Skipped',
+      campaignId: mapping.campaign.id,
+      campaignName: mapping.campaign.campaignName,
+      campaignMapping: mapping.source,
+      metricType: detectedMetric,
+      metricSource: detectedMetric === metricType ? 'selected' : 'sheet',
+      reportDate: ymd(reportDate),
+      totalRows: rows.filter(rowHasAnyValue).length,
+      validRows: entries.length,
+      invalidRows: parsed.invalidRows,
+      duplicateRows,
+      warnings,
+      errors,
+      matched,
+      notFound,
+      entries,
+    };
+  });
+
+  const accepted = sheets.filter((sheet) => sheet.validRows > 0);
+  return {
+    workbookSummary: {
+      totalWorksheets: sheets.length,
+      worksheetsAccepted: accepted.length,
+      worksheetsSkipped: sheets.length - accepted.length,
+      totalValidRecords: sheets.reduce((sum, sheet) => sum + sheet.validRows, 0),
+      totalInvalidRecords: sheets.reduce((sum, sheet) => sum + sheet.invalidRows, 0),
+      totalDuplicateRecords: sheets.reduce((sum, sheet) => sum + sheet.duplicateRows, 0),
+    },
+    sheets,
+    matched: sheets.flatMap((sheet) => sheet.matched),
+    notFound: sheets.flatMap((sheet) => sheet.notFound),
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -469,6 +1088,8 @@ export async function POST(req: NextRequest) {
 
     await ensureImportMetadataColumns();
 
+    const assignedCampaigns = await getAssignedCampaigns(user.id, collectorUser?.campaignId);
+
     // Resolve the target campaign: prefer the one chosen on the import page,
     // otherwise fall back to the collector's assigned campaign.
     const effectiveCampaignId = selectedCampaignId || collectorUser?.campaignId;
@@ -476,13 +1097,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No campaign selected. Choose a campaign to import into.' }, { status: 400 });
     }
 
-    const campaignExists = await prisma.campaign.findUnique({
-      where: { id: effectiveCampaignId },
-      select: { id: true, campaignName: true },
-    });
+    const campaignExists = assignedCampaigns.find((campaign) => campaign.id === effectiveCampaignId);
     const campaignName = campaignExists?.campaignName || '';
     if (!campaignExists) {
-      return NextResponse.json({ error: 'Selected campaign not found' }, { status: 400 });
+      return NextResponse.json({ error: 'Selected campaign is not assigned to this collector.' }, { status: 403 });
     }
 
     let campaignAgents = await prisma.user.findMany({
@@ -546,7 +1164,234 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     }
 
-    const isExcel = file.name.toLowerCase().endsWith('.xlsx') || file.type.includes('spreadsheet');
+    if (file.size > 10 * 1024 * 1024) {
+      return NextResponse.json({ error: 'File is too large. Maximum upload size is 10 MB.' }, { status: 400 });
+    }
+
+    const lowerFileName = file.name.toLowerCase();
+    const isExcel = /\.(xlsx|xls)$/i.test(lowerFileName) || file.type.includes('spreadsheet') || file.type.includes('excel');
+    const isCsv = lowerFileName.endsWith('.csv') || file.type.includes('csv');
+    if (isExcel) {
+      const fileBuffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(fileBuffer);
+      const isZipWorkbook = bytes[0] === 0x50 && bytes[1] === 0x4b;
+      const isLegacyWorkbook = bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0;
+      if (!isZipWorkbook && !isLegacyWorkbook) {
+        return NextResponse.json({ error: 'The uploaded file is not a valid Excel workbook.' }, { status: 400 });
+      }
+
+      const workbook = XLSX.read(bytes, { type: 'array', cellDates: true, cellFormula: true });
+      if (!workbook.SheetNames.length) {
+        return NextResponse.json({ error: 'No worksheets found in Excel file' }, { status: 400 });
+      }
+
+      const preview = await buildWorkbookPreview({
+        workbook,
+        selectedCampaign: campaignExists,
+        assignedCampaigns,
+        metricType,
+        selectedReportDate: reportDate,
+      });
+
+      if (mode === 'preview') {
+        if (preview.workbookSummary.totalValidRecords === 0) {
+          return NextResponse.json({
+            error: 'No valid production rows found in any worksheet.',
+            workbookSummary: preview.workbookSummary,
+            worksheetPreviews: preview.sheets.map(({ entries, ...sheet }) => sheet),
+          }, { status: 400 });
+        }
+
+        return NextResponse.json({
+          preview: true,
+          multiSheet: true,
+          matched: preview.matched,
+          notFound: preview.notFound,
+          metricType,
+          reportDate,
+          workbookSummary: preview.workbookSummary,
+          worksheetPreviews: preview.sheets.map(({ entries, ...sheet }) => sheet),
+        });
+      }
+
+      const confirmedNewAgents: string[] = JSON.parse((formData.get('confirmedNewAgents') as string) || '[]');
+      const selectedWorksheetKeys: string[] = JSON.parse((formData.get('selectedWorksheetKeys') as string) || '[]');
+      const campaignMappings: Record<string, string> = JSON.parse((formData.get('campaignMappings') as string) || '{}');
+      const selectedKeySet = new Set(
+        selectedWorksheetKeys.length
+          ? selectedWorksheetKeys
+          : preview.sheets.filter((sheet) => sheet.selected).map((sheet) => sheet.key)
+      );
+      const selectedSheets = preview.sheets.filter((sheet) => selectedKeySet.has(sheet.key) && sheet.validRows > 0);
+      const entries = selectedSheets.flatMap((sheet) => {
+        const mappedCampaignId = campaignMappings[sheet.key];
+        const mappedCampaign = mappedCampaignId ? assignedCampaigns.find((campaign) => campaign.id === mappedCampaignId) : null;
+        if (mappedCampaignId && !mappedCampaign) throw new Error(`Campaign mapping for ${sheet.sheetName} is not assigned to this collector.`);
+        return sheet.entries.map((entry) => mappedCampaign
+          ? { ...entry, campaignId: mappedCampaign.id, campaignName: mappedCampaign.campaignName }
+          : entry);
+      });
+
+      if (entries.length === 0) {
+        return NextResponse.json({ error: 'No selected worksheets contain valid rows to import.' }, { status: 400 });
+      }
+
+      const createdAgents: Record<string, string> = {};
+      for (const name of confirmedNewAgents) {
+        const row = entries.find((entry) => entry.name === name);
+        const targetCampaignId = row?.campaignId || effectiveCampaignId;
+        let existing = await prisma.user.findFirst({
+          where: { role: 'AGENT', campaignId: targetCampaignId, name: { equals: name, mode: 'insensitive' } },
+          select: { id: true, name: true },
+        });
+        if (!existing) {
+          const campaignAgentList = await prisma.user.findMany({
+            where: { role: 'AGENT', campaignId: targetCampaignId },
+            select: { id: true, name: true },
+          });
+          existing = campaignAgentList.find((agent) => agentNameMatches(agent.name, name)) || null;
+        }
+        if (existing) {
+          createdAgents[name] = existing.id;
+          continue;
+        }
+
+        const password = await bcrypt.hash(crypto.randomUUID(), 10);
+        const newAgent = await prisma.user.create({
+          data: {
+            name,
+            email: nameToEmail(name),
+            password,
+            role: 'AGENT',
+            campaignId: targetCampaignId,
+          },
+        });
+        createdAgents[name] = newAgent.id;
+      }
+
+      const results = {
+        success: 0,
+        created: confirmedNewAgents.length,
+        errors: [] as string[],
+        details: [] as any[],
+      };
+      const entryByCampaignDate = new Map<string, string>();
+      const sheetNames = selectedSheets.map((sheet) => sheet.sheetName);
+      let updatedRecords = 0;
+      let insertedRecords = 0;
+
+      for (const row of entries) {
+        try {
+          let agent = await prisma.user.findFirst({
+            where: { role: 'AGENT', campaignId: row.campaignId, name: { equals: row.name, mode: 'insensitive' } },
+            select: { id: true, name: true },
+          });
+          if (!agent) {
+            const campaignAgentList = await prisma.user.findMany({
+              where: { role: 'AGENT', campaignId: row.campaignId },
+              select: { id: true, name: true },
+            });
+            agent = campaignAgentList.find((candidate) => agentNameMatches(candidate.name, row.name)) || null;
+          }
+          if (!agent && createdAgents[row.name]) {
+            agent = await prisma.user.findUnique({ where: { id: createdAgents[row.name] }, select: { id: true, name: true } });
+          }
+          if (!agent) {
+            results.errors.push(`${row.sourceSheet} row ${row.rowIdx}: Agent not found and not confirmed for creation ("${row.name}")`);
+            continue;
+          }
+
+          const existingDetail = await prisma.productionDetail.findFirst({
+            where: {
+              campaignId: row.campaignId,
+              agentId: agent.id,
+              sourceSheet: row.sourceSheet || null,
+              productionEntry: { date: row.reportDate || reportDate },
+            },
+            select: { id: true, productionEntryId: true },
+          });
+
+          if (existingDetail) {
+            await prisma.productionDetail.update({
+              where: { id: existingDetail.id },
+              data: buildDetailDataForWrite(row, row.metricType || metricType, true),
+            });
+            entryByCampaignDate.set(`${row.campaignId}|${ymd(row.reportDate || reportDate)}`, existingDetail.productionEntryId);
+            updatedRecords++;
+          } else {
+            const entryKey = `${row.campaignId}|${ymd(row.reportDate || reportDate)}`;
+            let entryId = entryByCampaignDate.get(entryKey);
+            if (!entryId) {
+              const entry = await prisma.productionEntry.create({
+                data: {
+                  campaignId: row.campaignId || effectiveCampaignId,
+                  date: row.reportDate || reportDate,
+                  time: new Date().toLocaleTimeString(),
+                  createdBy: user.id,
+                  periodStart,
+                  periodEnd,
+                },
+              });
+              await saveImportMetadata(entry.id, file.name, row.metricType || metricType, sheetNames);
+              entryId = entry.id;
+              entryByCampaignDate.set(entryKey, entryId);
+            }
+            await prisma.productionDetail.create({
+              data: {
+                productionEntryId: entryId,
+                agentId: agent.id,
+                campaignId: row.campaignId || effectiveCampaignId,
+                ...buildDetailDataForWrite(row, row.metricType || metricType, false),
+              },
+            });
+            insertedRecords++;
+          }
+
+          results.success++;
+          results.details.push(detailResponse(row, agent.name, row.metricType || metricType));
+        } catch {
+          results.errors.push(`${row.sourceSheet} row ${row.rowIdx}: Could not save row.`);
+        }
+      }
+
+      const auditLog = {
+        fileName: file.name,
+        importingUser: user.id,
+        importedAt: new Date().toISOString(),
+        selectedCampaign: effectiveCampaignId,
+        selectedMetric: metricType,
+        selectedReportDate: ymd(reportDate),
+        workbookSheetNames: workbook.SheetNames,
+        perSheetResult: selectedSheets.map(({ entries: _entries, matched: _matched, notFound: _notFound, ...sheet }) => sheet),
+        insertedRecords,
+        updatedRecords,
+        skippedRecords: preview.workbookSummary.totalDuplicateRecords,
+        invalidRecords: preview.workbookSummary.totalInvalidRecords,
+        errorSummary: results.errors.slice(0, 50),
+      };
+      for (const entryId of entryByCampaignDate.values()) {
+        await saveImportMetadata(entryId, file.name, metricType, sheetNames, auditLog);
+      }
+
+      results.details.sort((a, b) => {
+        if (b.volume !== a.volume) return b.volume - a.volume;
+        const aMetric = a.transmittals ?? a.approvals ?? a.booked ?? a.ntb ?? a.count ?? 0;
+        const bMetric = b.transmittals ?? b.approvals ?? b.booked ?? b.ntb ?? b.count ?? 0;
+        return bMetric - aMetric;
+      });
+
+      return NextResponse.json({
+        message: `Imported ${results.success} records from ${selectedSheets.length} worksheet(s). ${results.created} new agent(s) created.`,
+        workbookSummary: preview.workbookSummary,
+        worksheetPreviews: selectedSheets.map(({ entries: _entries, matched: _matched, notFound: _notFound, ...sheet }) => sheet),
+        inserted: insertedRecords,
+        updated: updatedRecords,
+        ...results,
+      });
+    }
+    if (!isExcel && !isCsv) {
+      return NextResponse.json({ error: 'Only .xlsx, .xls, and .csv files are supported.' }, { status: 400 });
+    }
 
     // ─── EXCEL PATH ───────────────────────────────────────────────────────────
     if (isExcel) {

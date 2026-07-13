@@ -169,6 +169,19 @@ model ProductionDetail {
   qualityRate       Float?
   conversionRate    Float?
   volume            BigInt          @default(0)
+  transmittedVolume BigInt          @default(0)
+  approvalsVolume   BigInt          @default(0)
+  bookedVolume      BigInt          @default(0)
+  sourceSheet       String?
+  agentLevel        String?
+  dateHired         DateTime?
+  agentType         String?
+  monthlyGoal       Float?
+  monthlyActual     Float?
+  monthlyAchievement Float?
+  overallGoal       Float?
+  overallActual     Float?
+  overallAchievement Float?
   transaction       BigInt          @default(0)
   ntb               BigInt          @default(0) // ACQ: New-To-Bank accounts
   supplementary     BigInt          @default(0) // ACQ: supplementary accounts

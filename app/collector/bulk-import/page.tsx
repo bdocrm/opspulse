@@ -16,9 +16,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Upload, AlertCircle, CheckCircle, Download, UserPlus, Users, ArrowLeft, Eye, FileText, Trash2 } from 'lucide-react';
+import { Upload, AlertCircle, CheckCircle, Download, UserPlus, Users, ArrowLeft, Eye, FileText, Trash2, X } from 'lucide-react';
 
 type Step = 'configure' | 'previewing' | 'confirm' | 'importing' | 'done';
+type ImportMode = 'all' | 'worksheets' | 'single';
 
 interface MatchedAgent {
   name: string;
@@ -32,6 +33,15 @@ interface MatchedAgent {
   ntb?: number;
   supplementary?: number;
   seatCategory?: string;
+  sheet?: string;
+  campaignName?: string;
+  metricType?: string;
+  reportDate?: string;
+  fileName?: string;
+  row?: number;
+  goal?: number;
+  actual?: number;
+  achievement?: number;
 }
 
 interface NewAgent {
@@ -45,11 +55,21 @@ interface NewAgent {
   ntb?: number;
   supplementary?: number;
   seatCategory?: string;
+  sheet?: string;
+  campaignName?: string;
+  metricType?: string;
+  reportDate?: string;
+  fileName?: string;
+  row?: number;
+  goal?: number;
+  actual?: number;
+  achievement?: number;
 }
 
 interface ImportFileSummary {
   id: string;
   campaignName: string;
+  campaignId?: string;
   fileName: string;
   metricType: string;
   reportDate: string;
@@ -77,6 +97,36 @@ interface ImportFileSummary {
     supplementary: number;
     seatCategory?: string | null;
   }>;
+}
+
+interface WorksheetPreview {
+  key: string;
+  sheetName: string;
+  hidden: boolean;
+  selected: boolean;
+  format: string;
+  campaignName: string;
+  campaignId?: string;
+  campaignMapping: 'sheet' | 'selected';
+  metricType: string;
+  metricSource: 'sheet' | 'selected';
+  reportDate: string;
+  totalRows: number;
+  validRows: number;
+  invalidRows: number;
+  duplicateRows: number;
+  warnings: string[];
+  errors: string[];
+  fileName?: string;
+}
+
+interface WorkbookSummary {
+  totalWorksheets: number;
+  worksheetsAccepted: number;
+  worksheetsSkipped: number;
+  totalValidRecords: number;
+  totalInvalidRecords: number;
+  totalDuplicateRecords: number;
 }
 
 const METRIC_LABELS: Record<string, string> = {
@@ -140,7 +190,9 @@ export default function BulkImportPage() {
   const router = useRouter();
 
   // Settings
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [importMode, setImportMode] = useState<ImportMode>('all');
+  const [selectedFileNames, setSelectedFileNames] = useState<string[]>([]);
   const [metricType, setMetricType] = useState('transmittals');
   const [campaigns, setCampaigns] = useState<{ id: string; campaignName: string }[]>([]);
   const [campaignId, setCampaignId] = useState('');
@@ -154,6 +206,10 @@ export default function BulkImportPage() {
   const [step, setStep] = useState<Step>('configure');
   const [matched, setMatched] = useState<MatchedAgent[]>([]);
   const [newAgents, setNewAgents] = useState<NewAgent[]>([]);
+  const [worksheetPreviews, setWorksheetPreviews] = useState<WorksheetPreview[]>([]);
+  const [workbookSummary, setWorkbookSummary] = useState<WorkbookSummary | null>(null);
+  const [selectedWorksheetKeys, setSelectedWorksheetKeys] = useState<string[]>([]);
+  const [worksheetCampaigns, setWorksheetCampaigns] = useState<Record<string, string>>({});
   const [importResult, setImportResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [importDateSort, setImportDateSort] = useState<DateSortDirection>('desc');
@@ -162,6 +218,8 @@ export default function BulkImportPage() {
   const [loadingImportDetails, setLoadingImportDetails] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ImportFileSummary | null>(null);
   const [deletingImport, setDeletingImport] = useState(false);
+  const [previewFiles, setPreviewFiles] = useState<Array<{ file: File; index: number }>>([]);
+  const [previewFilter, setPreviewFilter] = useState({ file: '', sheet: '', campaign: '', month: '', metric: '', status: '' });
 
   const fetcher = (url: string) => fetch(url).then((res) => res.json());
   const { data: importHistoryData, mutate: mutateImportHistory } = useSWR<{ imports: ImportFileSummary[] }>(
@@ -189,6 +247,8 @@ export default function BulkImportPage() {
       ),
     [importResult?.details, importDateSort]
   );
+  const assignedCampaignIds: string[] = (session?.user as any)?.campaignIds || [];
+  const availableCampaigns = assignedCampaignIds.length ? campaigns.filter((campaign) => assignedCampaignIds.includes(campaign.id)) : campaigns;
   const importFiles = importHistoryData?.imports ?? [];
   const sortedImportFiles = useMemo(
     () =>
@@ -213,51 +273,86 @@ export default function BulkImportPage() {
 
   if (status === 'loading') return <div className="p-6">Loading...</div>;
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = e.target.files?.[0];
-    if (!selected) return;
-    if (!selected.name.endsWith('.csv') && !selected.name.endsWith('.xlsx')) {
-      alert('Please select a CSV or Excel file (.csv or .xlsx)');
-      return;
+  const addFiles = (incoming: File[]) => {
+    const accepted: File[] = [];
+    const existing = new Set(files.map((item) => `${item.name.toLowerCase()}|${item.size}|${item.lastModified}`));
+    for (const selected of incoming) {
+      if (!/\.(csv|xlsx|xls)$/i.test(selected.name)) {
+        setError(`${selected.name}: only .csv, .xlsx, and .xls files are supported.`);
+        continue;
+      }
+      if (selected.size > 10 * 1024 * 1024) {
+        setError(`${selected.name}: file exceeds the 10 MB maximum.`);
+        continue;
+      }
+      const key = `${selected.name.toLowerCase()}|${selected.size}|${selected.lastModified}`;
+      if (existing.has(key)) {
+        setError(`${selected.name}: duplicate file was not added.`);
+        continue;
+      }
+      existing.add(key);
+      accepted.push(selected);
     }
-    setFile(selected);
+    if (!accepted.length) return;
+    const next = [...files, ...accepted];
+    setFiles(next);
+    setSelectedFileNames(next.map((item) => item.name));
     setError(null);
-
-    // Read the MTD reporting period straight from the filename and align the
-    // report date to it (period end), so the import is anchored to the file's month.
-    const period = detectMTDPeriod(selected.name);
+    const period = detectMTDPeriod(accepted[0].name);
     setDetectedPeriod(period);
     if (period) setReportDate(period.endYmd);
   };
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    addFiles(Array.from(e.target.files ?? []));
+    e.target.value = '';
+  };
+
+  const removeFile = (name: string) => {
+    setFiles((current) => current.filter((item) => item.name !== name));
+    setSelectedFileNames((current) => current.filter((item) => item !== name));
+  };
+
   const handlePreview = async () => {
-    if (!file) { alert('Please select a file'); return; }
+    const activeFiles = files.filter((item) => selectedFileNames.includes(item.name));
+    if (!activeFiles.length) { alert('Please select at least one file'); return; }
     if (!campaignId) { alert('Please select a campaign'); return; }
     setStep('previewing');
     setError(null);
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('mode', 'preview');
-      fd.append('metricType', metricType);
-      fd.append('reportDate', reportDate);
-      fd.append('campaignId', campaignId);
-      if (detectedPeriod) {
-        fd.append('periodStart', detectedPeriod.startYmd);
-        fd.append('periodEnd', detectedPeriod.endYmd);
-      }
-
-      const res = await fetch('/api/collectors/bulk-import', { method: 'POST', body: fd });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.error || 'Preview failed');
-        setStep('configure');
-        return;
-      }
-
-      setMatched(data.matched || []);
-      setNewAgents((data.notFound || []).map((a: any) => ({ ...a, volume: a.volume ?? 0, approved: true })));
+      const responses = await Promise.all(activeFiles.map(async (activeFile, index) => {
+        const fd = new FormData();
+        fd.append('file', activeFile);
+        fd.append('mode', 'preview');
+        fd.append('importMode', importMode);
+        fd.append('metricType', importMode === 'single' ? metricType : 'all_metrics');
+        fd.append('reportDate', reportDate);
+        fd.append('campaignId', campaignId);
+        const period = detectMTDPeriod(activeFile.name);
+        if (period) { fd.append('periodStart', period.startYmd); fd.append('periodEnd', period.endYmd); }
+        const res = await fetch('/api/collectors/bulk-import', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(`${activeFile.name}: ${data.error || 'Preview failed'}`);
+        return { data, file: activeFile, index };
+      }));
+      setPreviewFiles(responses.map(({ file: previewFile, index }) => ({ file: previewFile, index })));
+      setMatched(responses.flatMap(({ data, file: previewFile }) => (data.matched || []).map((row: any) => ({ ...row, fileName: previewFile.name }))));
+      setNewAgents(responses.flatMap(({ data, file: previewFile }) => (data.notFound || []).map((row: any) => ({ ...row, fileName: previewFile.name }))).map((a: any) => ({ ...a, volume: a.volume ?? 0, approved: true })));
+      const summaries = responses.map(({ data }) => data.workbookSummary).filter(Boolean);
+      setWorkbookSummary(summaries.length ? {
+        totalWorksheets: summaries.reduce((n, s) => n + s.totalWorksheets, 0),
+        worksheetsAccepted: summaries.reduce((n, s) => n + s.worksheetsAccepted, 0),
+        worksheetsSkipped: summaries.reduce((n, s) => n + s.worksheetsSkipped, 0),
+        totalValidRecords: summaries.reduce((n, s) => n + s.totalValidRecords, 0),
+        totalInvalidRecords: summaries.reduce((n, s) => n + s.totalInvalidRecords, 0),
+        totalDuplicateRecords: summaries.reduce((n, s) => n + s.totalDuplicateRecords, 0),
+      } : null);
+      const sheets = responses.flatMap(({ data, file: previewFile, index }) =>
+        (data.worksheetPreviews || []).map((sheet: WorksheetPreview) => ({ ...sheet, key: `${index}::${sheet.key}`, fileName: previewFile.name }))
+      );
+      setWorksheetPreviews(sheets);
+      setWorksheetCampaigns(Object.fromEntries(sheets.map((sheet: WorksheetPreview) => [sheet.key, sheet.campaignId || campaignId])));
+      setSelectedWorksheetKeys(sheets.filter((sheet: WorksheetPreview) => sheet.selected && sheet.validRows > 0).map((sheet: WorksheetPreview) => sheet.key));
       setStep('confirm');
     } catch (err) {
       setError(String(err));
@@ -269,8 +364,15 @@ export default function BulkImportPage() {
     setNewAgents(prev => prev.map((a, i) => i === index ? { ...a, approved: !a.approved } : a));
   };
 
+  const toggleWorksheet = (key: string) => {
+    setSelectedWorksheetKeys((prev) =>
+      prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
+    );
+  };
+
   const approvedNew = newAgents.filter(a => a.approved);
   const skippedNew = newAgents.filter(a => !a.approved);
+  const selectedWorksheetCount = worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key)).length;
 
   // Right-side metric block for an agent row. ACQ imports carry NTB/supplementary
   // and a seat category; everything else shows the transmittals/volume view.
@@ -301,32 +403,39 @@ export default function BulkImportPage() {
   };
 
   const handleConfirmImport = async () => {
-    if (!file) return;
+    if (!previewFiles.length) return;
     setStep('importing');
     setError(null);
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('mode', 'import');
-      fd.append('metricType', metricType);
-      fd.append('reportDate', reportDate);
-      fd.append('campaignId', campaignId);
-      if (detectedPeriod) {
-        fd.append('periodStart', detectedPeriod.startYmd);
-        fd.append('periodEnd', detectedPeriod.endYmd);
+      const results = [];
+      for (const { file: activeFile, index } of previewFiles) {
+        const fd = new FormData();
+        fd.append('file', activeFile);
+        fd.append('mode', 'import');
+        fd.append('importMode', importMode);
+        fd.append('metricType', importMode === 'single' ? metricType : 'all_metrics');
+        fd.append('reportDate', reportDate);
+        fd.append('campaignId', campaignId);
+        const period = detectMTDPeriod(activeFile.name);
+        if (period) { fd.append('periodStart', period.startYmd); fd.append('periodEnd', period.endYmd); }
+        fd.append('confirmedNewAgents', JSON.stringify(approvedNew.map(a => a.name)));
+        fd.append('selectedWorksheetKeys', JSON.stringify(selectedWorksheetKeys.filter((key) => key.startsWith(`${index}::`)).map((key) => key.slice(key.indexOf('::') + 2))));
+        fd.append('campaignMappings', JSON.stringify(Object.fromEntries(Object.entries(worksheetCampaigns).filter(([key]) => key.startsWith(`${index}::`)).map(([key, value]) => [key.slice(key.indexOf('::') + 2), value]))));
+        const res = await fetch('/api/collectors/bulk-import', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(`${activeFile.name}: ${data.error || 'Import failed'}`);
+        results.push(data);
       }
-      fd.append('confirmedNewAgents', JSON.stringify(approvedNew.map(a => a.name)));
-
-      const res = await fetch('/api/collectors/bulk-import', { method: 'POST', body: fd });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.error || 'Import failed');
-        setStep('confirm');
-        return;
-      }
-
-      setImportResult(data);
+      setImportResult({
+        message: `Imported ${results.reduce((n, r) => n + (r.success || 0), 0)} records from ${results.length} file(s).`,
+        success: results.reduce((n, r) => n + (r.success || 0), 0),
+        created: results.reduce((n, r) => n + (r.created || 0), 0),
+        inserted: results.reduce((n, r) => n + (r.inserted || 0), 0),
+        updated: results.reduce((n, r) => n + (r.updated || 0), 0),
+        errors: results.flatMap((r) => r.errors || []),
+        details: results.flatMap((r) => r.details || []),
+        importedFiles: previewFiles.map((item) => item.file.name),
+      });
       setStep('done');
       mutateImportHistory();
 
@@ -342,9 +451,15 @@ export default function BulkImportPage() {
   };
 
   const handleReset = () => {
-    setFile(null);
+    setFiles([]);
+    setSelectedFileNames([]);
+    setPreviewFiles([]);
     setMatched([]);
     setNewAgents([]);
+    setWorksheetPreviews([]);
+    setWorkbookSummary(null);
+    setSelectedWorksheetKeys([]);
+    setWorksheetCampaigns({});
     setImportResult(null);
     setError(null);
     setDetectedPeriod(null);
@@ -386,6 +501,19 @@ export default function BulkImportPage() {
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     const a = document.createElement('a');
     a.href = url; a.download = metricType === 'acq' ? 'acq-import-template.csv' : 'bpi-pa-import-template.csv'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadErrorReport = () => {
+    const rows = (importResult?.errors || []).map((message: string) => {
+      const match = message.match(/^(.*?) row (\d+):\s*(.*)$/);
+      return [previewFiles[0]?.file.name || '', match?.[1] || '', match?.[2] || '', '', match?.[3] || message];
+    });
+    const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const csv = [['File name', 'Worksheet', 'Row number', 'Original row data', 'Validation error'], ...rows].map((row) => row.map(escape).join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = 'bulk-import-errors.csv'; anchor.click();
     URL.revokeObjectURL(url);
   };
 
@@ -459,20 +587,33 @@ export default function BulkImportPage() {
           <CardHeader>
             <CardTitle className="text-lg">Import Settings</CardTitle>
           </CardHeader>
-          <CardContent className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Campaign</label>
+              <label className="text-sm font-medium text-slate-700">Import Mode</label>
+              <select
+                value={importMode}
+                onChange={e => setImportMode(e.target.value as ImportMode)}
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="all">Import All Data (Recommended)</option>
+                <option value="worksheets">Import Selected Worksheets</option>
+                <option value="single">Import Single Metric</option>
+              </select>
+              <p className="text-xs text-slate-500">All Data detects supported worksheets and metrics automatically.</p>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Fallback Campaign</label>
               <select
                 value={campaignId}
                 onChange={e => setCampaignId(e.target.value)}
                 className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">Select a campaign…</option>
-                {campaigns.map(c => (
+                {availableCampaigns.map(c => (
                   <option key={c.id} value={c.id}>{c.campaignName}</option>
                 ))}
               </select>
-              <p className="text-xs text-slate-500">Campaign this data will be imported into</p>
+              <p className="text-xs text-slate-500">Used when a worksheet cannot be matched automatically.</p>
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">
@@ -481,6 +622,7 @@ export default function BulkImportPage() {
               <select
                 value={metricType}
                 onChange={e => setMetricType(e.target.value)}
+                disabled={importMode !== 'single'}
                 className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="transmittals">Transmitted</option>
@@ -490,7 +632,9 @@ export default function BulkImportPage() {
                 <option value="acq">ACQ (NTB &amp; Supplementary)</option>
               </select>
               <p className="text-xs text-slate-500">
-                {metricType === 'all_metrics'
+                {importMode !== 'single'
+                  ? 'Automatically detected from each worksheet'
+                  : metricType === 'all_metrics'
                   ? 'Transmitted, Approvals, and Booked columns will be stored separately'
                   : metricType === 'acq'
                   ? 'Highest NTB & Supplementary per agent stored, with seat category (BILLABLE/BUFFER)'
@@ -520,26 +664,49 @@ export default function BulkImportPage() {
             <CardTitle className="text-lg">Select File</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center hover:border-blue-500 transition">
-              <input type="file" accept=".csv,.xlsx" onChange={handleFileChange} className="hidden" id="file-input" />
+            <div
+              className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center hover:border-blue-500 transition"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => { event.preventDefault(); addFiles(Array.from(event.dataTransfer.files)); }}
+            >
+              <input type="file" accept=".csv,.xlsx,.xls" multiple onChange={handleFileChange} className="hidden" id="file-input" />
               <label htmlFor="file-input" className="cursor-pointer block">
                 <Upload className="h-8 w-8 mx-auto text-slate-400 mb-2" />
                 <p className="text-sm font-medium text-slate-700">
-                  {file ? file.name : 'Click to select or drag & drop'}
+                  {files.length ? `${files.length} file(s) selected` : 'Click to select or drag & drop'}
                 </p>
                 <p className="text-xs text-slate-500 mt-1">.csv or .xlsx · max 10 MB</p>
               </label>
             </div>
-            {file && (
+            {files.length > 0 && (
               <div className="text-sm rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-blue-800">
                 {detectedPeriod
                   ? <>Detected MTD period: <span className="font-semibold">{detectedPeriod.label}</span></>
                   : <>Could not detect a month in the filename — set the Report Date manually above.</>}
               </div>
             )}
-            <Button onClick={handlePreview} disabled={!file || !campaignId} className="w-full gap-2">
+            {files.length > 0 && (
+              <div className="space-y-2 rounded-lg border p-3">
+                {files.length > 1 && (
+                  <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                    <input type="checkbox" checked={selectedFileNames.length === files.length} onChange={(event) => setSelectedFileNames(event.target.checked ? files.map((item) => item.name) : [])} className="h-4 w-4 accent-blue-600" />
+                    Select All Files
+                  </label>
+                )}
+                {files.map((item) => (
+                  <div key={`${item.name}-${item.lastModified}`} className="flex items-center gap-2 rounded-md bg-slate-50 px-3 py-2 text-sm">
+                    <input type="checkbox" checked={selectedFileNames.includes(item.name)} onChange={() => setSelectedFileNames((current) => current.includes(item.name) ? current.filter((name) => name !== item.name) : [...current, item.name])} className="h-4 w-4 accent-blue-600" />
+                    <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                    <span className="text-xs text-slate-400">{(item.size / 1024 / 1024).toFixed(2)} MB</span>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => removeFile(item.name)} aria-label={`Remove ${item.name}`}><X className="h-4 w-4" /></Button>
+                  </div>
+                ))}
+                <Button type="button" variant="outline" size="sm" onClick={() => { setFiles([]); setSelectedFileNames([]); }}>Clear All Files</Button>
+              </div>
+            )}
+            <Button onClick={handlePreview} disabled={selectedFileNames.length === 0 || !campaignId} className="w-full gap-2">
               <Upload className="h-4 w-4" />
-              Preview Import
+              Preview All Data
             </Button>
           </CardContent>
         </Card>
@@ -733,6 +900,20 @@ export default function BulkImportPage() {
 
   // ─── STEP: CONFIRM ──────────────────────────────────────────────────────────
   if (step === 'confirm') {
+    const previewRows = [
+      ...matched.map((row) => ({ ...row, previewStatus: 'Valid', validationMessage: '' })),
+      ...newAgents.map((row) => ({ ...row, previewStatus: 'Mapping Required', validationMessage: 'Agent not found; approve creation or deselect it.' })),
+    ];
+    const previewOptions = (key: 'fileName' | 'sheet' | 'campaignName' | 'reportDate' | 'metricType') =>
+      [...new Set(previewRows.map((row) => row[key]).filter(Boolean) as string[])].sort();
+    const filteredPreviewRows = previewRows.filter((row) =>
+      (!previewFilter.file || row.fileName === previewFilter.file) &&
+      (!previewFilter.sheet || row.sheet === previewFilter.sheet) &&
+      (!previewFilter.campaign || row.campaignName === previewFilter.campaign) &&
+      (!previewFilter.month || row.reportDate?.slice(0, 7) === previewFilter.month) &&
+      (!previewFilter.metric || row.metricType === previewFilter.metric) &&
+      (!previewFilter.status || row.previewStatus === previewFilter.status)
+    );
     return (
       <div className="space-y-6 p-6">
         <PageTitle title="Review Before Import" subtitle="Confirm the agents and data before saving" />
@@ -766,6 +947,149 @@ export default function BulkImportPage() {
             <p className="text-xs text-blue-600 mt-1">Will Be Imported</p>
           </div>
         </div>
+
+        {workbookSummary && (
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle className="text-lg">Workbook Summary</CardTitle>
+                <div className="flex gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys(worksheetPreviews.filter((sheet) => sheet.validRows > 0).map((sheet) => sheet.key))}>Select All</Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys([])}>Clear All</Button>
+                </div>
+              </div>
+              <CardDescription>
+                {selectedWorksheetCount} worksheet(s) selected for import. Uncheck any worksheet you do not want to import.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-6">
+                <div className="rounded-lg border bg-slate-50 p-3 text-center">
+                  <p className="text-lg font-semibold">{workbookSummary.totalWorksheets}</p>
+                  <p className="text-xs text-slate-500">Worksheets</p>
+                </div>
+                <div className="rounded-lg border bg-green-50 p-3 text-center">
+                  <p className="text-lg font-semibold text-green-700">{workbookSummary.worksheetsAccepted}</p>
+                  <p className="text-xs text-green-600">Accepted</p>
+                </div>
+                <div className="rounded-lg border bg-slate-50 p-3 text-center">
+                  <p className="text-lg font-semibold">{workbookSummary.worksheetsSkipped}</p>
+                  <p className="text-xs text-slate-500">Skipped</p>
+                </div>
+                <div className="rounded-lg border bg-blue-50 p-3 text-center">
+                  <p className="text-lg font-semibold text-blue-700">{workbookSummary.totalValidRecords}</p>
+                  <p className="text-xs text-blue-600">Valid</p>
+                </div>
+                <div className="rounded-lg border bg-red-50 p-3 text-center">
+                  <p className="text-lg font-semibold text-red-700">{workbookSummary.totalInvalidRecords}</p>
+                  <p className="text-xs text-red-600">Invalid</p>
+                </div>
+                <div className="rounded-lg border bg-amber-50 p-3 text-center">
+                  <p className="text-lg font-semibold text-amber-700">{workbookSummary.totalDuplicateRecords}</p>
+                  <p className="text-xs text-amber-600">Duplicates</p>
+                </div>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-2">
+                {worksheetPreviews.map((sheet) => {
+                  const disabled = sheet.validRows === 0;
+                  const checked = selectedWorksheetKeys.includes(sheet.key);
+                  return (
+                    <label
+                      key={sheet.key}
+                      className={`rounded-lg border p-3 text-sm transition ${
+                        disabled
+                          ? 'bg-slate-50 opacity-70'
+                          : checked
+                            ? 'border-blue-300 bg-blue-50'
+                            : 'bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={disabled}
+                          onChange={() => toggleWorksheet(sheet.key)}
+                          className="mt-1 h-4 w-4 accent-blue-600"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-semibold text-slate-800">{sheet.sheetName}</p>
+                            {sheet.hidden && <span className="rounded-full bg-slate-200 px-2 py-0.5 text-xs text-slate-600">Hidden</span>}
+                            <span className="rounded-full bg-white px-2 py-0.5 text-xs text-slate-600">{sheet.format}</span>
+                          </div>
+                          {sheet.fileName && <p className="mt-1 truncate text-xs font-medium text-blue-700">{sheet.fileName}</p>}
+                          {sheet.campaignMapping === 'selected' && (
+                            <select
+                              value={worksheetCampaigns[sheet.key] || campaignId}
+                              onChange={(event) => setWorksheetCampaigns((current) => ({ ...current, [sheet.key]: event.target.value }))}
+                              onClick={(event) => event.preventDefault()}
+                              className="mt-2 w-full rounded-md border border-amber-300 bg-white px-2 py-1 text-xs"
+                            >
+                              {availableCampaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.campaignName}</option>)}
+                            </select>
+                          )}
+                          <p className="mt-1 text-xs text-slate-500">
+                            {sheet.campaignName} ({sheet.campaignMapping === 'sheet' ? 'matched from sheet' : 'selected campaign'}) · {metricLabel(sheet.metricType)} · {formatDate(sheet.reportDate)}
+                          </p>
+                          <p className="mt-2 text-xs text-slate-600">
+                            Rows {sheet.totalRows} · Valid {sheet.validRows} · Invalid {sheet.invalidRows} · Duplicates {sheet.duplicateRows}
+                          </p>
+                          {[...sheet.errors, ...sheet.warnings].slice(0, 3).map((message, i) => (
+                            <p key={i} className={`mt-1 text-xs ${sheet.errors.includes(message) ? 'text-red-600' : 'text-amber-700'}`}>
+                              {message}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div><CardTitle className="text-lg">Data Preview</CardTitle><CardDescription>{filteredPreviewRows.length} of {previewRows.length} normalized records shown</CardDescription></div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys(worksheetPreviews.filter((sheet) => sheet.validRows > 0).map((sheet) => sheet.key))}>Select All Valid Records</Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys([])}>Deselect All</Button>
+                <label className="flex items-center gap-2 rounded-md border px-3 text-xs font-medium"><input type="checkbox" checked readOnly /> Import Valid Records Only</label>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+              {[
+                ['file', 'File', previewOptions('fileName')], ['sheet', 'Worksheet', previewOptions('sheet')],
+                ['campaign', 'Campaign', previewOptions('campaignName')],
+                ['month', 'Month', [...new Set(previewOptions('reportDate').map((value) => value.slice(0, 7)))]],
+                ['metric', 'Metric', previewOptions('metricType')], ['status', 'Status', ['Valid', 'Mapping Required']],
+              ].map(([key, label, values]) => (
+                <select key={key as string} value={previewFilter[key as keyof typeof previewFilter]} onChange={(event) => setPreviewFilter((current) => ({ ...current, [key as string]: event.target.value }))} className="rounded-md border px-2 py-2 text-xs">
+                  <option value="">All {label as string}s</option>
+                  {(values as string[]).map((value) => <option key={value} value={value}>{value}</option>)}
+                </select>
+              ))}
+            </div>
+            <div className="max-h-96 overflow-auto rounded-lg border">
+              <table className="w-full min-w-[1100px] text-xs">
+                <thead className="sticky top-0 bg-slate-100 text-left"><tr>{['File', 'Worksheet', 'Campaign', 'Agent', 'Month', 'Metric', 'Count', 'Volume', 'Goal', 'Actual', 'Status', 'Validation Message'].map((label) => <th key={label} className="p-2 font-medium">{label}</th>)}</tr></thead>
+                <tbody>{filteredPreviewRows.slice(0, 500).map((row, index) => (
+                  <tr key={`${row.fileName}-${row.sheet}-${row.row}-${index}`} className="border-t">
+                    <td className="max-w-40 truncate p-2">{row.fileName}</td><td className="p-2">{row.sheet}</td><td className="p-2">{row.campaignName}</td><td className="p-2 font-medium">{'agentName' in row ? row.agentName : row.name}</td>
+                    <td className="p-2">{row.reportDate?.slice(0, 7) || '-'}</td><td className="p-2">{metricLabel(row.metricType || metricType)}</td><td className="p-2 text-right">{(row.count || 0).toLocaleString()}</td><td className="p-2 text-right">{(row.volume || 0).toLocaleString()}</td><td className="p-2 text-right">{row.goal?.toLocaleString() || '-'}</td><td className="p-2 text-right">{row.actual?.toLocaleString() || '-'}</td>
+                    <td className={`p-2 font-medium ${row.previewStatus === 'Valid' ? 'text-green-700' : 'text-amber-700'}`}>{row.previewStatus}</td><td className="p-2 text-slate-500">{row.validationMessage || '-'}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* New agents confirmation */}
         {newAgents.length > 0 && (
@@ -855,11 +1179,11 @@ export default function BulkImportPage() {
           </Button>
           <Button
             onClick={handleConfirmImport}
-            disabled={matched.length === 0 && approvedNew.length === 0}
+            disabled={(matched.length === 0 && approvedNew.length === 0) || (worksheetPreviews.length > 0 && selectedWorksheetCount === 0)}
             className="flex-1 gap-2 bg-green-600 hover:bg-green-700"
           >
             <CheckCircle className="h-4 w-4" />
-            Confirm &amp; Import{approvedNew.length > 0 ? ` (+ Create ${approvedNew.length} New Agent${approvedNew.length > 1 ? 's' : ''})` : ''}
+            Import Selected Data{approvedNew.length > 0 ? ` (+ Create ${approvedNew.length} New Agent${approvedNew.length > 1 ? 's' : ''})` : ''}
           </Button>
         </div>
       </div>
@@ -916,7 +1240,7 @@ export default function BulkImportPage() {
 
           {importResult?.errors?.length > 0 && (
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-              <p className="text-sm font-medium text-yellow-900 mb-2">Errors:</p>
+              <div className="mb-2 flex items-center justify-between gap-2"><p className="text-sm font-medium text-yellow-900">Errors:</p><Button type="button" variant="outline" size="sm" onClick={downloadErrorReport}><Download className="mr-1 h-4 w-4" />Download Error Report</Button></div>
               <ul className="text-sm text-yellow-800 space-y-1 max-h-40 overflow-y-auto">
                 {importResult.errors.map((err: string, i: number) => (
                   <li key={i}>• {err}</li>
