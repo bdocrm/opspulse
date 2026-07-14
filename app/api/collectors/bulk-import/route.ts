@@ -1340,7 +1340,7 @@ async function persistBdoImport({
   importedById: string;
   selectedWorksheetKeys: string[];
 }) {
-  const selectedSheets = preview.worksheetPreviews.filter((sheet) => !selectedWorksheetKeys.length || selectedWorksheetKeys.includes(sheet.key));
+  const selectedSheets = preview.worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key));
   const campaignBySheet = new Map(selectedSheets.map((sheet) => [sheet.sheetName, campaignMappings[sheet.key] || (sheet.campaignMapping === 'unresolved' ? '' : sheet.campaignId)]));
   const explicitlyMappedSheets = new Set(selectedSheets.filter((sheet) => Boolean(campaignMappings[sheet.key])).map((sheet) => sheet.sheetName));
   const records = preview.parsed.records
@@ -1717,9 +1717,19 @@ export async function POST(req: NextRequest) {
             validationWarnings: bdoPreview.parsed.issues.slice(0, 200),
           });
         }
-        const selectedWorksheetKeys: string[] = JSON.parse((formData.get('selectedWorksheetKeys') as string) || '[]');
+        const selectedWorksheetKeysValue = formData.get('selectedWorksheetKeys');
+        const submittedWorksheetKeys: string[] = JSON.parse((selectedWorksheetKeysValue as string) || '[]');
+        const selectedWorksheetKeys = selectedWorksheetKeysValue === null
+          ? bdoPreview.worksheetPreviews.filter((sheet) => sheet.selected).map((sheet) => sheet.key)
+          : submittedWorksheetKeys;
+        if (selectedWorksheetKeys.length === 0) {
+          return NextResponse.json({ error: 'Select at least one valid worksheet before importing.' }, { status: 400 });
+        }
         const campaignMappings: Record<string, string> = JSON.parse((formData.get('campaignMappings') as string) || '{}');
-        const selectedBdoSheets = bdoPreview.worksheetPreviews.filter((sheet) => (!selectedWorksheetKeys.length || selectedWorksheetKeys.includes(sheet.key)) && sheet.validRows > 0);
+        const selectedBdoSheets = bdoPreview.worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key) && sheet.validRows > 0);
+        if (selectedBdoSheets.length === 0) {
+          return NextResponse.json({ error: 'No selected worksheets contain valid rows to import.' }, { status: 400 });
+        }
         const invalidMapping = selectedBdoSheets.find((sheet) => {
           const mappedId = campaignMappings[sheet.key];
           return (sheet.campaignMapping === 'unresolved' && !mappedId) || Boolean(mappedId && !selectedCampaigns.some((campaign) => campaign.id === mappedId));
@@ -1737,7 +1747,7 @@ export async function POST(req: NextRequest) {
           reportPeriodType,
           reportDate,
           importedById: user.id,
-          selectedWorksheetKeys,
+          selectedWorksheetKeys: selectedBdoSheets.map((sheet) => sheet.key),
         });
         return NextResponse.json({ ...result, workbookSummary: bdoPreview.workbookSummary, worksheetPreviews: bdoPreview.worksheetPreviews, normalizedImported: result.inserted, normalizedDuplicates: result.skipped });
       }
@@ -1778,11 +1788,12 @@ export async function POST(req: NextRequest) {
       }
 
       const confirmedNewAgents: string[] = JSON.parse((formData.get('confirmedNewAgents') as string) || '[]');
-      const selectedWorksheetKeys: string[] = JSON.parse((formData.get('selectedWorksheetKeys') as string) || '[]');
+      const selectedWorksheetKeysValue = formData.get('selectedWorksheetKeys');
+      const submittedWorksheetKeys: string[] = JSON.parse((selectedWorksheetKeysValue as string) || '[]');
       const campaignMappings: Record<string, string> = JSON.parse((formData.get('campaignMappings') as string) || '{}');
       const selectedKeySet = new Set(
-        selectedWorksheetKeys.length
-          ? selectedWorksheetKeys
+        selectedWorksheetKeysValue !== null
+          ? submittedWorksheetKeys
           : preview.sheets.filter((sheet) => sheet.selected).map((sheet) => sheet.key)
       );
       const selectedSheets = preview.sheets.filter((sheet) => selectedKeySet.has(sheet.key) && sheet.validRows > 0);

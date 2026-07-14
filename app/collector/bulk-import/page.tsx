@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import useSWR from 'swr';
@@ -168,6 +168,18 @@ interface MonthImportSummary {
   invalid: number;
 }
 
+function worksheetValidationReason(sheet: WorksheetPreview, mappings: Record<string, string>) {
+  if (sheet.validRows <= 0) return sheet.totalRows <= 0 ? 'Worksheet is empty.' : 'No valid importable records were detected.';
+  if (/^(unsupported|skipped|invalid)$/i.test(sheet.format)) return `Unsupported or invalid worksheet format: ${sheet.format}.`;
+  if (sheet.errors.length > 0) return sheet.errors[0] || 'Worksheet validation failed.';
+  if (sheet.campaignMapping !== 'record' && !mappings[sheet.key]) return 'Campaign mapping could not be detected confidently. Select a campaign to continue.';
+  return '';
+}
+
+function isWorksheetEligible(sheet: WorksheetPreview, mappings: Record<string, string>) {
+  return worksheetValidationReason(sheet, mappings) === '';
+}
+
 const METRIC_LABELS: Record<string, string> = {
   transmittals: 'Transmitted',
   approvals: 'Approvals',
@@ -268,6 +280,7 @@ export default function BulkImportPage() {
   const [previewFilter, setPreviewFilter] = useState({ file: '', sheet: '', campaign: '', month: '', metric: '', status: '' });
   const [normalizedPreviewRecords, setNormalizedPreviewRecords] = useState<NormalizedPreviewRecord[]>([]);
   const [monthSummaries, setMonthSummaries] = useState<MonthImportSummary[]>([]);
+  const previewInFlight = useRef(false);
 
   const fetcher = (url: string) => fetch(url).then((res) => res.json());
   const { data: importHistoryData, mutate: mutateImportHistory } = useSWR<{ imports: ImportFileSummary[] }>(
@@ -399,9 +412,20 @@ export default function BulkImportPage() {
   };
 
   const handlePreview = async () => {
+    if (previewInFlight.current) return;
     const activeFiles = files.filter((item) => selectedFileNames.includes(item.name));
     if (!activeFiles.length) { alert('Please select at least one file'); return; }
     if (!campaignIds.length) { setError('Select at least one campaign before previewing the file.'); return; }
+    previewInFlight.current = true;
+    // A reprocessed file must never inherit review state from an earlier file.
+    setSelectedWorksheetKeys([]);
+    setWorksheetCampaigns({});
+    setWorksheetPreviews([]);
+    setWorkbookSummary(null);
+    setMatched([]);
+    setNewAgents([]);
+    setNormalizedPreviewRecords([]);
+    setMonthSummaries([]);
     setStep('previewing');
     setError(null);
     try {
@@ -461,30 +485,69 @@ export default function BulkImportPage() {
       const sheets = responses.flatMap(({ data, file: previewFile, index }) =>
         (data.worksheetPreviews || []).map((sheet: WorksheetPreview) => ({ ...sheet, key: `${index}::${sheet.key}`, fileName: previewFile.name }))
       );
+      const initialMappings = Object.fromEntries(sheets.map((sheet: WorksheetPreview) => [sheet.key, sheet.campaignMapping === 'unresolved' || sheet.campaignMapping === 'record' ? '' : sheet.campaignId || campaignIds[0] || '']));
       setWorksheetPreviews(sheets);
-      setWorksheetCampaigns(Object.fromEntries(sheets.map((sheet: WorksheetPreview) => [sheet.key, sheet.campaignMapping === 'unresolved' || sheet.campaignMapping === 'record' ? '' : sheet.campaignId || campaignIds[0] || ''])));
-      setSelectedWorksheetKeys(sheets.filter((sheet: WorksheetPreview) => sheet.selected && sheet.validRows > 0).map((sheet: WorksheetPreview) => sheet.key));
+      setWorksheetCampaigns(initialMappings);
+      setSelectedWorksheetKeys(sheets.filter((sheet: WorksheetPreview) => sheet.selected && isWorksheetEligible(sheet, initialMappings)).map((sheet: WorksheetPreview) => sheet.key));
       setStep('confirm');
     } catch (err) {
       setError(String(err));
       setStep('configure');
+    } finally {
+      previewInFlight.current = false;
     }
   };
 
-  const toggleAgentApproval = (index: number) => {
-    setNewAgents(prev => prev.map((a, i) => i === index ? { ...a, approved: !a.approved } : a));
+  const toggleAgentApproval = (target: NewAgent) => {
+    setNewAgents(prev => prev.map((agent) => agent === target ? { ...agent, approved: !agent.approved } : agent));
   };
 
   const toggleWorksheet = (key: string) => {
+    const sheet = worksheetPreviews.find((item) => item.key === key);
+    if (!sheet || !isWorksheetEligible(sheet, worksheetCampaigns)) return;
     setSelectedWorksheetKeys((prev) =>
       prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
     );
   };
 
-  const approvedNew = newAgents.filter(a => a.approved);
-  const skippedNew = newAgents.filter(a => !a.approved);
-  const selectedWorksheetCount = worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key)).length;
-  const selectedValidWorksheetCount = worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key) && sheet.validRows > 0).length;
+  const handleWorksheetCampaignChange = (sheet: WorksheetPreview, campaignId: string) => {
+    const nextMappings = { ...worksheetCampaigns, [sheet.key]: campaignId };
+    setWorksheetCampaigns(nextMappings);
+    setSelectedWorksheetKeys((current) => {
+      const withoutSheet = current.filter((key) => key !== sheet.key);
+      return isWorksheetEligible(sheet, nextMappings) ? [...withoutSheet, sheet.key] : withoutSheet;
+    });
+  };
+
+  const eligibleWorksheets = worksheetPreviews.filter((sheet) => isWorksheetEligible(sheet, worksheetCampaigns));
+  const selectedWorksheets = eligibleWorksheets.filter((sheet) => selectedWorksheetKeys.includes(sheet.key));
+  const selectedWorksheetIdentities = new Set(selectedWorksheets.map((sheet) => `${sheet.fileName || ''}|${sheet.sheetName}`));
+  const rowBelongsToSelectedWorksheet = (row: { fileName?: string; sheet?: string }) =>
+    worksheetPreviews.length === 0 || selectedWorksheetIdentities.has(`${row.fileName || ''}|${row.sheet || ''}`);
+  const selectedMatched = matched.filter(rowBelongsToSelectedWorksheet);
+  const selectedNewAgents = newAgents.filter(rowBelongsToSelectedWorksheet);
+  const selectedPreviewRecords = normalizedPreviewRecords.filter(rowBelongsToSelectedWorksheet);
+  const approvedNew = selectedNewAgents.filter(a => a.approved);
+  const skippedNew = selectedNewAgents.filter(a => !a.approved);
+  const selectedWorksheetCount = selectedWorksheets.length;
+  const selectedValidWorksheetCount = selectedWorksheets.length;
+  const selectedWorksheetSummary = {
+    accepted: selectedWorksheets.length,
+    skipped: Math.max(0, worksheetPreviews.length - selectedWorksheets.length),
+    valid: selectedWorksheets.reduce((total, sheet) => total + sheet.validRows, 0),
+    invalid: selectedWorksheets.reduce((total, sheet) => total + sheet.invalidRows, 0),
+    duplicates: selectedWorksheets.reduce((total, sheet) => total + sheet.duplicateRows, 0),
+  };
+  const hasAgentReview = matched.length > 0 || newAgents.length > 0;
+  const selectedExistingCount = hasAgentReview
+    ? selectedMatched.length
+    : selectedPreviewRecords.filter((record) => record.status === 'Existing').length;
+  const selectedNewCount = hasAgentReview
+    ? selectedNewAgents.length
+    : selectedPreviewRecords.filter((record) => record.status !== 'Existing').length;
+  const recordsToImport = hasAgentReview
+    ? selectedMatched.length + approvedNew.length
+    : selectedWorksheetSummary.valid;
 
   // Right-side metric block for an agent row. ACQ imports carry NTB/supplementary
   // and a seat category; everything else shows the transmittals/volume view.
@@ -1082,15 +1145,15 @@ export default function BulkImportPage() {
         {/* Summary banner */}
         <div className="grid grid-cols-3 gap-3">
           <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
-            <p className="text-2xl font-bold text-green-700">{matched.length}</p>
+            <p className="text-2xl font-bold text-green-700">{selectedExistingCount}</p>
             <p className="text-xs text-green-600 mt-1">Existing Agents</p>
           </div>
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-center">
-            <p className="text-2xl font-bold text-amber-700">{newAgents.length}</p>
+            <p className="text-2xl font-bold text-amber-700">{selectedNewCount}</p>
             <p className="text-xs text-amber-600 mt-1">New Agents Found</p>
           </div>
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
-            <p className="text-2xl font-bold text-blue-700">{matched.length + approvedNew.length}</p>
+            <p className="text-2xl font-bold text-blue-700">{recordsToImport}</p>
             <p className="text-xs text-blue-600 mt-1">Will Be Imported</p>
           </div>
         </div>
@@ -1101,38 +1164,42 @@ export default function BulkImportPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <CardTitle className="text-lg">Workbook Summary</CardTitle>
                 <div className="flex gap-2">
-                  <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys(worksheetPreviews.map((sheet) => sheet.key))}>Select All</Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys(eligibleWorksheets.map((sheet) => sheet.key))}>Select All</Button>
                   <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys([])}>Clear All</Button>
                 </div>
               </div>
               <CardDescription>
-                {selectedWorksheetCount} worksheet(s) selected; {selectedValidWorksheetCount} contain valid records. Empty or unsupported sheets remain selectable for review but are safely skipped during import.
+                {selectedWorksheetCount} worksheet(s) selected automatically from the import-ready results. Worksheets requiring review remain unchecked until their validation or campaign mapping is resolved.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-6">
+              <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4 xl:grid-cols-7">
                 <div className="rounded-lg border bg-slate-50 p-3 text-center">
                   <p className="text-lg font-semibold">{workbookSummary.totalWorksheets}</p>
                   <p className="text-xs text-slate-500">Worksheets</p>
                 </div>
+                <div className="rounded-lg border bg-blue-50 p-3 text-center">
+                  <p className="text-lg font-semibold text-blue-700">{selectedWorksheetCount}</p>
+                  <p className="text-xs text-blue-600">Selected</p>
+                </div>
                 <div className="rounded-lg border bg-green-50 p-3 text-center">
-                  <p className="text-lg font-semibold text-green-700">{workbookSummary.worksheetsAccepted}</p>
+                  <p className="text-lg font-semibold text-green-700">{selectedWorksheetSummary.accepted}</p>
                   <p className="text-xs text-green-600">Accepted</p>
                 </div>
                 <div className="rounded-lg border bg-slate-50 p-3 text-center">
-                  <p className="text-lg font-semibold">{workbookSummary.worksheetsSkipped}</p>
+                  <p className="text-lg font-semibold">{selectedWorksheetSummary.skipped}</p>
                   <p className="text-xs text-slate-500">Skipped</p>
                 </div>
                 <div className="rounded-lg border bg-blue-50 p-3 text-center">
-                  <p className="text-lg font-semibold text-blue-700">{workbookSummary.totalValidRecords}</p>
+                  <p className="text-lg font-semibold text-blue-700">{selectedWorksheetSummary.valid}</p>
                   <p className="text-xs text-blue-600">Valid</p>
                 </div>
                 <div className="rounded-lg border bg-red-50 p-3 text-center">
-                  <p className="text-lg font-semibold text-red-700">{workbookSummary.totalInvalidRecords}</p>
+                  <p className="text-lg font-semibold text-red-700">{selectedWorksheetSummary.invalid}</p>
                   <p className="text-xs text-red-600">Invalid</p>
                 </div>
                 <div className="rounded-lg border bg-amber-50 p-3 text-center">
-                  <p className="text-lg font-semibold text-amber-700">{workbookSummary.totalDuplicateRecords}</p>
+                  <p className="text-lg font-semibold text-amber-700">{selectedWorksheetSummary.duplicates}</p>
                   <p className="text-xs text-amber-600">Duplicates</p>
                 </div>
               </div>
@@ -1153,13 +1220,14 @@ export default function BulkImportPage() {
               <div className="grid gap-3 lg:grid-cols-2">
                 {worksheetPreviews.map((sheet) => {
                   const checked = selectedWorksheetKeys.includes(sheet.key);
+                  const validationReason = worksheetValidationReason(sheet, worksheetCampaigns);
                   return (
                     <div
                       key={sheet.key}
                       className={`rounded-lg border p-3 text-sm transition ${
                         checked
                           ? 'border-blue-300 bg-blue-50'
-                          : sheet.validRows === 0
+                          : validationReason
                             ? 'bg-slate-50'
                             : 'bg-white hover:bg-slate-50'
                       }`}
@@ -1168,8 +1236,9 @@ export default function BulkImportPage() {
                         <input
                           type="checkbox"
                           checked={checked}
+                          disabled={Boolean(validationReason)}
                           onChange={() => toggleWorksheet(sheet.key)}
-                          className="mt-1 h-4 w-4 accent-blue-600"
+                          className="mt-1 h-4 w-4 accent-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
                         />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
@@ -1180,7 +1249,7 @@ export default function BulkImportPage() {
                           {sheet.fileName && <p className="mt-1 truncate text-xs font-medium text-blue-700">{sheet.fileName}</p>}
                           <select
                             value={worksheetCampaigns[sheet.key] ?? ''}
-                            onChange={(event) => setWorksheetCampaigns((current) => ({ ...current, [sheet.key]: event.target.value }))}
+                            onChange={(event) => handleWorksheetCampaignChange(sheet, event.target.value)}
                             className={`mt-2 w-full rounded-md border bg-white px-2 py-1 text-xs ${sheet.campaignMapping === 'unresolved' && !worksheetCampaigns[sheet.key] ? 'border-amber-400' : 'border-slate-300'}`}
                             aria-label={`Campaign for ${sheet.sheetName}`}
                           >
@@ -1198,6 +1267,14 @@ export default function BulkImportPage() {
                               {message}
                             </p>
                           ))}
+                          {validationReason && (
+                            <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-800">
+                              Not selected automatically: {validationReason}
+                            </p>
+                          )}
+                          {!validationReason && !checked && (
+                            <p className="mt-2 text-xs text-slate-500">Deselected by the Collector.</p>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1236,7 +1313,7 @@ export default function BulkImportPage() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div><CardTitle className="text-lg">Data Preview</CardTitle><CardDescription>{filteredPreviewRows.length} of {previewRows.length} normalized records shown</CardDescription></div>
               <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys(worksheetPreviews.filter((sheet) => sheet.validRows > 0).map((sheet) => sheet.key))}>Select All Valid Records</Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys(eligibleWorksheets.map((sheet) => sheet.key))}>Select All Valid Records</Button>
                 <Button type="button" variant="outline" size="sm" onClick={() => setSelectedWorksheetKeys([])}>Deselect All</Button>
                 <label className="flex items-center gap-2 rounded-md border px-3 text-xs font-medium"><input type="checkbox" checked readOnly /> Import Valid Records Only</label>
               </div>
@@ -1272,7 +1349,7 @@ export default function BulkImportPage() {
         </Card>
 
         {/* New agents confirmation */}
-        {newAgents.length > 0 && (
+        {selectedNewAgents.length > 0 && (
           <Card className="border-amber-200">
             <CardHeader>
               <div className="flex items-center gap-2">
@@ -1285,7 +1362,7 @@ export default function BulkImportPage() {
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
-                {newAgents.map((agent, i) => (
+                {selectedNewAgents.map((agent, i) => (
                   <label
                     key={i}
                     className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition ${
@@ -1297,7 +1374,7 @@ export default function BulkImportPage() {
                     <input
                       type="checkbox"
                       checked={agent.approved}
-                      onChange={() => toggleAgentApproval(i)}
+                      onChange={() => toggleAgentApproval(agent)}
                       className="h-4 w-4 accent-amber-500"
                     />
                     <div className="flex-1 min-w-0">
@@ -1320,20 +1397,20 @@ export default function BulkImportPage() {
         )}
 
         {/* Matched agents */}
-        <Card>
+        {hasAgentReview && <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
               <Users className="h-5 w-5 text-green-600" />
-              <CardTitle className="text-green-800">Matched Agents ({matched.length})</CardTitle>
+              <CardTitle className="text-green-800">Matched Agents ({selectedMatched.length})</CardTitle>
             </div>
             <CardDescription>These agents were found in the campaign and will be imported.</CardDescription>
           </CardHeader>
           <CardContent>
-            {matched.length === 0 ? (
+            {selectedMatched.length === 0 ? (
               <p className="text-sm text-slate-500">No existing agents matched.</p>
             ) : (
               <div className="max-h-64 overflow-y-auto space-y-1">
-                {matched.map((agent, i) => (
+                {selectedMatched.map((agent, i) => (
                   <div key={i} className="flex items-center justify-between px-3 py-2 rounded-lg bg-green-50 border border-green-100">
                     <div>
                       <p className="text-sm font-medium text-slate-800">{agent.agentName}</p>
@@ -1349,7 +1426,7 @@ export default function BulkImportPage() {
               </div>
             )}
           </CardContent>
-        </Card>
+        </Card>}
 
         {/* Action buttons */}
         <div className="flex flex-col sm:flex-row gap-3">
@@ -1359,7 +1436,7 @@ export default function BulkImportPage() {
           </Button>
           <Button
             onClick={handleConfirmImport}
-            disabled={(matched.length === 0 && approvedNew.length === 0) || (worksheetPreviews.length > 0 && selectedValidWorksheetCount === 0)}
+            disabled={recordsToImport === 0 || (worksheetPreviews.length > 0 && selectedValidWorksheetCount === 0)}
             className="flex-1 gap-2 bg-green-600 hover:bg-green-700"
           >
             <CheckCircle className="h-4 w-4" />
