@@ -52,7 +52,9 @@ export type BdoSheetResult = {
 };
 
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-const INVALID_NUMBER = /^(?:#(?:div\/0!|value!|n\/a|ref!|num!|name\?|null!)|no\s+final\s+report.*)$/i;
+const INVALID_NUMBER = /^#(?:div\/0!|value!|n\/a|ref!|num!|name\?|null!)$/i;
+const EMPTY_NUMBER_MARKER = /^(?:no\s+final\s+report.*|sl|n\/a|na|-|—)$/i;
+const AGENT_LEVEL_MARKER = /^(?:core|aspirant|rookie(?:\s+i{1,3})?|elite|super\s+elite|buffer|billable)$/i;
 const SUMMARY_NAME = /^(?:total|grand total|average|avg|summary|ranking|rank|team total|overall)$/i;
 
 export function normalizeBdoText(value: unknown) {
@@ -90,6 +92,7 @@ function parseNumeric(value: unknown, percentage = false): { value?: number; iss
   }
   const text = normalizeBdoText(value);
   if (!text) return {};
+  if (EMPTY_NUMBER_MARKER.test(text)) return { remark: text };
   if (INVALID_NUMBER.test(text)) return { issue: `Invalid numeric cell: ${text}`, remark: text };
   const percent = text.includes('%');
   const cleaned = text.replace(/[₱$€£,%\s]/g, '').replace(/\(([^)]+)\)/, '-$1');
@@ -178,7 +181,7 @@ function addNumericIssue(issues: BdoImportIssue[], worksheet: string, row: numbe
 function parseAgentMonitoring(rows: unknown[][], sheetName: string, detectedType: BdoWorksheetType, fallbackYear: number): BdoSheetResult {
   const year = workbookYear(rows, fallbackYear);
   const isCrossSell = /cross sell/i.test(detectedType);
-  const nameHit = findColumn(rows, [/^(?:agent|agents monitoring|agent name|full name|name)$/]) || (isCrossSell ? { row: 0, col: 0 } : null);
+  const nameHit = findColumn(rows, [/^(?:agent|agent name|full name|name)$/]) || (isCrossSell ? { row: 0, col: 0 } : null);
   const levelHit = findColumn(rows, [/^level$/, /^agent level$/]);
   const productHit = findColumn(rows, [/^(?:product|product type|metric type)$/]);
   const columns = detectGroupedColumns(rows, year);
@@ -186,10 +189,12 @@ function parseAgentMonitoring(rows: unknown[][], sheetName: string, detectedType
   const records: BdoImportRecord[] = [];
   if (!nameHit || !columns.length) return { sheetName, detectedType, records, months: [], warnings: [{ worksheet: sheetName, message: 'The worksheet was detected, but no valid monthly agent columns were found.' }], status: 'Skipped' };
   const monitoringType = /hoh/i.test(detectedType) ? (isCrossSell ? 'CROSS_SELL_HOH' : 'CI_HOH') : (isCrossSell ? 'CROSS_SELL_AGENT' : 'CI_AGENT');
-  const dataStart = Math.max(nameHit.row, ...columns.map(() => nameHit.row)) + 1;
+  const fieldHeaderRow = rows.slice(0, 30).map((row, rowIndex) => ({ rowIndex, fields: row.map(fieldAlias).filter(Boolean).length })).sort((a, b) => b.fields - a.fields)[0]?.rowIndex ?? nameHit.row;
+  const dataStart = Math.max(nameHit.row, fieldHeaderRow) + 1;
   const periods = [...new Map(columns.map((column) => [`${column.year}-${column.month}`, { year: column.year, month: column.month }])).values()];
   let activeName = '';
-  let activeProduct = '';
+  const headerProduct = normalizeBdoText(rows[fieldHeaderRow]?.[nameHit.col]);
+  let activeProduct = isCrossSell && /^(?:virtual(?: card)?|nth card|supple(?: invi)?|supplementary|cash installment)$/i.test(headerProduct) ? headerProduct : '';
   for (let rowIndex = dataStart; rowIndex < rows.length; rowIndex++) {
     const row = rows[rowIndex] || [];
     const rowName = normalizeBdoText(row[nameHit.col]);
@@ -206,6 +211,7 @@ function parseAgentMonitoring(rows: unknown[][], sheetName: string, detectedType
       const values = new Map<string, ReturnType<typeof parseNumeric>>();
       for (const column of group) {
         if (column.field === 'level') continue;
+        if (AGENT_LEVEL_MARKER.test(normalizeBdoText(row[column.col]))) continue;
         const parsed = parseNumeric(row[column.col], column.field === 'achievement');
         addNumericIssue(warnings, sheetName, rowIndex + 1, parsed, row[column.col]);
         values.set(column.field, parsed);
