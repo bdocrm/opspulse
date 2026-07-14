@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { PageTitle } from '@/components/layout/page-title';
 import { SortableDateHeader, compareDateValues, type DateSortDirection } from '@/components/sortable-date-header';
 import { ConfirmDialog } from '@/components/confirm-dialog';
+import { CampaignMultiSelect } from '@/components/campaign-multi-select';
 import {
   Dialog,
   DialogContent,
@@ -127,7 +128,7 @@ interface WorksheetPreview {
   format: string;
   campaignName: string;
   campaignId?: string;
-  campaignMapping: 'sheet' | 'selected';
+  campaignMapping: 'sheet' | 'record' | 'selected' | 'unresolved';
   metricType: string;
   metricSource: 'sheet' | 'selected';
   reportDate: string;
@@ -236,7 +237,7 @@ export default function BulkImportPage() {
   const [metricType, setMetricType] = useState('all');
   const [lastSingleMetric, setLastSingleMetric] = useState('transmittals');
   const [campaigns, setCampaigns] = useState<{ id: string; campaignName: string }[]>([]);
-  const [campaignId, setCampaignId] = useState('');
+  const [campaignIds, setCampaignIds] = useState<string[]>([]);
   const [reportDate, setReportDate] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -283,8 +284,10 @@ export default function BulkImportPage() {
   }, []);
 
   useEffect(() => {
-    const assigned = (session?.user as any)?.campaignId;
-    if (assigned) setCampaignId(assigned);
+    const assignedIds = (session?.user as any)?.campaignIds as string[] | undefined;
+    const primary = (session?.user as any)?.campaignId as string | undefined;
+    if (primary) setCampaignIds([primary]);
+    else if (assignedIds?.length) setCampaignIds([assignedIds[0]]);
   }, [session]);
 
   const normalizedReportDate = reportPeriodType === 'daily'
@@ -325,6 +328,7 @@ export default function BulkImportPage() {
   );
   const assignedCampaignIds: string[] = (session?.user as any)?.campaignIds || [];
   const availableCampaigns = assignedCampaignIds.length ? campaigns.filter((campaign) => assignedCampaignIds.includes(campaign.id)) : campaigns;
+  const selectedCampaigns = availableCampaigns.filter((campaign) => campaignIds.includes(campaign.id));
   const importFiles = importHistoryData?.imports ?? [];
   const sortedImportFiles = useMemo(
     () =>
@@ -397,7 +401,7 @@ export default function BulkImportPage() {
   const handlePreview = async () => {
     const activeFiles = files.filter((item) => selectedFileNames.includes(item.name));
     if (!activeFiles.length) { alert('Please select at least one file'); return; }
-    if (!campaignId) { alert('Please select a campaign'); return; }
+    if (!campaignIds.length) { setError('Select at least one campaign before previewing the file.'); return; }
     setStep('previewing');
     setError(null);
     try {
@@ -412,7 +416,8 @@ export default function BulkImportPage() {
         fd.append('reportDate', normalizedReportDate);
         fd.append('reportMonth', String(reportMonth));
         fd.append('reportYear', String(reportYear));
-        fd.append('campaignId', campaignId);
+        fd.append('campaignIds', JSON.stringify(campaignIds));
+        if (campaignIds.length === 1) fd.append('campaignId', campaignIds[0]);
         const period = detectMTDPeriod(activeFile.name);
         if (period) { fd.append('periodStart', period.startYmd); fd.append('periodEnd', period.endYmd); }
         const res = await fetch('/api/collectors/bulk-import', { method: 'POST', body: fd });
@@ -457,7 +462,7 @@ export default function BulkImportPage() {
         (data.worksheetPreviews || []).map((sheet: WorksheetPreview) => ({ ...sheet, key: `${index}::${sheet.key}`, fileName: previewFile.name }))
       );
       setWorksheetPreviews(sheets);
-      setWorksheetCampaigns(Object.fromEntries(sheets.map((sheet: WorksheetPreview) => [sheet.key, sheet.campaignId || campaignId])));
+      setWorksheetCampaigns(Object.fromEntries(sheets.map((sheet: WorksheetPreview) => [sheet.key, sheet.campaignMapping === 'unresolved' || sheet.campaignMapping === 'record' ? '' : sheet.campaignId || campaignIds[0] || ''])));
       setSelectedWorksheetKeys(sheets.filter((sheet: WorksheetPreview) => sheet.selected && sheet.validRows > 0).map((sheet: WorksheetPreview) => sheet.key));
       setStep('confirm');
     } catch (err) {
@@ -511,6 +516,11 @@ export default function BulkImportPage() {
 
   const handleConfirmImport = async () => {
     if (!previewFiles.length) return;
+    const unresolved = worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key) && sheet.validRows > 0 && sheet.campaignMapping === 'unresolved' && !worksheetCampaigns[sheet.key]);
+    if (unresolved.length) {
+      setError('Some worksheets could not be matched to the selected campaigns. Please review the campaign mapping.');
+      return;
+    }
     setStep('importing');
     setError(null);
     try {
@@ -526,7 +536,8 @@ export default function BulkImportPage() {
         fd.append('reportDate', normalizedReportDate);
         fd.append('reportMonth', String(reportMonth));
         fd.append('reportYear', String(reportYear));
-        fd.append('campaignId', campaignId);
+        fd.append('campaignIds', JSON.stringify(campaignIds));
+        if (campaignIds.length === 1) fd.append('campaignId', campaignIds[0]);
         const period = detectMTDPeriod(activeFile.name);
         if (period) { fd.append('periodStart', period.startYmd); fd.append('periodEnd', period.endYmd); }
         fd.append('confirmedNewAgents', JSON.stringify(approvedNew.map(a => a.name)));
@@ -540,8 +551,9 @@ export default function BulkImportPage() {
       const insertedTotal = results.reduce((n, r) => n + (r.inserted || 0), 0);
       const skippedTotal = results.reduce((n, r) => n + (r.skipped || 0), 0);
       const invalidTotal = results.reduce((n, r) => n + (r.invalid || 0), 0);
+      const importedCampaignIds = [...new Set(results.flatMap((result) => result.importedCampaignIds || []))];
       setImportResult({
-        message: `Inserted ${insertedTotal}, skipped ${skippedTotal}, and found ${invalidTotal} invalid record(s) across ${results.length} file(s).`,
+        message: `Import completed for ${importedCampaignIds.length} campaign${importedCampaignIds.length === 1 ? '' : 's'}: ${insertedTotal} inserted, ${skippedTotal} skipped, and ${invalidTotal} invalid across ${results.length} file(s).`,
         success: insertedTotal,
         created: results.reduce((n, r) => n + (r.created || 0), 0),
         inserted: insertedTotal,
@@ -724,17 +736,8 @@ export default function BulkImportPage() {
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">Campaign</label>
-              <select
-                value={campaignId}
-                onChange={e => setCampaignId(e.target.value)}
-                className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">Select a campaign…</option>
-                {availableCampaigns.map(c => (
-                  <option key={c.id} value={c.id}>{c.campaignName}</option>
-                ))}
-              </select>
-              <p className="text-xs text-slate-500">Select the campaign where the imported data belongs.</p>
+              <CampaignMultiSelect campaigns={availableCampaigns} value={campaignIds} onChange={setCampaignIds} placeholder="Select one or more campaigns..." />
+              <p className="text-xs text-slate-500">Selected campaigns are used for worksheet detection and confirmed fallback mapping.</p>
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">
@@ -839,7 +842,7 @@ export default function BulkImportPage() {
                 <Button type="button" variant="outline" size="sm" onClick={() => { setFiles([]); setSelectedFileNames([]); }}>Clear All Files</Button>
               </div>
             )}
-            <Button onClick={handlePreview} disabled={selectedFileNames.length === 0 || !campaignId} className="w-full gap-2">
+            <Button onClick={handlePreview} disabled={selectedFileNames.length === 0 || campaignIds.length === 0} className="w-full gap-2">
               <Upload className="h-4 w-4" />
               {importMode === 'single' ? 'Preview Import' : 'Preview All Data'}
             </Button>
@@ -1062,6 +1065,13 @@ export default function BulkImportPage() {
           </div>
         )}
 
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+          <p className="font-medium">Selected campaigns ({selectedCampaigns.length})</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {selectedCampaigns.map((campaign) => <span key={campaign.id} className="rounded-full bg-white px-2 py-1 text-xs font-medium text-blue-700">{campaign.campaignName}</span>)}
+          </div>
+        </div>
+
         {error && (
           <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
             <AlertCircle className="h-4 w-4 shrink-0" />
@@ -1169,15 +1179,16 @@ export default function BulkImportPage() {
                           </div>
                           {sheet.fileName && <p className="mt-1 truncate text-xs font-medium text-blue-700">{sheet.fileName}</p>}
                           <select
-                            value={worksheetCampaigns[sheet.key] || sheet.campaignId || campaignId}
+                            value={worksheetCampaigns[sheet.key] ?? ''}
                             onChange={(event) => setWorksheetCampaigns((current) => ({ ...current, [sheet.key]: event.target.value }))}
-                            className={`mt-2 w-full rounded-md border bg-white px-2 py-1 text-xs ${sheet.campaignMapping === 'selected' ? 'border-amber-300' : 'border-slate-300'}`}
+                            className={`mt-2 w-full rounded-md border bg-white px-2 py-1 text-xs ${sheet.campaignMapping === 'unresolved' && !worksheetCampaigns[sheet.key] ? 'border-amber-400' : 'border-slate-300'}`}
                             aria-label={`Campaign for ${sheet.sheetName}`}
                           >
-                            {availableCampaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.campaignName}</option>)}
+                            <option value="">{sheet.campaignMapping === 'record' ? 'Detected per record' : 'Select campaign mapping…'}</option>
+                            {selectedCampaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.campaignName}</option>)}
                           </select>
                           <p className="mt-1 text-xs text-slate-500">
-                            {sheet.campaignName} ({sheet.campaignMapping === 'sheet' ? 'matched from sheet' : 'selected campaign'}) · {metricLabel(sheet.metricType)} · {formatDate(sheet.reportDate)}
+                            {worksheetCampaigns[sheet.key] ? selectedCampaigns.find((campaign) => campaign.id === worksheetCampaigns[sheet.key])?.campaignName : sheet.campaignMapping === 'record' ? 'Campaign detected per record' : 'Campaign mapping required'} ({sheet.campaignMapping === 'sheet' ? 'matched from sheet' : sheet.campaignMapping === 'record' ? 'matched from record data' : sheet.campaignMapping === 'unresolved' ? 'confirmation required' : 'selected campaign'}) · {metricLabel(sheet.metricType)} · {formatDate(sheet.reportDate)}
                           </p>
                           <p className="mt-2 text-xs text-slate-600">
                             Rows {sheet.totalRows} · Valid {sheet.validRows} · Invalid {sheet.invalidRows} · Duplicates {sheet.duplicateRows}

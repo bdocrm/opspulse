@@ -4,9 +4,9 @@ import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import * as XLSX from 'xlsx';
 import bcrypt from 'bcryptjs';
-import { canonicalCampaignName } from '@/lib/campaign-import-mapping';
 import { matchMetricAlias, normalizeMetricHeader } from '@/lib/metric-import-mapping';
 import { isBdoDashboardWorkbook, parseBdoDashboardWorkbook, type BdoImportRecord } from '@/lib/bdo-dashboard-import';
+import { mapWorksheetCampaign } from '@/lib/campaign-import-selection';
 
 type ParsedEntry = {
   name: string; count: number; volume: number;
@@ -84,7 +84,7 @@ type SheetPreview = {
   format: string;
   campaignId: string;
   campaignName: string;
-  campaignMapping: 'sheet' | 'selected';
+  campaignMapping: 'sheet' | 'record' | 'selected' | 'unresolved';
   metricType: string;
   metricSource: 'sheet' | 'selected';
   reportDate: string;
@@ -412,10 +412,6 @@ function normalizeHeader(value: any): string {
   return normalizeMetricHeader(String(value ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, ''));
 }
 
-function normalizeSheetName(value: string): string {
-  return normalizeHeader(value).replace(/\b(raw|mtd|sheet|worksheet|data|report|production)\b/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
 function cellText(value: any): string {
   if (value == null) return '';
   if (value instanceof Date) return value.toISOString().slice(0, 10);
@@ -482,22 +478,6 @@ function parseReportDateFromRows(rows: any[][], fallback: Date, context = ''): D
 
 function ymd(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
-
-function mapSheetCampaign(sheetName: string, selectedCampaign: AssignedCampaign, assignedCampaigns: AssignedCampaign[]) {
-  const normalizedSheet = normalizeSheetName(sheetName);
-  const canonical = canonicalCampaignName(sheetName);
-  const match = assignedCampaigns
-    .map((campaign) => ({ campaign, normalized: normalizeSheetName(campaign.campaignName) }))
-    .filter(({ campaign, normalized }) => {
-      const campaignCanonical = canonicalCampaignName(campaign.campaignName);
-      return normalized && (
-        normalizedSheet.includes(normalized) || normalized.includes(normalizedSheet) ||
-        Boolean(canonical && campaignCanonical === canonical)
-      );
-    })
-    .sort((a, b) => b.normalized.length - a.normalized.length)[0]?.campaign;
-  return match ? { campaign: match, source: 'sheet' as const } : { campaign: selectedCampaign, source: 'selected' as const };
 }
 
 function rowHasAnyValue(row: any[]) {
@@ -1053,20 +1033,18 @@ function monthSummaryFromRecords(records: any[], sheets: SheetPreview[]) {
 
 async function buildWorkbookPreview({
   workbook,
-  selectedCampaign,
-  assignedCampaigns,
+  selectedCampaigns,
   metricType,
   selectedReportDate,
   reportPeriodType,
 }: {
   workbook: XLSX.WorkBook;
-  selectedCampaign: AssignedCampaign;
-  assignedCampaigns: AssignedCampaign[];
+  selectedCampaigns: AssignedCampaign[];
   metricType: string;
   selectedReportDate: Date;
   reportPeriodType: ReportPeriodType;
 }) {
-  const campaignIds = assignedCampaigns.map((campaign) => campaign.id);
+  const campaignIds = selectedCampaigns.map((campaign) => campaign.id);
   const campaignAgents = await prisma.user.findMany({
     where: { role: 'AGENT', campaignId: { in: campaignIds } },
     select: { id: true, name: true, campaignId: true },
@@ -1087,7 +1065,7 @@ async function buildWorkbookPreview({
   const sheets: SheetPreview[] = workbook.SheetNames.map((sheetName, index) => {
     const sheet = workbook.Sheets[sheetName];
     const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null } as any);
-    const mapping = mapSheetCampaign(sheetName, selectedCampaign, assignedCampaigns);
+    const mapping = mapWorksheetCampaign(sheetName, selectedCampaigns);
     const reportDate = parseReportDateFromRows(rows, selectedReportDate, sheetName);
     const detectedMetric = detectMetricFromText(`${sheetName} ${rows.slice(0, 5).flat().join(' ')}`, metricType);
     const parsed = parseDetectedRows(rows, detectedMetric, mapping.campaign.campaignName, sheetName, reportDate);
@@ -1110,7 +1088,7 @@ async function buildWorkbookPreview({
       entries.push({
         ...entry,
         campaignId: mapping.campaign.id,
-        campaignName: mapping.campaign.campaignName,
+        campaignName: mapping.source === 'unresolved' ? 'Campaign mapping required' : mapping.campaign.campaignName,
         metricType: effectiveMetric,
         reportDate: entryDate,
       });
@@ -1120,7 +1098,8 @@ async function buildWorkbookPreview({
     const { matched, notFound } = classifyEntries(entries, agentsByCampaign);
     const errors = [...parsed.errors];
     if (hiddenByName.get(sheetName) && entries.length === 0) warnings.push('Hidden sheet skipped because no valid production data was found.');
-    if (mapping.source === 'selected') warnings.push(`Campaign Mapping Required. No campaign alias matched this worksheet; selected fallback is ${selectedCampaign.campaignName}.`);
+    if (mapping.source === 'selected') warnings.push(`No campaign alias matched this worksheet; using the only selected campaign, ${mapping.campaign.campaignName}.`);
+    if (mapping.source === 'unresolved') warnings.push('Some worksheets could not be matched to the selected campaigns. Please review the campaign mapping.');
 
     return {
       key: `${index}:${sheetName}`,
@@ -1129,7 +1108,7 @@ async function buildWorkbookPreview({
       selected: entries.length > 0,
       format: entries.length > 0 ? parsed.format : 'Skipped',
       campaignId: mapping.campaign.id,
-      campaignName: mapping.campaign.campaignName,
+      campaignName: mapping.source === 'unresolved' ? 'Campaign mapping required' : mapping.campaign.campaignName,
       campaignMapping: mapping.source,
       metricType: detectedMetric,
       metricSource: detectedMetric === metricType ? 'selected' : 'sheet',
@@ -1222,8 +1201,16 @@ function bdoNaturalKey(record: BdoImportRecord) {
   return [record.worksheetSource, record.recordKind, record.entityName || '', record.category || '', record.product || '', record.metric, record.year, record.month || 0].map((value) => String(value).trim().toLowerCase()).join('|');
 }
 
-function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, campaign: AssignedCampaign, reportPeriodType: ReportPeriodType) {
+function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCampaigns: AssignedCampaign[], reportPeriodType: ReportPeriodType) {
   const parsed = parseBdoDashboardWorkbook(workbook, reportDate);
+  const recordMappings = new Map(parsed.records.map((record) => [record, mapWorksheetCampaign(`${record.worksheetSource} ${record.category || ''} ${record.product || ''} ${record.metric}`, selectedCampaigns)]));
+  const sheetMappings = new Map<string, { campaign: AssignedCampaign; source: 'sheet' | 'record' | 'selected' | 'unresolved' }>(parsed.sheets.map((sheet) => {
+    const records = sheet.records.map((record) => recordMappings.get(record)!);
+    const detected = records.filter((mapping) => mapping.source === 'sheet');
+    const unresolvedRecords = records.filter((mapping) => mapping.source === 'unresolved');
+    if (detected.length && !unresolvedRecords.length) return [sheet.sheetName, { campaign: detected[0].campaign, source: 'record' as const }];
+    return [sheet.sheetName, mapWorksheetCampaign(sheet.sheetName, selectedCampaigns)];
+  }));
   const seen = new Set<string>();
   let duplicateCount = 0;
   parsed.records = parsed.records.filter((record) => {
@@ -1234,9 +1221,14 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, campaign: As
   });
   const retainedRecords = new Set(parsed.records);
   for (const sheet of parsed.sheets) sheet.records = sheet.records.filter((record) => retainedRecords.has(record));
-  const previewRecords = parsed.records.map((record) => ({
+  const previewRecords = parsed.records.map((record) => {
+    const detectedMapping = recordMappings.get(record)!;
+    const sheetMapping = sheetMappings.get(record.worksheetSource)!;
+    const mapping = detectedMapping.source === 'sheet' ? detectedMapping : sheetMapping;
+    return ({
     sheet: record.worksheetSource,
-    campaignName: campaign.campaignName,
+    campaignId: mapping.campaign.id,
+    campaignName: mapping.source === 'unresolved' ? 'Campaign mapping required' : mapping.campaign.campaignName,
     agent: record.entityName || record.category || record.metric,
     reportPeriodType,
     reportDate: ymd(record.reportDate),
@@ -1249,7 +1241,8 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, campaign: As
     status: 'New',
     validationMessage: record.remark || '',
     row: record.sourceRow,
-  }));
+    });
+  });
   const monthMap = new Map<string, any>();
   for (const record of parsed.records) {
     const month = `${record.year}-${String(record.month || 1).padStart(2, '0')}`;
@@ -1257,15 +1250,18 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, campaign: As
     current.new++;
     monthMap.set(month, current);
   }
-  const worksheetPreviews = parsed.sheets.map((sheet, index) => ({
+  const worksheetPreviews = parsed.sheets.map((sheet, index) => {
+    const mapping = sheetMappings.get(sheet.sheetName)!;
+    const mappingWarnings = mapping.source === 'unresolved' ? ['Some worksheets could not be matched to the selected campaigns. Please review the campaign mapping.'] : [];
+    return ({
     key: `${index}:${sheet.sheetName}`,
     sheetName: sheet.sheetName,
     hidden: false,
     selected: sheet.records.length > 0,
     format: sheet.detectedType,
-    campaignId: campaign.id,
-    campaignName: campaign.campaignName,
-    campaignMapping: 'selected' as const,
+    campaignId: mapping.campaign.id,
+    campaignName: mapping.source === 'unresolved' ? 'Campaign mapping required' : mapping.source === 'record' ? 'Detected per record' : mapping.campaign.campaignName,
+    campaignMapping: mapping.source,
     metricType: 'all_metrics',
     metricSource: 'sheet' as const,
     reportDate: sheet.records[0] ? ymd(sheet.records[0].reportDate) : ymd(reportDate),
@@ -1274,12 +1270,14 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, campaign: As
     invalidRows: sheet.warnings.filter((warning) => !/unsupported worksheet/i.test(warning.message)).length,
     duplicateRows: 0,
     detectedMonths: sheet.months,
-    warnings: sheet.warnings.map((warning) => warning.message),
+    warnings: [...mappingWarnings, ...sheet.warnings.map((warning) => warning.message)],
     errors: [] as string[],
     status: sheet.status,
-  }));
+    });
+  });
   return {
     parsed,
+    recordMappings,
     previewRecords,
     worksheetPreviews,
     monthSummary: [...monthMap.values()].sort((a, b) => a.month.localeCompare(b.month)),
@@ -1304,18 +1302,19 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, campaign: As
   };
 }
 
-async function markExistingBdoRecords(preview: ReturnType<typeof buildBdoPreview>, campaignId: string, reportPeriodType: ReportPeriodType) {
+async function markExistingBdoRecords(preview: ReturnType<typeof buildBdoPreview>, selectedCampaignIds: string[], reportPeriodType: ReportPeriodType) {
   if (!preview.parsed.records.length) return;
   const years = [...new Set(preview.parsed.records.map((record) => record.year))];
-  const existing = await prisma.$queryRaw<Array<{ worksheetSource: string; recordKind: string; entityName: string; category: string; product: string; metric: string; year: number; month: number | null }>>`
-    SELECT "worksheetSource", "recordKind", "entityName", "category", "product", "metric", "year", "month"
+  const existing = await prisma.$queryRaw<Array<{ campaignId: string; worksheetSource: string; recordKind: string; entityName: string; category: string; product: string; metric: string; year: number; month: number | null }>>`
+    SELECT "campaignId", "worksheetSource", "recordKind", "entityName", "category", "product", "metric", "year", "month"
     FROM "DashboardImportRecord"
-    WHERE "campaignId" = ${campaignId} AND "reportPeriodType" = ${reportPeriodType} AND "year" = ANY(${years}::int[])
+    WHERE "campaignId" = ANY(${selectedCampaignIds}::text[]) AND "reportPeriodType" = ${reportPeriodType} AND "year" = ANY(${years}::int[])
   `;
-  const existingKeys = new Set(existing.map((record) => [record.worksheetSource, record.recordKind, record.entityName, record.category, record.product, record.metric, record.year, record.month || 0].map((value) => String(value).trim().toLowerCase()).join('|')));
+  const existingKeys = new Set(existing.map((record) => `${record.campaignId}|${[record.worksheetSource, record.recordKind, record.entityName, record.category, record.product, record.metric, record.year, record.month || 0].map((value) => String(value).trim().toLowerCase()).join('|')}`));
   let count = 0;
   preview.parsed.records.forEach((record, index) => {
-    if (!existingKeys.has(bdoNaturalKey(record))) return;
+    const sheet = preview.worksheetPreviews.find((candidate) => candidate.sheetName === record.worksheetSource);
+    if (!sheet || sheet.campaignMapping === 'unresolved' || !existingKeys.has(`${preview.previewRecords[index].campaignId}|${bdoNaturalKey(record)}`)) return;
     preview.previewRecords[index].status = 'Existing';
     count++;
   });
@@ -1328,10 +1327,11 @@ async function markExistingBdoRecords(preview: ReturnType<typeof buildBdoPreview
 }
 
 async function persistBdoImport({
-  preview, campaignId, fileName, importMode, duplicateMode, reportPeriodType, reportDate, importedById, selectedWorksheetKeys,
+  preview, selectedCampaigns, campaignMappings, fileName, importMode, duplicateMode, reportPeriodType, reportDate, importedById, selectedWorksheetKeys,
 }: {
   preview: ReturnType<typeof buildBdoPreview>;
-  campaignId: string;
+  selectedCampaigns: AssignedCampaign[];
+  campaignMappings: Record<string, string>;
   fileName: string;
   importMode: string;
   duplicateMode: DuplicateMode;
@@ -1340,23 +1340,32 @@ async function persistBdoImport({
   importedById: string;
   selectedWorksheetKeys: string[];
 }) {
-  const selectedNames = new Set(preview.worksheetPreviews.filter((sheet) => !selectedWorksheetKeys.length || selectedWorksheetKeys.includes(sheet.key)).map((sheet) => sheet.sheetName));
-  const records = preview.parsed.records.filter((record) => selectedNames.has(record.worksheetSource));
+  const selectedSheets = preview.worksheetPreviews.filter((sheet) => !selectedWorksheetKeys.length || selectedWorksheetKeys.includes(sheet.key));
+  const campaignBySheet = new Map(selectedSheets.map((sheet) => [sheet.sheetName, campaignMappings[sheet.key] || (sheet.campaignMapping === 'unresolved' ? '' : sheet.campaignId)]));
+  const explicitlyMappedSheets = new Set(selectedSheets.filter((sheet) => Boolean(campaignMappings[sheet.key])).map((sheet) => sheet.sheetName));
+  const records = preview.parsed.records
+    .filter((record) => campaignBySheet.has(record.worksheetSource))
+    .map((record) => {
+      const detected = preview.recordMappings.get(record);
+      return { record, campaignId: !explicitlyMappedSheets.has(record.worksheetSource) && detected?.source === 'sheet' ? detected.campaign.id : campaignBySheet.get(record.worksheetSource)! };
+    });
+  const importedCampaignIds = [...new Set(records.map((item) => item.campaignId))];
   return prisma.$transaction(async (tx) => {
     const batchId = crypto.randomUUID();
     await tx.$executeRaw`
       INSERT INTO "DashboardImportBatch" ("id", "campaignId", "fileName", "importMode", "duplicateMode", "reportPeriodType", "reportDate", "workbookYear", "totalWorksheets", "supportedSheets", "importedById", "status")
-      VALUES (${batchId}, ${campaignId}, ${fileName}, ${importMode}, ${duplicateMode}, ${reportPeriodType}, ${reportDate}, ${preview.parsed.workbookYear}, ${preview.workbookSummary.totalWorksheets}, ${preview.workbookSummary.worksheetsAccepted}, ${importedById}, 'PROCESSING')
+      VALUES (${batchId}, ${importedCampaignIds[0] || selectedCampaigns[0].id}, ${fileName}, ${importMode}, ${duplicateMode}, ${reportPeriodType}, ${reportDate}, ${preview.parsed.workbookYear}, ${preview.workbookSummary.totalWorksheets}, ${preview.workbookSummary.worksheetsAccepted}, ${importedById}, 'PROCESSING')
     `;
     let inserted = 0; let updated = 0; let skipped = preview.workbookSummary.inWorkbookDuplicateRecords;
     if (duplicateMode === 'replace_period') {
-      const periods = new Set(records.map((record) => `${record.worksheetSource}|${record.year}|${record.month || 0}`));
+      const periods = new Set(records.map(({ record, campaignId }) => `${campaignId}|${record.worksheetSource}|${record.year}|${record.month || 0}`));
       for (const period of periods) {
-        const [worksheet, year, month] = period.split('|');
+        const [campaignId, worksheet, year, month] = period.split('|');
         await tx.$executeRaw`DELETE FROM "DashboardImportRecord" WHERE "campaignId" = ${campaignId} AND "worksheetSource" = ${worksheet} AND "year" = ${Number(year)} AND COALESCE("month", 0) = ${Number(month)} AND "reportPeriodType" = ${reportPeriodType}`;
       }
     }
-    for (const record of records) {
+    for (const item of records) {
+      const { record, campaignId } = item;
       const entityName = record.entityName || '';
       const category = record.category || '';
       const product = record.product || '';
@@ -1390,7 +1399,7 @@ async function persistBdoImport({
     }
     const invalid = preview.parsed.issues.filter((issue) => !/unsupported worksheet/i.test(issue.message)).length;
     await tx.$executeRaw`UPDATE "DashboardImportBatch" SET "insertedCount" = ${inserted}, "updatedCount" = ${updated}, "skippedCount" = ${skipped}, "failedCount" = ${invalid}, "status" = 'COMPLETED', "completedAt" = CURRENT_TIMESTAMP WHERE "id" = ${batchId}`;
-    return { batchId, inserted, updated, skipped, invalid, success: inserted + updated, created: 0, details: [], errors: preview.parsed.issues.slice(0, 50).map((issue) => `${issue.worksheet}${issue.row ? ` row ${issue.row}` : ''}: ${issue.message}`), message: `Import completed: ${inserted} inserted, ${updated} updated, ${skipped} skipped, and ${invalid} invalid.` };
+    return { batchId, inserted, updated, skipped, invalid, importedCampaignIds, importedCampaigns: importedCampaignIds.length, success: inserted + updated, created: 0, details: [], errors: preview.parsed.issues.slice(0, 50).map((issue) => `${issue.worksheet}${issue.row ? ` row ${issue.row}` : ''}: ${issue.message}`), message: `Import completed for ${importedCampaignIds.length} campaign${importedCampaignIds.length === 1 ? '' : 's'}: ${inserted} inserted, ${updated} updated, ${skipped} skipped, and ${invalid} invalid.` };
   }, { timeout: 120000 });
 }
 
@@ -1535,7 +1544,15 @@ export async function POST(req: NextRequest) {
     const reportDateStr = formData.get('reportDate') as string;
     const periodStartStr = (formData.get('periodStart') as string) || '';
     const periodEndStr = (formData.get('periodEnd') as string) || '';
-    const selectedCampaignId = (formData.get('campaignId') as string) || '';
+    const legacyCampaignId = (formData.get('campaignId') as string) || '';
+    let submittedCampaignIds: string[] = [];
+    try {
+      const parsed = JSON.parse((formData.get('campaignIds') as string) || '[]');
+      if (Array.isArray(parsed)) submittedCampaignIds = [...new Set(parsed.filter((value): value is string => typeof value === 'string' && Boolean(value.trim())))];
+    } catch {
+      return NextResponse.json({ error: 'The selected campaign list is invalid.' }, { status: 400 });
+    }
+    if (!submittedCampaignIds.length && legacyCampaignId) submittedCampaignIds = [legacyCampaignId];
 
     if (!['all', 'worksheets', 'single'].includes(importMode)) {
       return NextResponse.json({ error: 'Import Mode must be Import All Data, Import Selected Worksheets, or Import Single Metric.' }, { status: 400 });
@@ -1552,28 +1569,26 @@ export async function POST(req: NextRequest) {
     if (!['skip', 'update', 'replace_period'].includes(duplicateMode)) {
       return NextResponse.json({ error: 'Duplicate handling must be Skip Existing, Update Existing, or Replace Matching Period Data.' }, { status: 400 });
     }
-    if (!selectedCampaignId) {
-      return NextResponse.json({ error: 'Campaign is required.' }, { status: 400 });
+    if (!submittedCampaignIds.length) {
+      return NextResponse.json({ error: 'Select at least one campaign before previewing the file.' }, { status: 400 });
     }
     const metricType = requestedMetricType === 'all' ? 'all_metrics' : requestedMetricType;
 
     await ensureImportMetadataColumns();
 
     const assignedCampaigns = await getAssignedCampaigns(user.id, collectorUser?.campaignId);
+    const selectedCampaigns = submittedCampaignIds
+      .map((id) => assignedCampaigns.find((campaign) => campaign.id === id))
+      .filter((campaign): campaign is AssignedCampaign => Boolean(campaign));
+    if (selectedCampaigns.length !== submittedCampaignIds.length) {
+      return NextResponse.json({ error: 'One or more selected campaigns are invalid or inactive.' }, { status: 400 });
+    }
 
     // Resolve the target campaign: prefer the one chosen on the import page,
     // otherwise fall back to the collector's assigned campaign.
-    const effectiveCampaignId = selectedCampaignId;
-    if (!effectiveCampaignId) {
-      return NextResponse.json({ error: 'No campaign selected. Choose a campaign to import into.' }, { status: 400 });
-    }
-
-    const campaignExists = assignedCampaigns.find((campaign) => campaign.id === effectiveCampaignId);
+    const effectiveCampaignId = selectedCampaigns[0].id;
+    const campaignExists = selectedCampaigns[0];
     const campaignName = campaignExists?.campaignName || '';
-    if (!campaignExists) {
-      return NextResponse.json({ error: 'Selected campaign is not assigned to this collector.' }, { status: 403 });
-    }
-
     let campaignAgents = await prisma.user.findMany({
       where: { campaignId: effectiveCampaignId, role: 'AGENT' },
       select: { id: true, name: true },
@@ -1676,8 +1691,8 @@ export async function POST(req: NextRequest) {
         if (importMode === 'single') {
           return NextResponse.json({ error: 'BDO dashboard workbooks require Import All Data or Import Selected Worksheets.' }, { status: 400 });
         }
-        const bdoPreview = buildBdoPreview(workbook, reportDate, campaignExists, reportPeriodType);
-        await markExistingBdoRecords(bdoPreview, effectiveCampaignId, reportPeriodType);
+        const bdoPreview = buildBdoPreview(workbook, reportDate, selectedCampaigns, reportPeriodType);
+        await markExistingBdoRecords(bdoPreview, selectedCampaigns.map((campaign) => campaign.id), reportPeriodType);
         if (bdoPreview.workbookSummary.worksheetsAccepted === 0 || bdoPreview.workbookSummary.totalValidRecords === 0) {
           return NextResponse.json({
             error: 'The workbook contains supported BDO worksheets, but no valid monthly data was found.',
@@ -1703,9 +1718,19 @@ export async function POST(req: NextRequest) {
           });
         }
         const selectedWorksheetKeys: string[] = JSON.parse((formData.get('selectedWorksheetKeys') as string) || '[]');
+        const campaignMappings: Record<string, string> = JSON.parse((formData.get('campaignMappings') as string) || '{}');
+        const selectedBdoSheets = bdoPreview.worksheetPreviews.filter((sheet) => (!selectedWorksheetKeys.length || selectedWorksheetKeys.includes(sheet.key)) && sheet.validRows > 0);
+        const invalidMapping = selectedBdoSheets.find((sheet) => {
+          const mappedId = campaignMappings[sheet.key];
+          return (sheet.campaignMapping === 'unresolved' && !mappedId) || Boolean(mappedId && !selectedCampaigns.some((campaign) => campaign.id === mappedId));
+        });
+        if (invalidMapping) {
+          return NextResponse.json({ error: 'Some worksheets could not be matched to the selected campaigns. Please review the campaign mapping.' }, { status: 400 });
+        }
         const result = await persistBdoImport({
           preview: bdoPreview,
-          campaignId: effectiveCampaignId,
+          selectedCampaigns,
+          campaignMappings,
           fileName: file.name,
           importMode,
           duplicateMode,
@@ -1719,8 +1744,7 @@ export async function POST(req: NextRequest) {
 
       const preview = await buildWorkbookPreview({
         workbook,
-        selectedCampaign: campaignExists,
-        assignedCampaigns,
+        selectedCampaigns,
         metricType,
         selectedReportDate: reportDate,
         reportPeriodType,
@@ -1762,10 +1786,16 @@ export async function POST(req: NextRequest) {
           : preview.sheets.filter((sheet) => sheet.selected).map((sheet) => sheet.key)
       );
       const selectedSheets = preview.sheets.filter((sheet) => selectedKeySet.has(sheet.key) && sheet.validRows > 0);
+      const invalidMapping = selectedSheets.find((sheet) => {
+        const mappedId = campaignMappings[sheet.key];
+        return (sheet.campaignMapping === 'unresolved' && !mappedId) || Boolean(mappedId && !selectedCampaigns.some((campaign) => campaign.id === mappedId));
+      });
+      if (invalidMapping) {
+        return NextResponse.json({ error: 'Some worksheets could not be matched to the selected campaigns. Please review the campaign mapping.' }, { status: 400 });
+      }
       const entries = selectedSheets.flatMap((sheet) => {
         const mappedCampaignId = campaignMappings[sheet.key];
-        const mappedCampaign = mappedCampaignId ? assignedCampaigns.find((campaign) => campaign.id === mappedCampaignId) : null;
-        if (mappedCampaignId && !mappedCampaign) throw new Error(`Campaign mapping for ${sheet.sheetName} is not assigned to this collector.`);
+        const mappedCampaign = mappedCampaignId ? selectedCampaigns.find((campaign) => campaign.id === mappedCampaignId) : null;
         return sheet.entries.map((entry) => mappedCampaign
           ? { ...entry, campaignId: mappedCampaign.id, campaignName: mappedCampaign.campaignName }
           : entry);
@@ -1962,7 +1992,7 @@ export async function POST(req: NextRequest) {
         fileName: file.name,
         importingUser: user.id,
         importedAt: new Date().toISOString(),
-        selectedCampaign: effectiveCampaignId,
+        selectedCampaigns: selectedCampaigns.map((campaign) => campaign.id),
         selectedMetric: metricType,
         selectedReportDate: ymd(reportDate),
         workbookSheetNames: workbook.SheetNames,
@@ -1982,7 +2012,9 @@ export async function POST(req: NextRequest) {
       results.details.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.agent.localeCompare(b.agent));
 
       return {
-        message: `Inserted ${normalizedInsert.count}, skipped ${skippedRecords + preview.workbookSummary.totalDuplicateRecords}, and found ${preview.workbookSummary.totalInvalidRecords + results.errors.length} invalid record(s) across ${selectedSheets.length} worksheet(s).`,
+        message: `Import completed for ${targetCampaignIds.length} campaign${targetCampaignIds.length === 1 ? '' : 's'}: inserted ${normalizedInsert.count}, skipped ${skippedRecords + preview.workbookSummary.totalDuplicateRecords}, and found ${preview.workbookSummary.totalInvalidRecords + results.errors.length} invalid record(s).`,
+        importedCampaignIds: targetCampaignIds,
+        importedCampaigns: targetCampaignIds.length,
         workbookSummary: preview.workbookSummary,
         worksheetPreviews: selectedSheets.map(({ entries: _entries, matched: _matched, notFound: _notFound, ...sheet }) => sheet),
         inserted: normalizedInsert.count,
@@ -2225,8 +2257,7 @@ export async function POST(req: NextRequest) {
     } as XLSX.WorkBook;
     const csvPreview = await buildWorkbookPreview({
       workbook: csvWorkbook,
-      selectedCampaign: campaignExists,
-      assignedCampaigns,
+      selectedCampaigns,
       metricType,
       selectedReportDate: reportDate,
       reportPeriodType,
@@ -2256,6 +2287,14 @@ export async function POST(req: NextRequest) {
     }
 
     // Import mode for CSV
+    const csvCampaignMappings: Record<string, string> = JSON.parse((formData.get('campaignMappings') as string) || '{}');
+    const csvSheetPreview = csvPreview.sheets[0];
+    const csvTargetCampaignId = csvCampaignMappings[csvSheetPreview.key] || (csvSheetPreview.campaignMapping === 'unresolved' ? '' : csvSheetPreview.campaignId);
+    if (!csvTargetCampaignId || !selectedCampaigns.some((campaign) => campaign.id === csvTargetCampaignId)) {
+      return NextResponse.json({ error: 'The CSV could not be matched automatically. Please review the campaign mapping.' }, { status: 400 });
+    }
+    const csvCampaignAgents = await prisma.user.findMany({ where: { campaignId: csvTargetCampaignId, role: 'AGENT' }, select: { id: true, name: true } });
+    const findCsvAgent = (name: string) => csvCampaignAgents.find((agent) => agentNameMatches(agent.name, name)) || null;
     const csvImportPayload = await prisma.$transaction(async (tx) => {
     const confirmedNewAgentsCsv: string[] = JSON.parse(
       (formData.get('confirmedNewAgents') as string) || '[]'
@@ -2263,16 +2302,16 @@ export async function POST(req: NextRequest) {
 
     const createdAgentsCsv: Record<string, string> = {};
     for (const name of confirmedNewAgentsCsv) {
-      const existing = findExistingAgent(name);
+      const existing = findCsvAgent(name);
       if (existing) { createdAgentsCsv[name] = existing.id; continue; }
 
       const email = nameToEmail(name);
       const password = await bcrypt.hash(crypto.randomUUID(), 10);
       const newAgent = await tx.user.create({
-        data: { name, email, password, role: 'AGENT', campaignId: effectiveCampaignId },
+        data: { name, email, password, role: 'AGENT', campaignId: csvTargetCampaignId },
       });
       createdAgentsCsv[name] = newAgent.id;
-      rememberAgent({ id: newAgent.id, name: newAgent.name });
+      csvCampaignAgents.push({ id: newAgent.id, name: newAgent.name });
     }
 
     const csvResults = {
@@ -2290,14 +2329,14 @@ export async function POST(req: NextRequest) {
     const csvDates = csvEntries.map((row) => normalizePeriodDate(row.reportDate || reportDate, reportPeriodType));
     const csvEarliest = new Date(Math.min(...csvDates.map((date) => date.getTime())));
     const csvLatest = new Date(Math.max(...csvDates.map((date) => date.getTime())));
-    const csvAgentIds = campaignAgents.map((agent) => agent.id);
+    const csvAgentIds = csvCampaignAgents.map((agent) => agent.id);
     const [csvStoredMetrics, csvStoredDetails] = await Promise.all([
       tx.productionMetricRecord.findMany({
-        where: { campaignId: effectiveCampaignId, agentId: { in: csvAgentIds }, reportPeriodType, reportDate: { gte: csvEarliest, lte: csvLatest } },
+        where: { campaignId: csvTargetCampaignId, agentId: { in: csvAgentIds }, reportPeriodType, reportDate: { gte: csvEarliest, lte: csvLatest } },
         select: { id: true, productionEntryId: true, campaignId: true, agentId: true, metricType: true, reportDate: true, count: true, volume: true, goal: true, actual: true, achievement: true },
       }),
       tx.productionDetail.findMany({
-        where: { campaignId: effectiveCampaignId, agentId: { in: csvAgentIds }, productionEntry: { date: { gte: new Date(csvEarliest.getFullYear(), csvEarliest.getMonth(), 1), lte: new Date(csvLatest.getFullYear(), csvLatest.getMonth() + 1, 0) } } },
+        where: { campaignId: csvTargetCampaignId, agentId: { in: csvAgentIds }, productionEntry: { date: { gte: new Date(csvEarliest.getFullYear(), csvEarliest.getMonth(), 1), lte: new Date(csvLatest.getFullYear(), csvLatest.getMonth() + 1, 0) } } },
         select: {
           id: true, productionEntryId: true, campaignId: true, agentId: true,
           transmittals: true, approvals: true, booked: true, activations: true, ntb: true, supplementary: true,
@@ -2321,7 +2360,7 @@ export async function POST(req: NextRequest) {
 
     for (const row of csvEntries) {
       try {
-        let agent = findExistingAgent(row.name);
+        let agent = findCsvAgent(row.name);
         if (!agent && createdAgentsCsv[row.name]) {
           agent = await tx.user.findUnique({ where: { id: createdAgentsCsv[row.name] }, select: { id: true, name: true } });
         }
@@ -2332,10 +2371,10 @@ export async function POST(req: NextRequest) {
 
         const normalizedDate = normalizePeriodDate(row.reportDate || reportDate, reportPeriodType);
         const metrics = expandEntryMetrics(row);
-        const existingForRow = metrics.map((metric) => csvMetricByKey.get(normalizedMetricKey(effectiveCampaignId, agent!.id, metric.metricType, normalizedDate, reportPeriodType))).filter(Boolean);
+        const existingForRow = metrics.map((metric) => csvMetricByKey.get(normalizedMetricKey(csvTargetCampaignId, agent!.id, metric.metricType, normalizedDate, reportPeriodType))).filter(Boolean);
         let rowChanged = false;
         for (const metric of metrics) {
-          const key = normalizedMetricKey(effectiveCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType);
+          const key = normalizedMetricKey(csvTargetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType);
           const existing = csvMetricByKey.get(key);
           if (!existing) continue;
           const enrichment: Record<string, any> = {};
@@ -2353,14 +2392,14 @@ export async function POST(req: NextRequest) {
             rowChanged = true;
           } else csvSkipped++;
         }
-        const missingMetrics = metrics.filter((metric) => !csvMetricByKey.has(normalizedMetricKey(effectiveCampaignId, agent!.id, metric.metricType, normalizedDate, reportPeriodType)));
-        const detailKey = `${effectiveCampaignId}|${agent.id}|${ymd(normalizedDate)}`;
+        const missingMetrics = metrics.filter((metric) => !csvMetricByKey.has(normalizedMetricKey(csvTargetCampaignId, agent!.id, metric.metricType, normalizedDate, reportPeriodType)));
+        const detailKey = `${csvTargetCampaignId}|${agent.id}|${ymd(normalizedDate)}`;
         const existingDetail = csvDetailByKey.get(detailKey);
         let savedEntryId = existingForRow.find((record) => record.productionEntryId)?.productionEntryId || existingDetail?.productionEntryId || csvEntryByDate.get(ymd(normalizedDate));
         if (missingMetrics.length && !savedEntryId) {
           const entry = await tx.productionEntry.create({
             data: {
-              campaignId: effectiveCampaignId, date: normalizedDate, time: new Date().toLocaleTimeString(), createdBy: user.id, reportPeriodType,
+              campaignId: csvTargetCampaignId, date: normalizedDate, time: new Date().toLocaleTimeString(), createdBy: user.id, reportPeriodType,
               periodStart: reportPeriodType === 'daily' ? periodStart : normalizedDate,
               periodEnd: reportPeriodType === 'monthly' ? new Date(normalizedDate.getFullYear(), normalizedDate.getMonth() + 1, 0) : reportPeriodType === 'yearly' ? new Date(normalizedDate.getFullYear(), 11, 31) : periodEnd,
             },
@@ -2371,15 +2410,15 @@ export async function POST(req: NextRequest) {
         }
         if (missingMetrics.length && !existingDetail && existingForRow.length === 0 && savedEntryId) {
           const detail = await tx.productionDetail.create({
-            data: { productionEntryId: savedEntryId, agentId: agent.id, campaignId: effectiveCampaignId, ...buildDetailDataForWrite(row, row.metricType || metricType, false) },
+            data: { productionEntryId: savedEntryId, agentId: agent.id, campaignId: csvTargetCampaignId, ...buildDetailDataForWrite(row, row.metricType || metricType, false) },
             select: { id: true, productionEntryId: true },
           });
           csvDetailByKey.set(detailKey, detail);
         }
         for (const metric of missingMetrics) {
-          const key = normalizedMetricKey(effectiveCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType);
+          const key = normalizedMetricKey(csvTargetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType);
           normalizedCsvRecords.push({
-            productionEntryId: savedEntryId!, campaignId: effectiveCampaignId, agentId: agent.id,
+            productionEntryId: savedEntryId!, campaignId: csvTargetCampaignId, agentId: agent.id,
             reportPeriodType, reportDate: normalizedDate,
             reportMonth: reportPeriodType === 'yearly' ? null : normalizedDate.getMonth() + 1,
             reportYear: normalizedDate.getFullYear(), metricType: metric.metricType,
@@ -2408,7 +2447,9 @@ export async function POST(req: NextRequest) {
     csvResults.details.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.agent.localeCompare(b.agent));
 
     return {
-      message: `Inserted ${normalizedCsvInsert.count}, skipped ${csvSkipped + csvPreview.workbookSummary.totalDuplicateRecords}, and found ${csvPreview.workbookSummary.totalInvalidRecords + csvResults.errors.length} invalid record(s).`,
+      message: `Import completed for 1 campaign: inserted ${normalizedCsvInsert.count}, skipped ${csvSkipped + csvPreview.workbookSummary.totalDuplicateRecords}, and found ${csvPreview.workbookSummary.totalInvalidRecords + csvResults.errors.length} invalid record(s).`,
+      importedCampaignIds: [csvTargetCampaignId],
+      importedCampaigns: 1,
       inserted: normalizedCsvInsert.count,
       updated: csvEnriched,
       skipped: csvSkipped + csvPreview.workbookSummary.totalDuplicateRecords,

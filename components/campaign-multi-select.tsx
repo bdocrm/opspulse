@@ -18,6 +18,7 @@ interface CampaignMultiSelectProps {
   disabled?: boolean;
   className?: string;
   id?: string;
+  maxVisibleChips?: number;
 }
 
 /**
@@ -37,6 +38,7 @@ export function CampaignMultiSelect({
   disabled = false,
   className,
   id,
+  maxVisibleChips = 2,
 }: CampaignMultiSelectProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -124,8 +126,10 @@ export function CampaignMultiSelect({
       >
         {selectedOptions.length === 0 ? (
           <span className="text-muted-foreground">{placeholder}</span>
+        ) : selectedOptions.length === campaigns.length ? (
+          <span className="text-sm font-medium text-primary">All campaigns selected</span>
         ) : (
-          selectedOptions.map((c) => (
+          selectedOptions.slice(0, maxVisibleChips).map((c) => (
             <span
               key={c.id}
               className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
@@ -145,6 +149,9 @@ export function CampaignMultiSelect({
               </span>
             </span>
           ))
+        )}
+        {selectedOptions.length > maxVisibleChips && selectedOptions.length !== campaigns.length && (
+          <span className="text-xs font-medium text-muted-foreground">{selectedOptions.length} campaigns selected</span>
         )}
         <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />
       </button>
@@ -168,13 +175,10 @@ export function CampaignMultiSelect({
 
           {/* Sticky Select All / Clear All + count */}
           <div className="sticky top-[57px] z-10 flex items-center justify-between border-b bg-popover px-3 py-2 text-xs">
-            <button
-              type="button"
-              onClick={allFilteredSelected ? clearAll : selectAll}
-              className="font-medium text-primary hover:underline"
-            >
-              {allFilteredSelected ? "Clear All" : "Select All"}
-            </button>
+            <div className="flex items-center gap-3">
+              <button type="button" onClick={selectAll} disabled={allFilteredSelected || filteredIds.length === 0} className="font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-40">Select All</button>
+              <button type="button" onClick={clearAll} disabled={value.length === 0} className="font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-40">Clear All</button>
+            </div>
             <span className="text-muted-foreground">{value.length} selected</span>
           </div>
 
