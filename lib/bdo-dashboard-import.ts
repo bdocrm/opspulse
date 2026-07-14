@@ -177,21 +177,27 @@ function addNumericIssue(issues: BdoImportIssue[], worksheet: string, row: numbe
 
 function parseAgentMonitoring(rows: unknown[][], sheetName: string, detectedType: BdoWorksheetType, fallbackYear: number): BdoSheetResult {
   const year = workbookYear(rows, fallbackYear);
-  const nameHit = findColumn(rows, [/^(?:agent|agent name|full name|name)$/]);
+  const isCrossSell = /cross sell/i.test(detectedType);
+  const nameHit = findColumn(rows, [/^(?:agent|agents monitoring|agent name|full name|name)$/]) || (isCrossSell ? { row: 0, col: 0 } : null);
   const levelHit = findColumn(rows, [/^level$/, /^agent level$/]);
   const productHit = findColumn(rows, [/^(?:product|product type|metric type)$/]);
   const columns = detectGroupedColumns(rows, year);
   const warnings: BdoImportIssue[] = [];
   const records: BdoImportRecord[] = [];
   if (!nameHit || !columns.length) return { sheetName, detectedType, records, months: [], warnings: [{ worksheet: sheetName, message: 'The worksheet was detected, but no valid monthly agent columns were found.' }], status: 'Skipped' };
-  const isCrossSell = /cross sell/i.test(detectedType);
   const monitoringType = /hoh/i.test(detectedType) ? (isCrossSell ? 'CROSS_SELL_HOH' : 'CI_HOH') : (isCrossSell ? 'CROSS_SELL_AGENT' : 'CI_AGENT');
   const dataStart = Math.max(nameHit.row, ...columns.map(() => nameHit.row)) + 1;
   const periods = [...new Map(columns.map((column) => [`${column.year}-${column.month}`, { year: column.year, month: column.month }])).values()];
   let activeName = '';
+  let activeProduct = '';
   for (let rowIndex = dataStart; rowIndex < rows.length; rowIndex++) {
     const row = rows[rowIndex] || [];
     const rowName = normalizeBdoText(row[nameHit.col]);
+    if (isCrossSell && /^(?:virtual(?: card)?|nth card|supple(?: invi)?|supplementary|cash installment)$/i.test(rowName)) {
+      activeProduct = rowName;
+      activeName = '';
+      continue;
+    }
     if (rowName) activeName = rowName;
     const name = activeName;
     if (!name || SUMMARY_NAME.test(name) || /^(?:no\.?|rank|ranking)$/i.test(name)) continue;
@@ -208,7 +214,7 @@ function parseAgentMonitoring(rows: unknown[][], sheetName: string, detectedType
       const actual = values.get('actual')?.value;
       const achievement = values.get('achievement')?.value;
       if (target == null && actual == null && achievement == null) continue;
-      const product = (productHit ? normalizeBdoText(row[productHit.col]) : '') || group.map((column) => column.product).find(Boolean);
+      const product = (productHit ? normalizeBdoText(row[productHit.col]) : '') || activeProduct || group.map((column) => column.product).find(Boolean);
       const groupLevel = group.find((column) => column.field === 'level');
       records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'agent_monitoring', monitoringType, entityName: name, level: groupLevel ? normalizeBdoText(row[groupLevel.col]) : levelHit ? normalizeBdoText(row[levelHit.col]) : undefined, product, metric: product || (isCrossSell ? 'Cross Sell' : 'Cash Installment'), month: period.month, year: period.year, reportDate: new Date(period.year, period.month - 1, 1), target, actual, achievement });
     }
@@ -216,27 +222,31 @@ function parseAgentMonitoring(rows: unknown[][], sheetName: string, detectedType
   return { sheetName, detectedType, records, months: periods.filter((period) => records.some((record) => record.month === period.month && record.year === period.year)).map((period) => monthLabel(period.year, period.month)), warnings, status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped' };
 }
 
-function parseManpower(rows: unknown[][], sheetName: string, detectedType: BdoWorksheetType, fallbackYear: number): BdoSheetResult {
+function parseManpower(rows: unknown[][], sheetName: string, detectedType: BdoWorksheetType, fallbackYear: number, sectionProducts: string[] = []): BdoSheetResult {
   const year = workbookYear(rows, fallbackYear);
-  const particularHit = findColumn(rows, [/^(?:particular|description|metric|manpower metric)$/]);
   const warnings: BdoImportIssue[] = [];
   const records: BdoImportRecord[] = [];
   const months: string[] = [];
-  if (!particularHit) return { sheetName, detectedType, records, months, warnings: [{ worksheet: sheetName, message: 'The worksheet was detected, but a Particular column was not found.' }], status: 'Skipped' };
-  const monthColumns: Array<{ col: number; month: number; year: number }> = [];
-  for (let col = 0; col < Math.max(...rows.map((row) => row.length)); col++) {
-    const hit = rows.slice(0, particularHit.row + 3).map((row) => monthFrom(row[col])).find(Boolean);
-    if (hit) monthColumns.push({ col, month: hit.month, year: hit.year || year });
-  }
-  for (let rowIndex = particularHit.row + 1; rowIndex < rows.length; rowIndex++) {
-    const particular = normalizeBdoText(rows[rowIndex]?.[particularHit.col]);
-    if (!particular || SUMMARY_NAME.test(particular)) continue;
-    for (const period of monthColumns) {
-      const percentage = /percentage|rate|turnover/i.test(particular);
-      const parsed = parseNumeric(rows[rowIndex]?.[period.col], percentage);
-      addNumericIssue(warnings, sheetName, rowIndex + 1, parsed, rows[rowIndex]?.[period.col]);
-      if (parsed.value == null) continue;
-      records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'manpower', metric: particular, month: period.month, year: period.year, reportDate: new Date(period.year, period.month - 1, 1), numericValue: parsed.value });
+  const headerRows = rows.flatMap((row, rowIndex) => row.flatMap((cell, col) => /^(?:particular|particulars|description|metric|manpower metric)$/.test(normalizedKey(cell)) ? [{ row: rowIndex, col }] : []));
+  if (!headerRows.length) return { sheetName, detectedType, records, months, warnings: [{ worksheet: sheetName, message: 'The worksheet was detected, but a Particulars column was not found.' }], status: 'Skipped' };
+  const mappedSectionProducts = headerRows.length === sectionProducts.length ? sectionProducts : [];
+  for (let sectionIndex = 0; sectionIndex < headerRows.length; sectionIndex++) {
+    const particularHit = headerRows[sectionIndex];
+    const nextHeaderRow = headerRows[sectionIndex + 1]?.row ?? rows.length;
+    const monthColumns = (rows[particularHit.row] || []).flatMap((cell, col) => {
+      const hit = monthFrom(cell);
+      return hit ? [{ col, month: hit.month, year: hit.year || year }] : [];
+    });
+    for (let rowIndex = particularHit.row + 1; rowIndex < nextHeaderRow; rowIndex++) {
+      const particular = normalizeBdoText(rows[rowIndex]?.[particularHit.col]);
+      if (!particular || SUMMARY_NAME.test(particular)) continue;
+      for (const period of monthColumns) {
+        const percentage = /percentage|rate|turnover/i.test(particular);
+        const parsed = parseNumeric(rows[rowIndex]?.[period.col], percentage);
+        addNumericIssue(warnings, sheetName, rowIndex + 1, parsed, rows[rowIndex]?.[period.col]);
+        if (parsed.value == null) continue;
+        records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'manpower', category: mappedSectionProducts[sectionIndex], metric: particular, month: period.month, year: period.year, reportDate: new Date(period.year, period.month - 1, 1), numericValue: parsed.value });
+      }
     }
   }
   months.push(...[...new Set(records.map((record) => monthLabel(record.year, record.month!)))]);
@@ -272,7 +282,63 @@ function parseTeamLeaders(rows: unknown[][], sheetName: string, detectedType: Bd
   return { sheetName, detectedType, records, months: [...new Set(records.map((record) => monthLabel(record.year, record.month!)))], warnings, status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped' };
 }
 
+type WideYtdGroup = { product: string; columns: Array<{ col: number; field: string }> };
+
+function detectWideYtdMatrix(rows: unknown[][]) {
+  const headerRow = rows.slice(0, 20).findIndex((row) => row.map(fieldAlias).filter((field) => ['target', 'actual', 'achievement'].includes(field)).length >= 6);
+  if (headerRow < 0) return null;
+  const maxColumns = Math.max(0, ...rows.slice(headerRow + 1).map((row) => row.length));
+  const monthCandidate = Array.from({ length: maxColumns }, (_, col) => ({
+    col,
+    count: rows.slice(headerRow + 1).filter((row) => Boolean(monthFrom(row[col]))).length,
+  })).sort((a, b) => b.count - a.count)[0];
+  if (!monthCandidate || monthCandidate.count < 2) return null;
+  const monthColumn = monthCandidate.col;
+  const groups = new Map<string, WideYtdGroup>();
+  for (let col = 0; col < (rows[headerRow]?.length || 0); col++) {
+    const field = fieldAlias(rows[headerRow]?.[col]);
+    if (!['target', 'actual', 'achievement'].includes(field)) continue;
+    const product = rows.slice(0, headerRow).reverse().map((row) => normalizeBdoText(row[col])).find((label) => label && !monthFrom(label) && !fieldAlias(label) && !/^20\d{2}$/.test(label));
+    if (!product) continue;
+    const key = normalizedKey(product);
+    const group = groups.get(key) || { product, columns: [] };
+    group.columns.push({ col, field });
+    groups.set(key, group);
+  }
+  const productGroups = [...groups.values()].filter((group) => group.columns.some((column) => column.field === 'actual'));
+  return productGroups.length >= 2 ? { headerRow, monthColumn, groups: productGroups } : null;
+}
+
+function parseWideYtd(rows: unknown[][], sheetName: string, detectedType: BdoWorksheetType, fallbackYear: number): BdoSheetResult | null {
+  const matrix = detectWideYtdMatrix(rows);
+  if (!matrix) return null;
+  const year = workbookYear(rows, fallbackYear);
+  const warnings: BdoImportIssue[] = [];
+  const records: BdoImportRecord[] = [];
+  for (let rowIndex = matrix.headerRow + 1; rowIndex < rows.length; rowIndex++) {
+    const period = monthFrom(rows[rowIndex]?.[matrix.monthColumn]);
+    if (!period) continue;
+    const recordYear = period.year || year;
+    for (const group of matrix.groups) {
+      const values = new Map<string, number>();
+      for (const column of group.columns) {
+        const parsed = parseNumeric(rows[rowIndex]?.[column.col], column.field === 'achievement');
+        addNumericIssue(warnings, sheetName, rowIndex + 1, parsed, rows[rowIndex]?.[column.col]);
+        if (parsed.value != null) values.set(column.field, parsed.value);
+      }
+      const target = values.get('target');
+      const actual = values.get('actual');
+      const achievement = values.get('achievement');
+      if (target == null && actual == null && achievement == null) continue;
+      records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'ytd', category: group.product, product: group.product, metric: group.product, month: period.month, year: recordYear, reportDate: new Date(recordYear, period.month - 1, 1), target, actual, achievement });
+    }
+  }
+  return { sheetName, detectedType, records, months: [...new Set(records.map((record) => monthLabel(record.year, record.month!)))], warnings, status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped' };
+}
+
 function parseYtd(rows: unknown[][], sheetName: string, detectedType: BdoWorksheetType, fallbackYear: number): BdoSheetResult {
+  const wide = parseWideYtd(rows, sheetName, detectedType, fallbackYear);
+  if (wide) return wide;
   const year = workbookYear(rows, fallbackYear);
   const columns = detectGroupedColumns(rows, year);
   const warnings: BdoImportIssue[] = [];
@@ -336,12 +402,17 @@ function parseYtd(rows: unknown[][], sheetName: string, detectedType: BdoWorkshe
 }
 
 export function parseBdoDashboardWorkbook(workbook: XLSX.WorkBook, fallbackDate: Date) {
+  const ytdSheetName = workbook.SheetNames.find((sheetName) => detectBdoWorksheet(sheetName) === 'YTD Performance');
+  const ytdRows = ytdSheetName ? rowsWithMergedCells(workbook.Sheets[ytdSheetName]) : null;
+  const ytdResult = ytdSheetName && ytdRows ? parseYtd(ytdRows, ytdSheetName, 'YTD Performance', fallbackDate.getFullYear()) : null;
+  const sectionProducts = [...new Set((ytdResult?.records || []).map((record) => record.product || record.category).filter(Boolean) as string[])];
   const sheets: BdoSheetResult[] = workbook.SheetNames.map((sheetName) => {
     const detectedType = detectBdoWorksheet(sheetName);
     if (!detectedType) return { sheetName, detectedType: 'Unsupported', records: [], months: [], warnings: [{ worksheet: sheetName, message: 'Unsupported worksheet skipped.' }], status: 'Skipped' };
     const rows = rowsWithMergedCells(workbook.Sheets[sheetName]);
-    if (detectedType === 'Manpower Monitoring') return parseManpower(rows, sheetName, detectedType, fallbackDate.getFullYear());
+    if (detectedType === 'Manpower Monitoring') return parseManpower(rows, sheetName, detectedType, fallbackDate.getFullYear(), sectionProducts);
     if (detectedType === 'TLs Scorecard') return parseTeamLeaders(rows, sheetName, detectedType, fallbackDate.getFullYear());
+    if (detectedType === 'YTD Performance' && ytdResult) return ytdResult;
     if (detectedType === 'YTD Performance') return parseYtd(rows, sheetName, detectedType, fallbackDate.getFullYear());
     return parseAgentMonitoring(rows, sheetName, detectedType, fallbackDate.getFullYear());
   });
