@@ -136,6 +136,10 @@ interface WorksheetPreview {
   validRows: number;
   invalidRows: number;
   duplicateRows: number;
+  unmappedRows?: number;
+  detectedMonths?: string[];
+  detectedCampaigns?: string[];
+  detectedMetrics?: string[];
   warnings: string[];
   errors: string[];
   fileName?: string;
@@ -148,6 +152,7 @@ interface WorkbookSummary {
   totalValidRecords: number;
   totalInvalidRecords: number;
   totalDuplicateRecords: number;
+  totalUnmappedRecords?: number;
   workbookYear?: number;
   supportedWorksheets?: string[];
   unsupportedWorksheets?: string[];
@@ -157,6 +162,15 @@ interface WorkbookSummary {
   agentCount?: number;
   teamLeaderCount?: number;
   manpowerRecordCount?: number;
+  campaignDistribution?: Array<{
+    campaignId: string;
+    campaignName: string;
+    worksheets: string[];
+    agents: number;
+    metrics: number;
+    records: number;
+    months: string[];
+  }>;
 }
 
 interface MonthImportSummary {
@@ -399,6 +413,7 @@ export default function BulkImportPage() {
       setReportYear(year);
       setReportMonth(month);
     }
+    if (accepted.some((item) => /bpi.*dashboard|dashboard.*bpi/i.test(item.name))) setReportPeriodType('monthly');
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -472,6 +487,7 @@ export default function BulkImportPage() {
         totalValidRecords: summaries.reduce((n, s) => n + s.totalValidRecords, 0),
         totalInvalidRecords: summaries.reduce((n, s) => n + s.totalInvalidRecords, 0),
         totalDuplicateRecords: summaries.reduce((n, s) => n + s.totalDuplicateRecords, 0),
+        totalUnmappedRecords: summaries.reduce((n, s) => n + (s.totalUnmappedRecords || 0), 0),
         workbookYear: summaries.map((s) => s.workbookYear).filter(Boolean).sort().at(-1),
         supportedWorksheets: [...new Set(summaries.flatMap((s) => s.supportedWorksheets || []))],
         unsupportedWorksheets: [...new Set(summaries.flatMap((s) => s.unsupportedWorksheets || []))],
@@ -481,6 +497,7 @@ export default function BulkImportPage() {
         agentCount: summaries.reduce((n, s) => n + (s.agentCount || 0), 0),
         teamLeaderCount: summaries.reduce((n, s) => n + (s.teamLeaderCount || 0), 0),
         manpowerRecordCount: summaries.reduce((n, s) => n + (s.manpowerRecordCount || 0), 0),
+        campaignDistribution: summaries.flatMap((s) => s.campaignDistribution || []),
       } : null);
       const sheets = responses.flatMap(({ data, file: previewFile, index }) =>
         (data.worksheetPreviews || []).map((sheet: WorksheetPreview) => ({ ...sheet, key: `${index}::${sheet.key}`, fileName: previewFile.name }))
@@ -771,6 +788,7 @@ export default function BulkImportPage() {
             <p><span className="font-medium text-slate-800">All Metrics (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/TRANSMITTED/APPROVALS/BOOKED/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Transmitted | Approvals | Booked | Volume</p>
             <p><span className="font-medium text-slate-800">ACQ (.xlsx) or CSV:</span> AGENT CODE | LAST NAME | FIRST NAME | DATE ONBOARD | SEAT CATEGORY | TOTAL + per-date NTB/SUPPLEMENTARY pairs — reads name from Last + First and the highest NTB &amp; Supplementary per agent</p>
             <p><span className="font-medium text-slate-800">BDO Dashboard (.xlsx/.xls):</span> Automatically scans YTD Performance, Manpower Monitoring, CI/Cross Sell agent and HOH monitoring, and TLs Scorecard worksheets. Merged monthly groups and populated months are detected dynamically.</p>
+            <p><span className="font-medium text-slate-800">BPI Dashboard (.xlsx/.xls):</span> Automatically scans YTD Performance, Manpower Monitoring, PA agent/HOH monitoring, PL productivity, and PL HOH monitoring. Campaign sections, month groups, Count, and Volume metrics are mapped independently.</p>
             <p className="text-xs text-slate-400">For single metric mode, the COUNT column is stored as the selected type. For all metrics mode, each column is stored separately. Use the Report Month picker to set the period.</p>
             <Button onClick={downloadTemplate} variant="outline" size="sm" className="gap-2 mt-1">
               <Download className="h-4 w-4" /> Download CSV Template
@@ -1173,7 +1191,7 @@ export default function BulkImportPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4 xl:grid-cols-7">
+              <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4 xl:grid-cols-8">
                 <div className="rounded-lg border bg-slate-50 p-3 text-center">
                   <p className="text-lg font-semibold">{workbookSummary.totalWorksheets}</p>
                   <p className="text-xs text-slate-500">Worksheets</p>
@@ -1202,6 +1220,10 @@ export default function BulkImportPage() {
                   <p className="text-lg font-semibold text-amber-700">{selectedWorksheetSummary.duplicates}</p>
                   <p className="text-xs text-amber-600">Duplicates</p>
                 </div>
+                <div className="rounded-lg border bg-orange-50 p-3 text-center">
+                  <p className="text-lg font-semibold text-orange-700">{workbookSummary.totalUnmappedRecords || 0}</p>
+                  <p className="text-xs text-orange-600">Unmapped</p>
+                </div>
               </div>
 
               {workbookSummary.supportedWorksheets && (
@@ -1214,6 +1236,22 @@ export default function BulkImportPage() {
                   <div className="md:col-span-2"><p className="font-medium text-slate-700">Skipped Worksheets</p><p className="text-slate-600">{workbookSummary.unsupportedWorksheets?.join(', ') || 'None'}</p></div>
                   <div className="md:col-span-2"><p className="font-medium text-slate-700">Categories</p><p className="text-slate-600">{workbookSummary.detectedCategories?.join(', ') || 'None'}</p></div>
                   <div className="md:col-span-2"><p className="font-medium text-slate-700">Metrics</p><p className="text-slate-600">{workbookSummary.detectedMetrics?.join(', ') || 'None'}</p></div>
+                </div>
+              )}
+
+              {Boolean(workbookSummary.campaignDistribution?.length) && (
+                <div className="space-y-2 rounded-lg border p-4">
+                  <p className="font-semibold text-slate-800">Campaign Distribution</p>
+                  <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                    {workbookSummary.campaignDistribution!.map((item, index) => (
+                      <div key={`${item.campaignId}-${index}`} className="rounded-md border bg-slate-50 p-3 text-xs">
+                        <p className="font-semibold text-blue-800">{item.campaignName}</p>
+                        <p className="mt-1 text-slate-600">{item.worksheets.join(', ')}</p>
+                        <p className="mt-1 text-slate-500">{item.agents} agents · {item.metrics} metrics · {item.records} records</p>
+                        <p className="text-slate-500">{item.months.join(', ')}</p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -1260,8 +1298,10 @@ export default function BulkImportPage() {
                             {worksheetCampaigns[sheet.key] ? selectedCampaigns.find((campaign) => campaign.id === worksheetCampaigns[sheet.key])?.campaignName : sheet.campaignMapping === 'record' ? 'Campaign detected per record' : 'Campaign mapping required'} ({sheet.campaignMapping === 'sheet' ? 'matched from sheet' : sheet.campaignMapping === 'record' ? 'matched from record data' : sheet.campaignMapping === 'unresolved' ? 'confirmation required' : 'selected campaign'}) · {metricLabel(sheet.metricType)} · {formatDate(sheet.reportDate)}
                           </p>
                           <p className="mt-2 text-xs text-slate-600">
-                            Rows {sheet.totalRows} · Valid {sheet.validRows} · Invalid {sheet.invalidRows} · Duplicates {sheet.duplicateRows}
+                            Rows {sheet.totalRows} · Valid {sheet.validRows} · Invalid {sheet.invalidRows} · Duplicates {sheet.duplicateRows} · Unmapped {sheet.unmappedRows || 0}
                           </p>
+                          {Boolean(sheet.detectedMonths?.length) && <p className="mt-1 text-xs text-slate-500">Months: {sheet.detectedMonths!.join(', ')}</p>}
+                          {Boolean(sheet.detectedMetrics?.length) && <p className="mt-1 text-xs text-slate-500">Metrics: {sheet.detectedMetrics!.join(', ')}</p>}
                           {[...sheet.errors, ...sheet.warnings].slice(0, 3).map((message, i) => (
                             <p key={i} className={`mt-1 text-xs ${sheet.errors.includes(message) ? 'text-red-600' : 'text-amber-700'}`}>
                               {message}
@@ -1340,7 +1380,7 @@ export default function BulkImportPage() {
                   <tr key={`${row.fileName}-${row.sheet}-${row.row}-${index}`} className="border-t">
                     <td className="max-w-40 truncate p-2">{row.fileName}</td><td className="p-2">{row.sheet}</td><td className="p-2">{row.campaignName}</td><td className="p-2 font-medium">{'agentName' in row ? row.agentName : row.name}</td><td className="p-2">{monthSummaries.find((month) => month.month === row.reportDate?.slice(0, 7))?.label || row.reportDate?.slice(0, 7) || '-'}</td>
                     <td className="p-2 capitalize">{row.reportPeriodType || reportPeriodType}</td><td className="p-2">{row.reportDate || '-'}</td><td className="p-2">{metricLabel(row.metricType || metricType)}</td><td className="p-2 text-right">{row.count == null ? '-' : row.count.toLocaleString()}</td><td className="p-2 text-right">{row.volume == null ? '-' : row.volume.toLocaleString()}</td><td className="p-2 text-right">{row.goal == null ? '-' : row.goal.toLocaleString()}</td><td className="p-2 text-right">{row.actual == null ? '-' : row.actual.toLocaleString()}</td><td className="p-2 text-right">{row.achievement == null ? '-' : `${(row.achievement * (row.achievement <= 2 ? 100 : 1)).toFixed(1)}%`}</td>
-                    <td className={`p-2 font-medium ${row.previewStatus === 'Existing' ? 'text-blue-700' : 'text-green-700'}`}>{row.previewStatus}</td><td className="p-2 text-slate-500">{row.validationMessage || '-'}</td>
+                    <td className={`p-2 font-medium ${row.previewStatus === 'Existing' ? 'text-blue-700' : row.previewStatus === 'Unmapped' ? 'text-orange-700' : 'text-green-700'}`}>{row.previewStatus}</td><td className="p-2 text-slate-500">{row.validationMessage || '-'}</td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -1478,13 +1518,25 @@ export default function BulkImportPage() {
 
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
-              <p className="text-xl font-bold text-green-700">{importResult?.success ?? 0}</p>
+              <p className="text-xl font-bold text-green-700">{importResult?.inserted ?? importResult?.success ?? 0}</p>
               <p className="text-xs text-green-600">Records Inserted</p>
             </div>
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-center">
               <p className="text-xl font-bold text-blue-700">{importResult?.skipped ?? 0}</p>
               <p className="text-xs text-blue-600">Existing Skipped</p>
             </div>
+            {importResult?.updated > 0 && (
+              <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-center">
+                <p className="text-xl font-bold text-indigo-700">{importResult.updated}</p>
+                <p className="text-xs text-indigo-600">Records Updated</p>
+              </div>
+            )}
+            {importResult?.unmapped > 0 && (
+              <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 text-center">
+                <p className="text-xl font-bold text-orange-700">{importResult.unmapped}</p>
+                <p className="text-xs text-orange-600">Unmapped</p>
+              </div>
+            )}
             <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
               <p className="text-xl font-bold text-red-700">{importResult?.invalid ?? 0}</p>
               <p className="text-xs text-red-600">Invalid</p>

@@ -1,0 +1,5 @@
+ALTER TABLE "DashboardImportBatch"
+  ADD COLUMN IF NOT EXISTS "selectedCampaignIds" TEXT,
+  ADD COLUMN IF NOT EXISTS "detectedWorksheets" TEXT,
+  ADD COLUMN IF NOT EXISTS "duplicateCount" INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "unmappedCount" INTEGER NOT NULL DEFAULT 0;

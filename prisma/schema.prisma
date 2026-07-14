@@ -199,6 +199,10 @@ model DashboardImportBatch {
   workbookYear      Int?
   totalWorksheets   Int                     @default(0)
   supportedSheets   Int                     @default(0)
+  selectedCampaignIds String?
+  detectedWorksheets String?
+  duplicateCount    Int                     @default(0)
+  unmappedCount     Int                     @default(0)
   insertedCount     Int                     @default(0)
   updatedCount      Int                     @default(0)
   skippedCount      Int                     @default(0)

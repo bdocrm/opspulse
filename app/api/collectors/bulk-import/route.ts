@@ -6,6 +6,7 @@ import * as XLSX from 'xlsx';
 import bcrypt from 'bcryptjs';
 import { matchMetricAlias, normalizeMetricHeader } from '@/lib/metric-import-mapping';
 import { isBdoDashboardWorkbook, parseBdoDashboardWorkbook, type BdoImportRecord } from '@/lib/bdo-dashboard-import';
+import { isBpiDashboardWorkbook, parseBpiDashboardWorkbook } from '@/lib/bpi-dashboard-import';
 import { mapWorksheetCampaign } from '@/lib/campaign-import-selection';
 
 type ParsedEntry = {
@@ -107,6 +108,13 @@ async function ensureImportMetadataColumns() {
       ADD COLUMN IF NOT EXISTS "importWorkbookSheets" TEXT,
       ADD COLUMN IF NOT EXISTS "importAuditLog" JSONB,
       ADD COLUMN IF NOT EXISTS "reportPeriodType" TEXT NOT NULL DEFAULT 'daily';
+  `);
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE "DashboardImportBatch"
+      ADD COLUMN IF NOT EXISTS "selectedCampaignIds" TEXT,
+      ADD COLUMN IF NOT EXISTS "detectedWorksheets" TEXT,
+      ADD COLUMN IF NOT EXISTS "duplicateCount" INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS "unmappedCount" INTEGER NOT NULL DEFAULT 0;
   `);
   await prisma.$executeRawUnsafe(`
     ALTER TABLE "ProductionDetail"
@@ -1201,6 +1209,10 @@ function bdoNaturalKey(record: BdoImportRecord) {
   return [record.worksheetSource, record.recordKind, record.entityName || '', record.category || '', record.product || '', record.metric, record.year, record.month || 0].map((value) => String(value).trim().toLowerCase()).join('|');
 }
 
+function dashboardMonthLabel(year: number, month: number) {
+  return new Date(year, month - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}
+
 function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCampaigns: AssignedCampaign[], reportPeriodType: ReportPeriodType) {
   const parsed = parseBdoDashboardWorkbook(workbook, reportDate);
   const recordMappings = new Map(parsed.records.map((record) => [record, mapWorksheetCampaign(`${record.worksheetSource} ${record.category || ''} ${record.product || ''} ${record.metric}`, selectedCampaigns)]));
@@ -1302,6 +1314,130 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
   };
 }
 
+function buildBpiPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCampaigns: AssignedCampaign[], reportPeriodType: ReportPeriodType) {
+  const parsed = parseBpiDashboardWorkbook(workbook, reportDate);
+  const recordMappings = new Map(parsed.records.map((record) => [record, mapWorksheetCampaign(`${record.category || ''} ${record.product || ''} ${record.metric} ${record.worksheetSource}`, selectedCampaigns)]));
+  const sheetMappings = new Map<string, { campaign: AssignedCampaign; source: 'sheet' | 'record' | 'selected' | 'unresolved' }>(parsed.sheets.map((sheet) => {
+    const mappings = sheet.records.map((record) => recordMappings.get(record)!);
+    const resolved = mappings.filter((mapping) => mapping.source !== 'unresolved');
+    const unresolved = mappings.filter((mapping) => mapping.source === 'unresolved');
+    if (resolved.length) return [sheet.sheetName, { campaign: resolved[0].campaign, source: 'record' as const }];
+    return [sheet.sheetName, mapWorksheetCampaign(sheet.sheetName, selectedCampaigns)];
+  }));
+  const seen = new Set<string>();
+  let duplicateCount = 0;
+  parsed.records = parsed.records.filter((record) => {
+    const recordKey = bdoNaturalKey(record);
+    if (seen.has(recordKey)) { duplicateCount++; return false; }
+    seen.add(recordKey);
+    return true;
+  });
+  const retained = new Set(parsed.records);
+  for (const sheet of parsed.sheets) sheet.records = sheet.records.filter((record) => retained.has(record));
+  const previewRecords = parsed.records.map((record) => {
+    const recordMapping = recordMappings.get(record)!;
+    const sheetMapping = sheetMappings.get(record.worksheetSource)!;
+    const mapping = recordMapping.source === 'sheet' || recordMapping.source === 'unresolved' ? recordMapping : sheetMapping;
+    return {
+      sheet: record.worksheetSource,
+      campaignId: mapping.campaign?.id || '',
+      campaignName: mapping.source === 'unresolved' ? 'Unmapped' : mapping.campaign.campaignName,
+      agent: record.entityName || record.category || record.metric,
+      reportPeriodType,
+      reportDate: ymd(record.reportDate),
+      metricType: record.metric,
+      count: record.numericValue ?? (record.product === 'Count' ? record.actual ?? null : null),
+      volume: record.product === 'Volume' ? record.actual ?? null : null,
+      goal: record.target ?? null,
+      actual: record.actual ?? null,
+      achievement: record.achievement ?? null,
+      status: mapping.source === 'unresolved' ? 'Unmapped' : 'New',
+      validationMessage: mapping.source === 'unresolved' ? `No selected campaign matched section "${record.category || record.worksheetSource}".` : record.remark || '',
+      row: record.sourceRow,
+    };
+  });
+  const monthMap = new Map<string, any>();
+  for (const record of parsed.records) {
+    const month = `${record.year}-${String(record.month || 1).padStart(2, '0')}`;
+    const current = monthMap.get(month) || { month, label: new Date(record.year, (record.month || 1) - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }), reportDate: `${month}-01`, new: 0, existing: 0, invalid: 0 };
+    const mapping = recordMappings.get(record);
+    if (mapping?.source === 'unresolved') current.invalid++;
+    else current.new++;
+    monthMap.set(month, current);
+  }
+  const worksheetPreviews = parsed.sheets.map((sheet, index) => {
+    const mapping = sheetMappings.get(sheet.sheetName)!;
+    const sheetRecords = parsed.records.filter((record) => record.worksheetSource === sheet.sheetName);
+    const unmappedRecords = sheetRecords.filter((record) => recordMappings.get(record)?.source === 'unresolved').length;
+    const mappedCampaigns = [...new Set(sheetRecords.map((record) => recordMappings.get(record)).filter((item) => item?.source !== 'unresolved').map((item) => item!.campaign.campaignName))];
+    const warnings = [...sheet.warnings.map((warning) => warning.message)];
+    if (unmappedRecords) warnings.unshift(`${unmappedRecords} record${unmappedRecords === 1 ? '' : 's'} could not be matched to the selected campaigns.`);
+    return {
+      key: `${index}:${sheet.sheetName}`,
+      sheetName: sheet.sheetName,
+      hidden: false,
+      selected: sheet.records.length > 0 && unmappedRecords === 0,
+      format: sheet.detectedType,
+      campaignId: mapping.campaign?.id || '',
+      campaignName: mapping.source === 'unresolved' ? 'Unmapped' : mapping.source === 'record' ? `Detected per record (${mappedCampaigns.join(', ')})` : mapping.campaign.campaignName,
+      campaignMapping: mapping.source,
+      metricType: 'all_metrics',
+      metricSource: 'sheet' as const,
+      reportDate: sheet.records[0] ? ymd(sheet.records[0].reportDate) : ymd(reportDate),
+      totalRows: sheet.records.length + sheet.warnings.length,
+      validRows: sheet.records.length,
+      invalidRows: sheet.warnings.filter((warning) => !/unsupported worksheet/i.test(warning.message)).length,
+      duplicateRows: 0,
+      unmappedRows: unmappedRecords,
+      detectedMonths: sheet.months,
+      detectedCampaigns: mappedCampaigns,
+      detectedMetrics: [...new Set(sheetRecords.map((record) => record.metric))],
+      warnings,
+      errors: [] as string[],
+      status: sheet.status,
+    };
+  });
+  const unmappedRecords = previewRecords.filter((record) => record.status === 'Unmapped').length;
+  return {
+    parsed,
+    recordMappings,
+    previewRecords,
+    worksheetPreviews,
+    monthSummary: [...monthMap.values()].sort((a, b) => a.month.localeCompare(b.month)),
+    workbookSummary: {
+      totalWorksheets: workbook.SheetNames.length,
+      worksheetsAccepted: worksheetPreviews.filter((sheet) => sheet.validRows > 0).length,
+      worksheetsSkipped: worksheetPreviews.filter((sheet) => sheet.validRows === 0).length,
+      totalValidRecords: parsed.records.length - unmappedRecords,
+      totalInvalidRecords: parsed.issues.filter((issue) => !/unsupported worksheet/i.test(issue.message)).length,
+      totalDuplicateRecords: duplicateCount,
+      inWorkbookDuplicateRecords: duplicateCount,
+      totalUnmappedRecords: unmappedRecords,
+      workbookYear: parsed.workbookYear,
+      supportedWorksheets: parsed.sheets.filter((sheet) => sheet.detectedType !== 'Unsupported').map((sheet) => sheet.sheetName),
+      unsupportedWorksheets: parsed.sheets.filter((sheet) => sheet.detectedType === 'Unsupported').map((sheet) => sheet.sheetName),
+      detectedMonths: parsed.detectedMonths,
+      detectedCategories: parsed.detectedCategories,
+      detectedMetrics: parsed.detectedMetrics,
+      agentCount: parsed.agents.length,
+      teamLeaderCount: 0,
+      manpowerRecordCount: parsed.records.filter((record) => record.recordKind === 'manpower').length,
+      campaignDistribution: selectedCampaigns.map((campaign) => {
+        const campaignRecords = parsed.records.filter((record) => recordMappings.get(record)?.campaign.id === campaign.id && recordMappings.get(record)?.source !== 'unresolved');
+        return {
+          campaignId: campaign.id,
+          campaignName: campaign.campaignName,
+          worksheets: [...new Set(campaignRecords.map((record) => record.worksheetSource))],
+          agents: new Set(campaignRecords.map((record) => record.entityName).filter(Boolean)).size,
+          metrics: new Set(campaignRecords.map((record) => record.metric)).size,
+          records: campaignRecords.length,
+          months: [...new Set(campaignRecords.map((record) => dashboardMonthLabel(record.year, record.month!)))],
+        };
+      }).filter((item) => item.records > 0),
+    },
+  };
+}
+
 async function markExistingBdoRecords(preview: ReturnType<typeof buildBdoPreview>, selectedCampaignIds: string[], reportPeriodType: ReportPeriodType) {
   if (!preview.parsed.records.length) return;
   const years = [...new Set(preview.parsed.records.map((record) => record.year))];
@@ -1327,7 +1463,7 @@ async function markExistingBdoRecords(preview: ReturnType<typeof buildBdoPreview
 }
 
 async function persistBdoImport({
-  preview, selectedCampaigns, campaignMappings, fileName, importMode, duplicateMode, reportPeriodType, reportDate, importedById, selectedWorksheetKeys,
+  preview, selectedCampaigns, campaignMappings, fileName, importMode, duplicateMode, reportPeriodType, reportDate, importedById, selectedWorksheetKeys, skipUnresolvedRecordMappings = false,
 }: {
   preview: ReturnType<typeof buildBdoPreview>;
   selectedCampaigns: AssignedCampaign[];
@@ -1339,12 +1475,14 @@ async function persistBdoImport({
   reportDate: Date;
   importedById: string;
   selectedWorksheetKeys: string[];
+  skipUnresolvedRecordMappings?: boolean;
 }) {
   const selectedSheets = preview.worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key));
   const campaignBySheet = new Map(selectedSheets.map((sheet) => [sheet.sheetName, campaignMappings[sheet.key] || (sheet.campaignMapping === 'unresolved' ? '' : sheet.campaignId)]));
   const explicitlyMappedSheets = new Set(selectedSheets.filter((sheet) => Boolean(campaignMappings[sheet.key])).map((sheet) => sheet.sheetName));
   const records = preview.parsed.records
     .filter((record) => campaignBySheet.has(record.worksheetSource))
+    .filter((record) => !skipUnresolvedRecordMappings || preview.recordMappings.get(record)?.source !== 'unresolved' || explicitlyMappedSheets.has(record.worksheetSource))
     .map((record) => {
       const detected = preview.recordMappings.get(record);
       return { record, campaignId: !explicitlyMappedSheets.has(record.worksheetSource) && detected?.source === 'sheet' ? detected.campaign.id : campaignBySheet.get(record.worksheetSource)! };
@@ -1352,9 +1490,12 @@ async function persistBdoImport({
   const importedCampaignIds = [...new Set(records.map((item) => item.campaignId))];
   return prisma.$transaction(async (tx) => {
     const batchId = crypto.randomUUID();
+    const selectedCampaignIds = selectedCampaigns.map((campaign) => campaign.id).join(',');
+    const detectedWorksheets = preview.worksheetPreviews.map((sheet) => sheet.sheetName).join(', ');
+    const unmappedCount = Number((preview.workbookSummary as any).totalUnmappedRecords || 0);
     await tx.$executeRaw`
-      INSERT INTO "DashboardImportBatch" ("id", "campaignId", "fileName", "importMode", "duplicateMode", "reportPeriodType", "reportDate", "workbookYear", "totalWorksheets", "supportedSheets", "importedById", "status")
-      VALUES (${batchId}, ${importedCampaignIds[0] || selectedCampaigns[0].id}, ${fileName}, ${importMode}, ${duplicateMode}, ${reportPeriodType}, ${reportDate}, ${preview.parsed.workbookYear}, ${preview.workbookSummary.totalWorksheets}, ${preview.workbookSummary.worksheetsAccepted}, ${importedById}, 'PROCESSING')
+      INSERT INTO "DashboardImportBatch" ("id", "campaignId", "fileName", "importMode", "duplicateMode", "reportPeriodType", "reportDate", "workbookYear", "totalWorksheets", "supportedSheets", "selectedCampaignIds", "detectedWorksheets", "unmappedCount", "importedById", "status")
+      VALUES (${batchId}, ${importedCampaignIds[0] || selectedCampaigns[0].id}, ${fileName}, ${importMode}, ${duplicateMode}, ${reportPeriodType}, ${reportDate}, ${preview.parsed.workbookYear}, ${preview.workbookSummary.totalWorksheets}, ${preview.workbookSummary.worksheetsAccepted}, ${selectedCampaignIds}, ${detectedWorksheets}, ${unmappedCount}, ${importedById}, 'PROCESSING')
     `;
     let inserted = 0; let updated = 0; let skipped = preview.workbookSummary.inWorkbookDuplicateRecords;
     if (duplicateMode === 'replace_period') {
@@ -1398,7 +1539,7 @@ async function persistBdoImport({
       await tx.$executeRaw`INSERT INTO "DashboardImportIssue" ("id", "batchId", "worksheetSource", "sourceRow", "message", "rawValue") VALUES (${crypto.randomUUID()}, ${batchId}, ${issue.worksheet}, ${issue.row || null}, ${issue.message}, ${issue.rawValue || null})`;
     }
     const invalid = preview.parsed.issues.filter((issue) => !/unsupported worksheet/i.test(issue.message)).length;
-    await tx.$executeRaw`UPDATE "DashboardImportBatch" SET "insertedCount" = ${inserted}, "updatedCount" = ${updated}, "skippedCount" = ${skipped}, "failedCount" = ${invalid}, "status" = 'COMPLETED', "completedAt" = CURRENT_TIMESTAMP WHERE "id" = ${batchId}`;
+    await tx.$executeRaw`UPDATE "DashboardImportBatch" SET "insertedCount" = ${inserted}, "updatedCount" = ${updated}, "skippedCount" = ${skipped}, "duplicateCount" = ${skipped}, "failedCount" = ${invalid}, "status" = 'COMPLETED', "completedAt" = CURRENT_TIMESTAMP WHERE "id" = ${batchId}`;
     return { batchId, inserted, updated, skipped, invalid, importedCampaignIds, importedCampaigns: importedCampaignIds.length, success: inserted + updated, created: 0, details: [], errors: preview.parsed.issues.slice(0, 50).map((issue) => `${issue.worksheet}${issue.row ? ` row ${issue.row}` : ''}: ${issue.message}`), message: `Import completed for ${importedCampaignIds.length} campaign${importedCampaignIds.length === 1 ? '' : 's'}: ${inserted} inserted, ${updated} updated, ${skipped} skipped, and ${invalid} invalid.` };
   }, { timeout: 120000 });
 }
@@ -1424,7 +1565,7 @@ export async function GET(req: NextRequest) {
       const summary = await getImportSummary(entryId, user.id);
       if (!summary) {
         const dashboardBatches = await prisma.$queryRaw<any[]>`
-          SELECT b.*, c."campaignName", COUNT(r.id)::int AS "detailCount"
+          SELECT b.*, COALESCE((SELECT STRING_AGG(c2."campaignName", ', ' ORDER BY c2."campaignName") FROM "Campaign" c2 WHERE c2.id = ANY(STRING_TO_ARRAY(b."selectedCampaignIds", ','))), c."campaignName") AS "campaignName", COUNT(r.id)::int AS "detailCount"
           FROM "DashboardImportBatch" b
           JOIN "Campaign" c ON c.id = b."campaignId"
           LEFT JOIN "DashboardImportRecord" r ON r."batchId" = b.id
@@ -1499,7 +1640,7 @@ export async function GET(req: NextRequest) {
       LIMIT 50
     `;
     const dashboardRows = await prisma.$queryRaw<any[]>`
-      SELECT b.id, b."campaignId", c."campaignName", b."fileName", b."reportDate", b."createdAt", (b."insertedCount" + b."updatedCount") AS "detailCount"
+      SELECT b.id, b."campaignId", COALESCE((SELECT STRING_AGG(c2."campaignName", ', ' ORDER BY c2."campaignName") FROM "Campaign" c2 WHERE c2.id = ANY(STRING_TO_ARRAY(b."selectedCampaignIds", ','))), c."campaignName") AS "campaignName", b."fileName", b."reportDate", b."createdAt", (b."insertedCount" + b."updatedCount") AS "detailCount"
       FROM "DashboardImportBatch" b
       JOIN "Campaign" c ON c.id = b."campaignId"
       WHERE b."importedById" = ${user.id} AND b.status = 'COMPLETED'
@@ -1685,6 +1826,70 @@ export async function POST(req: NextRequest) {
       }
       if (!workbook.SheetNames.length) {
         return NextResponse.json({ error: 'No worksheets found in Excel file' }, { status: 400 });
+      }
+
+      if (isBpiDashboardWorkbook(workbook)) {
+        if (importMode === 'single') {
+          return NextResponse.json({ error: 'BPI dashboard workbooks require Import All Data or Import Selected Worksheets.' }, { status: 400 });
+        }
+        const bpiPreview = buildBpiPreview(workbook, reportDate, selectedCampaigns, reportPeriodType);
+        await markExistingBdoRecords(bpiPreview as ReturnType<typeof buildBdoPreview>, selectedCampaigns.map((campaign) => campaign.id), reportPeriodType);
+        if (bpiPreview.workbookSummary.worksheetsAccepted === 0 || bpiPreview.workbookSummary.totalValidRecords === 0) {
+          return NextResponse.json({
+            error: 'The workbook contains supported BPI worksheets, but no valid mapped monthly data was found.',
+            workbookSummary: bpiPreview.workbookSummary,
+            worksheetPreviews: bpiPreview.worksheetPreviews,
+            previewRecords: bpiPreview.previewRecords,
+          }, { status: 400 });
+        }
+        if (mode === 'preview') {
+          return NextResponse.json({
+            preview: true,
+            multiSheet: true,
+            bpiDashboard: true,
+            matched: [],
+            notFound: [],
+            metricType: 'all_metrics',
+            reportDate: ymd(reportDate),
+            reportPeriodType,
+            previewRecords: bpiPreview.previewRecords,
+            monthSummary: bpiPreview.monthSummary,
+            workbookSummary: bpiPreview.workbookSummary,
+            worksheetPreviews: bpiPreview.worksheetPreviews,
+            validationWarnings: bpiPreview.parsed.issues.slice(0, 200),
+          });
+        }
+        const selectedWorksheetKeysValue = formData.get('selectedWorksheetKeys');
+        const submittedWorksheetKeys: string[] = JSON.parse((selectedWorksheetKeysValue as string) || '[]');
+        const selectedWorksheetKeys = selectedWorksheetKeysValue === null
+          ? bpiPreview.worksheetPreviews.filter((sheet) => sheet.selected).map((sheet) => sheet.key)
+          : submittedWorksheetKeys;
+        if (selectedWorksheetKeys.length === 0) return NextResponse.json({ error: 'Select at least one valid mapped worksheet before importing.' }, { status: 400 });
+        const campaignMappings: Record<string, string> = JSON.parse((formData.get('campaignMappings') as string) || '{}');
+        const selectedBpiSheets = bpiPreview.worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key) && sheet.validRows > 0);
+        if (!selectedBpiSheets.length) return NextResponse.json({ error: 'No selected worksheets contain valid mapped rows to import.' }, { status: 400 });
+        const invalidMapping = selectedBpiSheets.find((sheet) => {
+          const mappedId = campaignMappings[sheet.key];
+          return (sheet.campaignMapping === 'unresolved' && !mappedId) || Boolean(mappedId && !selectedCampaigns.some((campaign) => campaign.id === mappedId));
+        });
+        if (invalidMapping) return NextResponse.json({ error: 'Some BPI worksheets or sections are unmapped. Review the campaign mapping before importing.' }, { status: 400 });
+        if (selectedBpiSheets.some((sheet) => sheet.campaignMapping === 'record' && campaignMappings[sheet.key])) {
+          return NextResponse.json({ error: 'Worksheets mapped per record cannot be overridden with one campaign. Clear the worksheet override to preserve section-level campaign mapping.' }, { status: 400 });
+        }
+        const result = await persistBdoImport({
+          preview: bpiPreview as ReturnType<typeof buildBdoPreview>,
+          selectedCampaigns,
+          campaignMappings,
+          fileName: file.name,
+          importMode,
+          duplicateMode,
+          reportPeriodType,
+          reportDate,
+          importedById: user.id,
+          selectedWorksheetKeys: selectedBpiSheets.map((sheet) => sheet.key),
+          skipUnresolvedRecordMappings: true,
+        });
+        return NextResponse.json({ ...result, bpiDashboard: true, unmapped: bpiPreview.workbookSummary.totalUnmappedRecords, workbookSummary: bpiPreview.workbookSummary, worksheetPreviews: bpiPreview.worksheetPreviews, normalizedImported: result.inserted, normalizedDuplicates: result.skipped });
       }
 
       if (isBdoDashboardWorkbook(workbook)) {

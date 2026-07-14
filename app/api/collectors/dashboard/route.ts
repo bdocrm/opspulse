@@ -160,14 +160,16 @@ export async function GET(req: NextRequest) {
       prisma.dashboardImportRecord.findMany({
         where: {
           campaignId: { in: assignedIds },
-          recordKind: "agent_monitoring",
-          entityName: { not: "" },
+          recordKind: { in: ["agent_monitoring", "ytd"] },
         },
         select: {
           campaignId: true,
+          recordKind: true,
           entityName: true,
           level: true,
           monitoringType: true,
+          category: true,
+          product: true,
           metric: true,
           year: true,
           month: true,
@@ -230,6 +232,7 @@ export async function GET(req: NextRequest) {
     }>>();
     const importedRosterSeen = new Set<string>();
     for (const record of dashboardAgentRecords) {
+      if (record.recordKind !== "agent_monitoring") continue;
       const normalizedName = normalizeImportedAgentName(record.entityName);
       if (!normalizedName) continue;
       const identity = `${record.campaignId}|${normalizedName}`;
@@ -254,6 +257,26 @@ export async function GET(req: NextRequest) {
       importedRosterByCampaign.set(record.campaignId, list);
     }
 
+    const campaignsWithImportedAgentMonitoring = new Set(
+      dashboardAgentRecords.filter((record) => record.recordKind === "agent_monitoring" && record.actual != null).map((record) => record.campaignId)
+    );
+    const campaignNameById = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
+    for (const record of dashboardAgentRecords) {
+      if (record.recordKind !== "ytd" || campaignsWithImportedAgentMonitoring.has(record.campaignId)) continue;
+      const summaryName = `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
+      const identity = `${record.campaignId}|${normalizeImportedAgentName(summaryName)}`;
+      if (importedRosterSeen.has(identity)) continue;
+      importedRosterSeen.add(identity);
+      const list = importedRosterByCampaign.get(record.campaignId) ?? [];
+      list.push({
+        id: importedAgentId(record.campaignId, summaryName), name: summaryName, email: "", seatNumber: null,
+        monthlyTarget: null, monthlyTargetSupplementary: null, mbLevel: null,
+        disbursedTxnTarget: null, disbursedVolTarget: null, grossTurnInsTxnTarget: null, grossTurnInsVolTarget: null,
+        campaignId: record.campaignId, importedOnly: true,
+      });
+      importedRosterByCampaign.set(record.campaignId, list);
+    }
+
     // Per-category MB PL fields aggregated alongside the standard metrics.
     const CATEGORY_KEYS = [
       'bauPayrollTxn', 'bauPayrollVol', 'bauDepositorTxn', 'bauDepositorVol',
@@ -264,6 +287,7 @@ export async function GET(req: NextRequest) {
 
     const emptyProduction = () => ({
       transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0,
+      transmittedVolume: 0, approvalsVolume: 0, bookedVolume: 0,
       bauPayrollTxn: 0, bauPayrollVol: 0, bauDepositorTxn: 0, bauDepositorVol: 0,
       topupPayrollTxn: 0, topupPayrollVol: 0, topupDepositorTxn: 0, topupDepositorVol: 0,
       openMarketTxn: 0, openMarketVol: 0,
@@ -292,8 +316,10 @@ export async function GET(req: NextRequest) {
     // month, and metric are never counted twice.
     const allPreferredDashboardRecords = new Map<string, (typeof dashboardAgentRecords)[number]>();
     for (const record of dashboardAgentRecords) {
+      if (record.recordKind === "ytd" && campaignsWithImportedAgentMonitoring.has(record.campaignId)) continue;
       if (record.actual == null && record.target == null) continue;
-      const normalizedName = normalizeImportedAgentName(record.entityName);
+      const entityName = record.entityName || `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
+      const normalizedName = normalizeImportedAgentName(entityName);
       const key = `${record.campaignId}|${normalizedName}|${record.year}|${record.month || 0}|${record.metric}`;
       const existing = allPreferredDashboardRecords.get(key);
       const priority = record.monitoringType?.endsWith("_AGENT") ? 2 : 1;
@@ -350,8 +376,9 @@ export async function GET(req: NextRequest) {
     const importedGoalByCampaign = new Map<string, number>();
     const importedTargetByAgent = new Map<string, number>();
     for (const record of preferredDashboardRecords.values()) {
-      const normalizedName = normalizeImportedAgentName(record.entityName);
-      const agentId = actualAgentIdByCampaignAndName.get(`${record.campaignId}|${normalizedName}`) || importedAgentId(record.campaignId, record.entityName);
+      const entityName = record.entityName || `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
+      const normalizedName = normalizeImportedAgentName(entityName);
+      const agentId = actualAgentIdByCampaignAndName.get(`${record.campaignId}|${normalizedName}`) || importedAgentId(record.campaignId, entityName);
       const target = Number(record.target || 0);
       if (target) {
         importedGoalByCampaign.set(record.campaignId, (importedGoalByCampaign.get(record.campaignId) ?? 0) + target);
@@ -362,7 +389,21 @@ export async function GET(req: NextRequest) {
       const cur = byAgent[agentId] ?? emptyProduction();
       const actual = Number(record.actual || 0);
       const kpiMetric = campaignKpiById.get(record.campaignId);
-      if (kpiMetric === "volume") {
+      const importedMetric = record.metric.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      if (importedMetric === "transmitted count") {
+        cur.transmittals += actual;
+      } else if (importedMetric === "transmitted volume") {
+        cur.transmittedVolume += actual;
+      } else if (importedMetric === "approvals count") {
+        cur.approvals += actual;
+      } else if (importedMetric === "approvals volume") {
+        cur.approvalsVolume += actual;
+      } else if (importedMetric === "booked count") {
+        cur.booked += actual;
+      } else if (importedMetric === "booked volume") {
+        cur.bookedVolume += actual;
+        cur.volume += actual;
+      } else if (kpiMetric === "volume") {
         cur.volume += actual;
       } else if (kpiMetric === "transmittals" || kpiMetric === "activations" || kpiMetric === "approvals" || kpiMetric === "booked") {
         cur[kpiMetric] += actual;

@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
     // 1b. Distinct periods (year/month) that actually contain production data.
     // Used by the UI to populate the month selector and to auto-jump to the most
     // recent month with data when the current month is empty.
-    const availablePeriods = await prisma.$queryRaw<Array<{ year: number; month: number }>>`
+    let availablePeriods = await prisma.$queryRaw<Array<{ year: number; month: number }>>`
       SELECT DISTINCT
         EXTRACT(YEAR FROM pe."date")::int  AS year,
         EXTRACT(MONTH FROM pe."date")::int AS month
@@ -87,6 +87,56 @@ export async function GET(req: NextRequest) {
       },
     });
 
+    // Dashboard-style BPI/BDO workbooks are normalized into DashboardImportRecord.
+    // Merge their campaign KPI values into the CEO dashboard without collapsing
+    // PL Count/Volume metrics or counting HOH mirrors twice.
+    const dashboardRows = await prisma.dashboardImportRecord.findMany({
+      where: {
+        campaignId: { in: cIds },
+        recordKind: { in: ["agent_monitoring", "ytd"] },
+        reportDate: { gte: startDate, lte: endDate },
+        actual: { not: null },
+      },
+      select: { campaignId: true, recordKind: true, entityName: true, monitoringType: true, metric: true, year: true, month: true, reportDate: true, target: true, actual: true },
+      orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
+    }).catch(() => []);
+    const campaignById = new Map(campaigns.map((campaign) => [campaign.id, campaign]));
+    const campaignsWithAgentRows = new Set(dashboardRows.filter((row) => row.recordKind === "agent_monitoring").map((row) => row.campaignId));
+    const preferredDashboardRows = new Map<string, (typeof dashboardRows)[number]>();
+    for (const row of dashboardRows) {
+      if (row.recordKind === "ytd" && campaignsWithAgentRows.has(row.campaignId)) continue;
+      const normalizedName = (row.entityName || "Campaign Total").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+      const rowKey = `${row.campaignId}|${normalizedName}|${row.year}|${row.month || 0}|${row.metric}`;
+      const existing = preferredDashboardRows.get(rowKey);
+      const priority = row.monitoringType?.endsWith("_AGENT") ? 2 : 1;
+      const existingPriority = existing?.monitoringType?.endsWith("_AGENT") ? 2 : existing ? 1 : 0;
+      if (priority > existingPriority) preferredDashboardRows.set(rowKey, row);
+    }
+    const importedRows = [...preferredDashboardRows.values()].flatMap((row) => {
+      const campaign = campaignById.get(row.campaignId);
+      if (!campaign) return [];
+      const metric = row.metric.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const kpi = /cash installment/.test(metric) ? "volume" : campaign.kpiMetric || "booked";
+      const matchesKpi =
+        (kpi === "transmittals" && (metric === "transmitted count" || !/\b(?:volume|approvals|booked)\b/.test(metric))) ||
+        (kpi === "approvals" && (metric === "approvals count" || !/\b(?:volume|transmitted|booked)\b/.test(metric))) ||
+        (kpi === "booked" && (metric === "booked count" || !/\b(?:volume|transmitted|approvals)\b/.test(metric))) ||
+        (kpi === "activations" && !/\b(?:volume|transmitted|approvals|booked)\b/.test(metric)) ||
+        (kpi === "volume" && (metric.includes("volume") || metric.includes("cash installment")));
+      return matchesKpi ? [{ ...row, value: Number(row.actual || 0), agentName: row.entityName || `${campaign.campaignName} Total` }] : [];
+    });
+    const importedByCampaign = new Map<string, typeof importedRows>();
+    const importedGoalByCampaign = new Map<string, number>();
+    for (const row of importedRows) {
+      importedByCampaign.set(row.campaignId, [...(importedByCampaign.get(row.campaignId) || []), row]);
+      if (row.target) importedGoalByCampaign.set(row.campaignId, (importedGoalByCampaign.get(row.campaignId) || 0) + Number(row.target));
+    }
+    const dashboardPeriods = await prisma.$queryRaw<Array<{ year: number; month: number }>>`
+      SELECT DISTINCT "year", "month" FROM "DashboardImportRecord" WHERE "month" IS NOT NULL ORDER BY "year" DESC, "month" DESC
+    `.catch(() => []);
+    availablePeriods = [...new Map([...availablePeriods, ...dashboardPeriods].map((period) => [`${period.year}-${period.month}`, period])).values()]
+      .sort((a, b) => b.year - a.year || b.month - a.month);
+
     // 4. Group by campaign
     const detailsByCampaign = new Map<string, typeof allDetails>();
     for (const d of allDetails) {
@@ -97,21 +147,23 @@ export async function GET(req: NextRequest) {
     // 5. Campaign-level KPIs
     const allCampaignRows = campaigns.map((c) => {
       const details = detailsByCampaign.get(c.id) ?? [];
+      const imported = importedByCampaign.get(c.id) ?? [];
       const wDays   = Number(extrasById[c.id]?.workingDays ?? 22);
       const dLapsed = Number(extrasById[c.id]?.daysLapsed  ?? 0);
       // MTD = sum of volume (peso amounts) for standard campaigns, or NTB for ACQ
       // campaigns — matching the OM / Collector dashboards.
-      const mtd     = details.reduce((sum, d) => sum + metricValue(c.campaignName, d), 0);
+      const mtd     = details.reduce((sum, d) => sum + metricValue(c.campaignName, d), 0) + imported.reduce((sum, row) => sum + row.value, 0);
+      const goal    = importedGoalByCampaign.get(c.id) || c.monthlyGoal;
       const rr      = calcRunRate(mtd, dLapsed, wDays);
-      const ach     = calcAchievement(mtd, c.monthlyGoal);
-      const rrAch   = calcRRAch(rr, c.monthlyGoal);
+      const ach     = calcAchievement(mtd, goal);
+      const rrAch   = calcRRAch(rr, goal);
 
       return {
         id: c.id,
         campaignName: c.campaignName,
         // Show the metric that actually drives MTD (NTB for acquisition campaigns).
         kpiMetric: isAcqCampaign(c.campaignName) ? "ntb" : c.kpiMetric,
-        goal: c.monthlyGoal,
+        goal,
         mtd:          Math.round(mtd),
         achievement:  ach,
         runRate:      Math.round(rr),
@@ -145,6 +197,10 @@ export async function GET(req: NextRequest) {
       const key = new Date(d.productionEntry.date).toISOString().slice(0, 10);
       dailyMap.set(key, (dailyMap.get(key) ?? 0) + metricValue(campaignNameById.get(d.campaignId), d));
     }
+    for (const row of importedRows) {
+      const date = row.month ? `${row.year}-${String(row.month).padStart(2, "0")}-01` : new Date(row.reportDate).toISOString().slice(0, 10);
+      dailyMap.set(date, (dailyMap.get(date) ?? 0) + row.value);
+    }
     const dailyTrend = Array.from(dailyMap.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([date, value]) => ({ date, value }));
@@ -161,6 +217,11 @@ export async function GET(req: NextRequest) {
       const aid = d.agent.id;
       if (!agentMap.has(aid)) agentMap.set(aid, { name: d.agent.name, value: 0 });
       agentMap.get(aid)!.value += val;
+    }
+    for (const row of importedRows) {
+      const key = `imported:${row.campaignId}:${row.agentName.toUpperCase()}`;
+      if (!agentMap.has(key)) agentMap.set(key, { name: row.agentName, value: 0 });
+      agentMap.get(key)!.value += row.value;
     }
     const leaderboard = Array.from(agentMap.values())
       .filter((a) => a.value > 0)
