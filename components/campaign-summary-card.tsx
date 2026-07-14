@@ -34,6 +34,7 @@ export interface CampaignSummaryProps {
   production: Record<string, Production>;
   attendance: Record<string, { status: string; remarks: string | null }>;
   entriesCount: number;
+  dataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
   onCollectorSearch?: (query: string) => void;
   onDeleteAllAgents?: () => void;
   isDeletingAgents?: boolean;
@@ -80,6 +81,7 @@ export function CampaignSummaryCard({
   production,
   attendance,
   entriesCount,
+  dataPeriod,
   children,
   onCollectorSearch,
   onDeleteAllAgents,
@@ -112,6 +114,9 @@ export function CampaignSummaryCard({
   const remainingGoal = Math.max(0, goal - (acq ? totalNtb : totalProduction));
   const metricLabel = kpiLabel(kpiMetric);
   const hasRecordsInRange = entriesCount > 0;
+  const fallbackPeriodLabel = dataPeriod?.source === 'latest_import' && dataPeriod.month && dataPeriod.year
+    ? new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(dataPeriod.year, dataPeriod.month - 1, 1)))
+    : null;
 
   // Performance distribution follows the campaign's configured KPI.
   const performanceDistribution = useMemo(() => {
@@ -194,6 +199,11 @@ export function CampaignSummaryCard({
       {/* Expanded Content */}
       {expanded && (
         <CardContent className="pt-0 space-y-6">
+          {fallbackPeriodLabel && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+              The selected dates have no records for this campaign. Showing its latest imported workbook data from {fallbackPeriodLabel}.
+            </div>
+          )}
           {!hasRecordsInRange && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
               No production records fall within the selected date range. Adjust the date filter to view this campaign&apos;s imported performance.
@@ -234,7 +244,7 @@ export function CampaignSummaryCard({
                 <p className="text-xl font-bold text-orange-600">{formatKpiValue(kpiMetric, remainingGoal)}</p>
               </div>
               <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
-                <p className="text-xs text-muted-foreground mb-1">Records in Range</p>
+                <p className="text-xs text-muted-foreground mb-1">{fallbackPeriodLabel ? `Records (${fallbackPeriodLabel})` : 'Records in Range'}</p>
                 <p className="text-xl font-bold text-green-600">{entriesCount}</p>
               </div>
             </div>

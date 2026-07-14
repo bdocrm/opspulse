@@ -73,6 +73,13 @@ interface CampaignBlock {
   production: Record<string, Production>;
   attendance: Record<string, { status: string; remarks: string | null }>;
   entriesCount: number;
+  dataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
+}
+
+function campaignDataPeriodLabel(period?: CampaignBlock['dataPeriod']): string | null {
+  if (period?.source !== 'latest_import' || !period.month || !period.year) return null;
+  return new Intl.DateTimeFormat('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' })
+    .format(new Date(Date.UTC(period.year, period.month - 1, 1)));
 }
 
 const CAMPAIGN_GROUP_PREFIX = '__campaign_group__:';
@@ -1209,6 +1216,7 @@ export default function CollectorDashboard() {
               const totalSupplementary = campaignAgents.reduce((sum, agent) => sum + ((campaign.production[agent.id] || ZERO_PROD).supplementary || 0), 0);
               const ntbGoal = campaignGoal; // legacy monthly goal doubles as the NTB goal
               const ntbProgress = ntbGoal > 0 ? ((totalNtb / ntbGoal) * 100).toFixed(1) : '0';
+              const fallbackPeriodLabel = campaignDataPeriodLabel(campaign.dataPeriod);
 
               return (
                 <Card key={campaign.id} className="relative overflow-hidden hover:shadow-md transition-shadow">
@@ -1290,7 +1298,7 @@ export default function CollectorDashboard() {
                       {/* Entries */}
                       <div className="pt-2 border-t">
                         <div className="flex items-center justify-between">
-                          <span className="text-xs text-muted-foreground">Records in Range</span>
+                          <span className="text-xs text-muted-foreground">{fallbackPeriodLabel ? `Latest Import (${fallbackPeriodLabel})` : 'Records in Range'}</span>
                           <span className="text-sm font-semibold text-orange-500">{campaign.entriesCount}</span>
                         </div>
                       </div>
@@ -1366,6 +1374,7 @@ export default function CollectorDashboard() {
                   production={block.production}
                   attendance={block.attendance}
                   entriesCount={block.entriesCount}
+                  dataPeriod={block.dataPeriod}
                   onDeleteAllAgents={block.agents.some((agent) => !agent.importedOnly) ? () => handleDeleteAllAgents(block.id) : undefined}
                   isDeletingAgents={deletingAllAgents}
                 >

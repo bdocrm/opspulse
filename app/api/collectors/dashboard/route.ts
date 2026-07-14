@@ -290,15 +290,54 @@ export async function GET(req: NextRequest) {
     // BDO dashboard imports are stored separately from ProductionEntry/Detail.
     // Prefer the regular agent worksheet over its HOH mirror so the same agent,
     // month, and metric are never counted twice.
-    const preferredDashboardRecords = new Map<string, (typeof dashboardAgentRecords)[number]>();
+    const allPreferredDashboardRecords = new Map<string, (typeof dashboardAgentRecords)[number]>();
     for (const record of dashboardAgentRecords) {
-      if (record.reportDate < startDate || record.reportDate > endDate || (record.actual == null && record.target == null)) continue;
+      if (record.actual == null && record.target == null) continue;
       const normalizedName = normalizeImportedAgentName(record.entityName);
       const key = `${record.campaignId}|${normalizedName}|${record.year}|${record.month || 0}|${record.metric}`;
-      const existing = preferredDashboardRecords.get(key);
+      const existing = allPreferredDashboardRecords.get(key);
       const priority = record.monitoringType?.endsWith("_AGENT") ? 2 : 1;
       const existingPriority = existing?.monitoringType?.endsWith("_AGENT") ? 2 : existing ? 1 : 0;
-      if (priority > existingPriority) preferredDashboardRecords.set(key, record);
+      if (priority > existingPriority) allPreferredDashboardRecords.set(key, record);
+    }
+
+    const preferredDashboardRecords = new Map<string, (typeof dashboardAgentRecords)[number]>();
+    for (const [key, record] of allPreferredDashboardRecords) {
+      if (record.reportDate >= startDate && record.reportDate <= endDate) {
+        preferredDashboardRecords.set(key, record);
+      }
+    }
+
+    // Dashboard workbooks often contain different latest months per campaign
+    // (for example CIE through May while NTH/VC/Supple end in March). If the
+    // selected range has no imported actuals for one campaign, show that
+    // campaign's latest imported month instead of returning misleading zeros.
+    const campaignsWithStandardProduction = new Set(details.map((detail) => detail.campaignId));
+    const campaignsWithImportedActualsInRange = new Set(
+      [...preferredDashboardRecords.values()].filter((record) => record.actual != null).map((record) => record.campaignId)
+    );
+    const importedFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
+    for (const campaign of campaigns) {
+      if (campaignsWithStandardProduction.has(campaign.id) || campaignsWithImportedActualsInRange.has(campaign.id)) continue;
+      const candidates = [...allPreferredDashboardRecords.values()].filter(
+        (record) => record.campaignId === campaign.id && record.actual != null && record.month != null
+      );
+      if (candidates.length === 0) continue;
+      const latest = candidates.reduce((current, record) => {
+        const currentPeriod = current.year * 12 + (current.month || 0);
+        const recordPeriod = record.year * 12 + (record.month || 0);
+        return recordPeriod > currentPeriod ? record : current;
+      });
+      const period = { year: latest.year, month: latest.month as number };
+      importedFallbackPeriodByCampaign.set(campaign.id, period);
+      for (const [key, record] of preferredDashboardRecords) {
+        if (record.campaignId === campaign.id) preferredDashboardRecords.delete(key);
+      }
+      for (const [key, record] of allPreferredDashboardRecords) {
+        if (record.campaignId === campaign.id && record.year === period.year && record.month === period.month) {
+          preferredDashboardRecords.set(key, record);
+        }
+      }
     }
     const campaignsWithCashInstallment = new Set(
       dashboardAgentRecords.filter((record) => /cash installment/i.test(record.metric)).map((record) => record.campaignId)
@@ -380,6 +419,9 @@ export async function GET(req: NextRequest) {
         production: prodByCampaign.get(c.id) ?? {},
         attendance: attByCampaign.get(c.id) ?? {},
         entriesCount: (entryCountByCampaign.get(c.id) ?? 0) + (importedEntryCountByCampaign.get(c.id) ?? 0),
+        dataPeriod: importedFallbackPeriodByCampaign.has(c.id)
+          ? { source: "latest_import", ...importedFallbackPeriodByCampaign.get(c.id)! }
+          : { source: "selected_range" },
       };
     });
 
