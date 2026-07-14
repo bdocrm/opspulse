@@ -1,30 +1,19 @@
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from '@prisma/client';
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    log: 
-      process.env.NODE_ENV === "development" 
-        ? ["query", "error", "warn"]
-        : ["error"],
-    errorFormat: "pretty",
+function createPrismaClient() {
+  return new PrismaClient({
+    // Query failures are thrown to the calling route and handled there. Keeping
+    // Prisma's low-level error logger enabled also prints harmless pool socket
+    // closures (common with Neon and Next.js hot reload) as red terminal errors.
+    log: process.env.NODE_ENV === 'development' ? ['warn'] : [],
+    errorFormat: 'pretty',
   });
+}
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+export const prisma = globalForPrisma.prisma ?? createPrismaClient();
 
-// Log connection status
-prisma.$connect()
-  .then(() => {
-    console.log("[Prisma] Successfully connected to database");
-  })
-  .catch((error) => {
-    console.error("[Prisma] Connection failed:", {
-      message: error?.message,
-      code: error?.code,
-      timestamp: new Date().toISOString(),
-    });
-  });
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;

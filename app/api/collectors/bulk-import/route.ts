@@ -6,6 +6,7 @@ import * as XLSX from 'xlsx';
 import bcrypt from 'bcryptjs';
 import { canonicalCampaignName } from '@/lib/campaign-import-mapping';
 import { matchMetricAlias, normalizeMetricHeader } from '@/lib/metric-import-mapping';
+import { isBdoDashboardWorkbook, parseBdoDashboardWorkbook, type BdoImportRecord } from '@/lib/bdo-dashboard-import';
 
 type ParsedEntry = {
   name: string; count: number; volume: number;
@@ -37,6 +38,7 @@ type ParsedEntry = {
 
 type AssignedCampaign = { id: string; campaignName: string };
 type ReportPeriodType = 'daily' | 'monthly' | 'yearly';
+type DuplicateMode = 'skip' | 'update' | 'replace_period';
 
 type NormalizedMetric = {
   metricType: string;
@@ -1216,6 +1218,182 @@ async function buildWorkbookPreview({
   };
 }
 
+function bdoNaturalKey(record: BdoImportRecord) {
+  return [record.worksheetSource, record.recordKind, record.entityName || '', record.category || '', record.product || '', record.metric, record.year, record.month || 0].map((value) => String(value).trim().toLowerCase()).join('|');
+}
+
+function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, campaign: AssignedCampaign, reportPeriodType: ReportPeriodType) {
+  const parsed = parseBdoDashboardWorkbook(workbook, reportDate);
+  const seen = new Set<string>();
+  let duplicateCount = 0;
+  parsed.records = parsed.records.filter((record) => {
+    const key = bdoNaturalKey(record);
+    if (seen.has(key)) { duplicateCount++; return false; }
+    seen.add(key);
+    return true;
+  });
+  const retainedRecords = new Set(parsed.records);
+  for (const sheet of parsed.sheets) sheet.records = sheet.records.filter((record) => retainedRecords.has(record));
+  const previewRecords = parsed.records.map((record) => ({
+    sheet: record.worksheetSource,
+    campaignName: campaign.campaignName,
+    agent: record.entityName || record.category || record.metric,
+    reportPeriodType,
+    reportDate: ymd(record.reportDate),
+    metricType: record.metric,
+    count: record.numericValue ?? null,
+    volume: null,
+    goal: record.target ?? null,
+    actual: record.actual ?? null,
+    achievement: record.achievement ?? null,
+    status: 'New',
+    validationMessage: record.remark || '',
+    row: record.sourceRow,
+  }));
+  const monthMap = new Map<string, any>();
+  for (const record of parsed.records) {
+    const month = `${record.year}-${String(record.month || 1).padStart(2, '0')}`;
+    const current = monthMap.get(month) || { month, label: new Date(record.year, (record.month || 1) - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }), reportDate: `${month}-01`, new: 0, existing: 0, invalid: 0 };
+    current.new++;
+    monthMap.set(month, current);
+  }
+  const worksheetPreviews = parsed.sheets.map((sheet, index) => ({
+    key: `${index}:${sheet.sheetName}`,
+    sheetName: sheet.sheetName,
+    hidden: false,
+    selected: sheet.records.length > 0,
+    format: sheet.detectedType,
+    campaignId: campaign.id,
+    campaignName: campaign.campaignName,
+    campaignMapping: 'selected' as const,
+    metricType: 'all_metrics',
+    metricSource: 'sheet' as const,
+    reportDate: sheet.records[0] ? ymd(sheet.records[0].reportDate) : ymd(reportDate),
+    totalRows: sheet.records.length + sheet.warnings.length,
+    validRows: sheet.records.length,
+    invalidRows: sheet.warnings.filter((warning) => !/unsupported worksheet/i.test(warning.message)).length,
+    duplicateRows: 0,
+    detectedMonths: sheet.months,
+    warnings: sheet.warnings.map((warning) => warning.message),
+    errors: [] as string[],
+    status: sheet.status,
+  }));
+  return {
+    parsed,
+    previewRecords,
+    worksheetPreviews,
+    monthSummary: [...monthMap.values()].sort((a, b) => a.month.localeCompare(b.month)),
+    workbookSummary: {
+      totalWorksheets: workbook.SheetNames.length,
+      worksheetsAccepted: parsed.sheets.filter((sheet) => sheet.records.length > 0).length,
+      worksheetsSkipped: parsed.sheets.filter((sheet) => sheet.records.length === 0).length,
+      totalValidRecords: parsed.records.length,
+      totalInvalidRecords: parsed.issues.filter((issue) => !/unsupported worksheet/i.test(issue.message)).length,
+      totalDuplicateRecords: duplicateCount,
+      inWorkbookDuplicateRecords: duplicateCount,
+      workbookYear: parsed.workbookYear,
+      supportedWorksheets: parsed.sheets.filter((sheet) => sheet.detectedType !== 'Unsupported').map((sheet) => sheet.sheetName),
+      unsupportedWorksheets: parsed.sheets.filter((sheet) => sheet.detectedType === 'Unsupported').map((sheet) => sheet.sheetName),
+      detectedMonths: parsed.detectedMonths,
+      detectedCategories: parsed.detectedCategories,
+      detectedMetrics: parsed.detectedMetrics,
+      agentCount: parsed.agents.length,
+      teamLeaderCount: parsed.teamLeaders.length,
+      manpowerRecordCount: parsed.records.filter((record) => record.recordKind === 'manpower').length,
+    },
+  };
+}
+
+async function markExistingBdoRecords(preview: ReturnType<typeof buildBdoPreview>, campaignId: string, reportPeriodType: ReportPeriodType) {
+  if (!preview.parsed.records.length) return;
+  const years = [...new Set(preview.parsed.records.map((record) => record.year))];
+  const existing = await prisma.$queryRaw<Array<{ worksheetSource: string; recordKind: string; entityName: string; category: string; product: string; metric: string; year: number; month: number | null }>>`
+    SELECT "worksheetSource", "recordKind", "entityName", "category", "product", "metric", "year", "month"
+    FROM "DashboardImportRecord"
+    WHERE "campaignId" = ${campaignId} AND "reportPeriodType" = ${reportPeriodType} AND "year" = ANY(${years}::int[])
+  `;
+  const existingKeys = new Set(existing.map((record) => [record.worksheetSource, record.recordKind, record.entityName, record.category, record.product, record.metric, record.year, record.month || 0].map((value) => String(value).trim().toLowerCase()).join('|')));
+  let count = 0;
+  preview.parsed.records.forEach((record, index) => {
+    if (!existingKeys.has(bdoNaturalKey(record))) return;
+    preview.previewRecords[index].status = 'Existing';
+    count++;
+  });
+  preview.workbookSummary.totalDuplicateRecords += count;
+  for (const summary of preview.monthSummary) {
+    const existingInMonth = preview.previewRecords.filter((record) => record.reportDate.startsWith(summary.month) && record.status === 'Existing').length;
+    summary.existing = existingInMonth;
+    summary.new -= existingInMonth;
+  }
+}
+
+async function persistBdoImport({
+  preview, campaignId, fileName, importMode, duplicateMode, reportPeriodType, reportDate, importedById, selectedWorksheetKeys,
+}: {
+  preview: ReturnType<typeof buildBdoPreview>;
+  campaignId: string;
+  fileName: string;
+  importMode: string;
+  duplicateMode: DuplicateMode;
+  reportPeriodType: ReportPeriodType;
+  reportDate: Date;
+  importedById: string;
+  selectedWorksheetKeys: string[];
+}) {
+  const selectedNames = new Set(preview.worksheetPreviews.filter((sheet) => !selectedWorksheetKeys.length || selectedWorksheetKeys.includes(sheet.key)).map((sheet) => sheet.sheetName));
+  const records = preview.parsed.records.filter((record) => selectedNames.has(record.worksheetSource));
+  return prisma.$transaction(async (tx) => {
+    const batchId = crypto.randomUUID();
+    await tx.$executeRaw`
+      INSERT INTO "DashboardImportBatch" ("id", "campaignId", "fileName", "importMode", "duplicateMode", "reportPeriodType", "reportDate", "workbookYear", "totalWorksheets", "supportedSheets", "importedById", "status")
+      VALUES (${batchId}, ${campaignId}, ${fileName}, ${importMode}, ${duplicateMode}, ${reportPeriodType}, ${reportDate}, ${preview.parsed.workbookYear}, ${preview.workbookSummary.totalWorksheets}, ${preview.workbookSummary.worksheetsAccepted}, ${importedById}, 'PROCESSING')
+    `;
+    let inserted = 0; let updated = 0; let skipped = preview.workbookSummary.inWorkbookDuplicateRecords;
+    if (duplicateMode === 'replace_period') {
+      const periods = new Set(records.map((record) => `${record.worksheetSource}|${record.year}|${record.month || 0}`));
+      for (const period of periods) {
+        const [worksheet, year, month] = period.split('|');
+        await tx.$executeRaw`DELETE FROM "DashboardImportRecord" WHERE "campaignId" = ${campaignId} AND "worksheetSource" = ${worksheet} AND "year" = ${Number(year)} AND COALESCE("month", 0) = ${Number(month)} AND "reportPeriodType" = ${reportPeriodType}`;
+      }
+    }
+    for (const record of records) {
+      const entityName = record.entityName || '';
+      const category = record.category || '';
+      const product = record.product || '';
+      const month = record.month || 0;
+      const existing = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "DashboardImportRecord"
+        WHERE "campaignId" = ${campaignId} AND "worksheetSource" = ${record.worksheetSource} AND "recordKind" = ${record.recordKind}
+          AND "entityName" = ${entityName} AND "category" = ${category} AND "product" = ${product} AND "metric" = ${record.metric}
+          AND "year" = ${record.year} AND COALESCE("month", 0) = ${month} AND "reportPeriodType" = ${reportPeriodType}
+        LIMIT 1
+      `;
+      if (existing.length && duplicateMode === 'skip') { skipped++; continue; }
+      if (existing.length) {
+        await tx.$executeRaw`
+          UPDATE "DashboardImportRecord" SET "batchId" = ${batchId}, "sourceRow" = ${record.sourceRow}, "monitoringType" = ${record.monitoringType || null}, "level" = ${record.level || null},
+            "reportDate" = ${record.reportDate}, "target" = ${record.target ?? null}, "actual" = ${record.actual ?? null}, "achievement" = ${record.achievement ?? null},
+            "numericValue" = ${record.numericValue ?? null}, "declaredSeat" = ${record.declaredSeat ?? null}, "actualHeadCount" = ${record.actualHeadCount ?? null}, "remark" = ${record.remark || null}, "sourceFile" = ${fileName}, "importedById" = ${importedById}, "updatedAt" = CURRENT_TIMESTAMP
+          WHERE "id" = ${existing[0].id}
+        `;
+        updated++;
+      } else {
+        await tx.$executeRaw`
+          INSERT INTO "DashboardImportRecord" ("id", "batchId", "campaignId", "worksheetSource", "sourceRow", "recordKind", "monitoringType", "entityName", "level", "category", "product", "metric", "month", "year", "reportPeriodType", "reportDate", "target", "actual", "achievement", "numericValue", "declaredSeat", "actualHeadCount", "remark", "sourceFile", "importedById")
+          VALUES (${crypto.randomUUID()}, ${batchId}, ${campaignId}, ${record.worksheetSource}, ${record.sourceRow}, ${record.recordKind}, ${record.monitoringType || null}, ${entityName}, ${record.level || null}, ${category}, ${product}, ${record.metric}, ${record.month || null}, ${record.year}, ${reportPeriodType}, ${record.reportDate}, ${record.target ?? null}, ${record.actual ?? null}, ${record.achievement ?? null}, ${record.numericValue ?? null}, ${record.declaredSeat ?? null}, ${record.actualHeadCount ?? null}, ${record.remark || null}, ${fileName}, ${importedById})
+        `;
+        inserted++;
+      }
+    }
+    for (const issue of preview.parsed.issues.slice(0, 2000)) {
+      await tx.$executeRaw`INSERT INTO "DashboardImportIssue" ("id", "batchId", "worksheetSource", "sourceRow", "message", "rawValue") VALUES (${crypto.randomUUID()}, ${batchId}, ${issue.worksheet}, ${issue.row || null}, ${issue.message}, ${issue.rawValue || null})`;
+    }
+    const invalid = preview.parsed.issues.filter((issue) => !/unsupported worksheet/i.test(issue.message)).length;
+    await tx.$executeRaw`UPDATE "DashboardImportBatch" SET "insertedCount" = ${inserted}, "updatedCount" = ${updated}, "skippedCount" = ${skipped}, "failedCount" = ${invalid}, "status" = 'COMPLETED', "completedAt" = CURRENT_TIMESTAMP WHERE "id" = ${batchId}`;
+    return { batchId, inserted, updated, skipped, invalid, success: inserted + updated, created: 0, details: [], errors: preview.parsed.issues.slice(0, 50).map((issue) => `${issue.worksheet}${issue.row ? ` row ${issue.row}` : ''}: ${issue.message}`), message: `Import completed: ${inserted} inserted, ${updated} updated, ${skipped} skipped, and ${invalid} invalid.` };
+  }, { timeout: 120000 });
+}
+
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -1236,7 +1414,18 @@ export async function GET(req: NextRequest) {
     if (entryId) {
       const summary = await getImportSummary(entryId, user.id);
       if (!summary) {
-        return NextResponse.json({ error: 'Import file not found' }, { status: 404 });
+        const dashboardBatches = await prisma.$queryRaw<any[]>`
+          SELECT b.*, c."campaignName", COUNT(r.id)::int AS "detailCount"
+          FROM "DashboardImportBatch" b
+          JOIN "Campaign" c ON c.id = b."campaignId"
+          LEFT JOIN "DashboardImportRecord" r ON r."batchId" = b.id
+          WHERE b.id = ${entryId} AND b."importedById" = ${user.id}
+          GROUP BY b.id, c."campaignName"
+          LIMIT 1
+        `;
+        const batch = dashboardBatches[0];
+        if (!batch) return NextResponse.json({ error: 'Import file not found' }, { status: 404 });
+        return NextResponse.json({ importFile: { id: batch.id, campaignId: batch.campaignId, campaignName: batch.campaignName, fileName: batch.fileName, metricType: 'all_metrics', reportDate: batch.reportDate, importedAt: batch.createdAt, detailCount: Number(batch.detailCount || 0), totals: { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 }, details: [] } });
       }
 
       const details = await prisma.productionDetail.findMany({
@@ -1300,8 +1489,17 @@ export async function GET(req: NextRequest) {
       ORDER BY pe."createdAt" DESC
       LIMIT 50
     `;
-
-    return NextResponse.json({ imports: rows.map(formatImportSummary) });
+    const dashboardRows = await prisma.$queryRaw<any[]>`
+      SELECT b.id, b."campaignId", c."campaignName", b."fileName", b."reportDate", b."createdAt", (b."insertedCount" + b."updatedCount") AS "detailCount"
+      FROM "DashboardImportBatch" b
+      JOIN "Campaign" c ON c.id = b."campaignId"
+      WHERE b."importedById" = ${user.id} AND b.status = 'COMPLETED'
+      ORDER BY b."createdAt" DESC
+      LIMIT 50
+    `;
+    const dashboardImports = dashboardRows.map((batch) => ({ id: batch.id, campaignId: batch.campaignId, campaignName: batch.campaignName, fileName: batch.fileName, metricType: 'all_metrics', reportDate: batch.reportDate, importedAt: batch.createdAt, detailCount: Number(batch.detailCount || 0), totals: { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 } }));
+    const imports = [...rows.map(formatImportSummary), ...dashboardImports].sort((a, b) => new Date(b.importedAt).getTime() - new Date(a.importedAt).getTime()).slice(0, 50);
+    return NextResponse.json({ imports });
   } catch (error) {
     console.error('Bulk import history error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -1331,6 +1529,7 @@ export async function POST(req: NextRequest) {
     const importMode = (formData.get('importMode') as string) || 'single';
     const requestedMetricType = (formData.get('metricType') as string) || 'transmittals';
     const reportPeriodType = ((formData.get('reportPeriodType') as string) || 'daily') as ReportPeriodType;
+    const duplicateMode = ((formData.get('duplicateMode') as string) || 'skip') as DuplicateMode;
     const reportMonthValue = Number(formData.get('reportMonth') || 0);
     const reportYearValue = Number(formData.get('reportYear') || 0);
     const reportDateStr = formData.get('reportDate') as string;
@@ -1349,6 +1548,9 @@ export async function POST(req: NextRequest) {
     }
     if (!['daily', 'monthly', 'yearly'].includes(reportPeriodType)) {
       return NextResponse.json({ error: 'Report Period must be Daily, Monthly, or Yearly.' }, { status: 400 });
+    }
+    if (!['skip', 'update', 'replace_period'].includes(duplicateMode)) {
+      return NextResponse.json({ error: 'Duplicate handling must be Skip Existing, Update Existing, or Replace Matching Period Data.' }, { status: 400 });
     }
     if (!selectedCampaignId) {
       return NextResponse.json({ error: 'Campaign is required.' }, { status: 400 });
@@ -1441,8 +1643,16 @@ export async function POST(req: NextRequest) {
     }
 
     const lowerFileName = file.name.toLowerCase();
-    const isExcel = /\.(xlsx|xls)$/i.test(lowerFileName) || file.type.includes('spreadsheet') || file.type.includes('excel');
-    const isCsv = lowerFileName.endsWith('.csv') || file.type.includes('csv');
+    const excelExtension = /\.(xlsx|xls)$/i.test(lowerFileName);
+    const csvExtension = lowerFileName.endsWith('.csv');
+    const neutralMime = !file.type || file.type === 'application/octet-stream';
+    const excelMime = neutralMime || file.type.includes('spreadsheet') || file.type.includes('excel') || file.type === 'application/vnd.ms-office';
+    const csvMime = neutralMime || file.type.includes('csv') || file.type === 'text/plain';
+    if ((excelExtension && !excelMime) || (csvExtension && !csvMime)) {
+      return NextResponse.json({ error: 'The file extension and content type do not match.' }, { status: 400 });
+    }
+    const isExcel = excelExtension && excelMime;
+    const isCsv = csvExtension && csvMime;
     if (isExcel) {
       const fileBuffer = await file.arrayBuffer();
       const bytes = new Uint8Array(fileBuffer);
@@ -1452,9 +1662,59 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'The uploaded file is not a valid Excel workbook.' }, { status: 400 });
       }
 
-      const workbook = XLSX.read(bytes, { type: 'array', cellDates: true, cellFormula: true });
+      let workbook: XLSX.WorkBook;
+      try {
+        workbook = XLSX.read(bytes, { type: 'array', cellDates: true, cellFormula: true });
+      } catch {
+        return NextResponse.json({ error: 'The workbook is corrupted, unreadable, or password-protected.' }, { status: 400 });
+      }
       if (!workbook.SheetNames.length) {
         return NextResponse.json({ error: 'No worksheets found in Excel file' }, { status: 400 });
+      }
+
+      if (isBdoDashboardWorkbook(workbook)) {
+        if (importMode === 'single') {
+          return NextResponse.json({ error: 'BDO dashboard workbooks require Import All Data or Import Selected Worksheets.' }, { status: 400 });
+        }
+        const bdoPreview = buildBdoPreview(workbook, reportDate, campaignExists, reportPeriodType);
+        await markExistingBdoRecords(bdoPreview, effectiveCampaignId, reportPeriodType);
+        if (bdoPreview.workbookSummary.worksheetsAccepted === 0 || bdoPreview.workbookSummary.totalValidRecords === 0) {
+          return NextResponse.json({
+            error: 'The workbook contains supported BDO worksheets, but no valid monthly data was found.',
+            workbookSummary: bdoPreview.workbookSummary,
+            worksheetPreviews: bdoPreview.worksheetPreviews,
+          }, { status: 400 });
+        }
+        if (mode === 'preview') {
+          return NextResponse.json({
+            preview: true,
+            multiSheet: true,
+            bdoDashboard: true,
+            matched: [],
+            notFound: [],
+            metricType: 'all_metrics',
+            reportDate: ymd(reportDate),
+            reportPeriodType,
+            previewRecords: bdoPreview.previewRecords,
+            monthSummary: bdoPreview.monthSummary,
+            workbookSummary: bdoPreview.workbookSummary,
+            worksheetPreviews: bdoPreview.worksheetPreviews,
+            validationWarnings: bdoPreview.parsed.issues.slice(0, 200),
+          });
+        }
+        const selectedWorksheetKeys: string[] = JSON.parse((formData.get('selectedWorksheetKeys') as string) || '[]');
+        const result = await persistBdoImport({
+          preview: bdoPreview,
+          campaignId: effectiveCampaignId,
+          fileName: file.name,
+          importMode,
+          duplicateMode,
+          reportPeriodType,
+          reportDate,
+          importedById: user.id,
+          selectedWorksheetKeys,
+        });
+        return NextResponse.json({ ...result, workbookSummary: bdoPreview.workbookSummary, worksheetPreviews: bdoPreview.worksheetPreviews, normalizedImported: result.inserted, normalizedDuplicates: result.skipped });
       }
 
       const preview = await buildWorkbookPreview({
@@ -2161,7 +2421,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(csvImportPayload);
   } catch (error) {
     console.error('Bulk import error:', error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error: 'Import failed. No records were saved.' }, { status: 500 });
   }
 }
 
@@ -2188,7 +2448,9 @@ export async function DELETE(req: NextRequest) {
       select: { id: true },
     });
     if (!entry) {
-      return NextResponse.json({ error: 'Import file not found' }, { status: 404 });
+      const deleted = await prisma.$executeRaw`DELETE FROM "DashboardImportBatch" WHERE id = ${entryId} AND "importedById" = ${user.id}`;
+      if (!deleted) return NextResponse.json({ error: 'Import file not found' }, { status: 404 });
+      return NextResponse.json({ deleted: true });
     }
 
     await prisma.$transaction([

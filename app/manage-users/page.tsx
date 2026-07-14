@@ -501,6 +501,7 @@ export default function ManageUsersPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="CEO">CEO</SelectItem>
+                    <SelectItem value="SMT">SMT</SelectItem>
                     <SelectItem value="OM">Operations Manager</SelectItem>
                     <SelectItem value="COLLECTOR">Collector</SelectItem>
                     <SelectItem value="AGENT">Agent</SelectItem>
@@ -585,6 +586,7 @@ export default function ManageUsersPage() {
                 <SelectContent>
                   <SelectItem value="all">All Roles</SelectItem>
                   <SelectItem value="CEO">CEO</SelectItem>
+                  <SelectItem value="SMT">SMT</SelectItem>
                   <SelectItem value="OM">Operations Manager</SelectItem>
                   <SelectItem value="COLLECTOR">Collector</SelectItem>
                   <SelectItem value="AGENT">Agent</SelectItem>

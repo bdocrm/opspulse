@@ -21,6 +21,7 @@ import { Upload, AlertCircle, CheckCircle, Download, UserPlus, Users, ArrowLeft,
 type Step = 'configure' | 'previewing' | 'confirm' | 'importing' | 'done';
 type ImportMode = 'all' | 'worksheets' | 'single';
 type ReportPeriodType = 'daily' | 'monthly' | 'yearly';
+type DuplicateMode = 'skip' | 'update' | 'replace_period';
 
 interface NormalizedPreviewRecord {
   fileName?: string;
@@ -146,6 +147,15 @@ interface WorkbookSummary {
   totalValidRecords: number;
   totalInvalidRecords: number;
   totalDuplicateRecords: number;
+  workbookYear?: number;
+  supportedWorksheets?: string[];
+  unsupportedWorksheets?: string[];
+  detectedMonths?: string[];
+  detectedCategories?: string[];
+  detectedMetrics?: string[];
+  agentCount?: number;
+  teamLeaderCount?: number;
+  manpowerRecordCount?: number;
 }
 
 interface MonthImportSummary {
@@ -232,6 +242,7 @@ export default function BulkImportPage() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   });
   const [reportPeriodType, setReportPeriodType] = useState<ReportPeriodType>('daily');
+  const [duplicateMode, setDuplicateMode] = useState<DuplicateMode>('skip');
   const [reportMonth, setReportMonth] = useState(() => new Date().getMonth() + 1);
   const [reportYear, setReportYear] = useState(() => new Date().getFullYear());
   const [detectedPeriod, setDetectedPeriod] = useState<{ label: string; startYmd: string; endYmd: string } | null>(null);
@@ -397,6 +408,7 @@ export default function BulkImportPage() {
         fd.append('importMode', importMode);
         fd.append('metricType', importMode === 'single' ? metricType : 'all');
         fd.append('reportPeriodType', reportPeriodType);
+        fd.append('duplicateMode', duplicateMode);
         fd.append('reportDate', normalizedReportDate);
         fd.append('reportMonth', String(reportMonth));
         fd.append('reportYear', String(reportYear));
@@ -431,6 +443,15 @@ export default function BulkImportPage() {
         totalValidRecords: summaries.reduce((n, s) => n + s.totalValidRecords, 0),
         totalInvalidRecords: summaries.reduce((n, s) => n + s.totalInvalidRecords, 0),
         totalDuplicateRecords: summaries.reduce((n, s) => n + s.totalDuplicateRecords, 0),
+        workbookYear: summaries.map((s) => s.workbookYear).filter(Boolean).sort().at(-1),
+        supportedWorksheets: [...new Set(summaries.flatMap((s) => s.supportedWorksheets || []))],
+        unsupportedWorksheets: [...new Set(summaries.flatMap((s) => s.unsupportedWorksheets || []))],
+        detectedMonths: [...new Set(summaries.flatMap((s) => s.detectedMonths || []))],
+        detectedCategories: [...new Set(summaries.flatMap((s) => s.detectedCategories || []))],
+        detectedMetrics: [...new Set(summaries.flatMap((s) => s.detectedMetrics || []))],
+        agentCount: summaries.reduce((n, s) => n + (s.agentCount || 0), 0),
+        teamLeaderCount: summaries.reduce((n, s) => n + (s.teamLeaderCount || 0), 0),
+        manpowerRecordCount: summaries.reduce((n, s) => n + (s.manpowerRecordCount || 0), 0),
       } : null);
       const sheets = responses.flatMap(({ data, file: previewFile, index }) =>
         (data.worksheetPreviews || []).map((sheet: WorksheetPreview) => ({ ...sheet, key: `${index}::${sheet.key}`, fileName: previewFile.name }))
@@ -501,6 +522,7 @@ export default function BulkImportPage() {
         fd.append('importMode', importMode);
         fd.append('metricType', importMode === 'single' ? metricType : 'all');
         fd.append('reportPeriodType', reportPeriodType);
+        fd.append('duplicateMode', duplicateMode);
         fd.append('reportDate', normalizedReportDate);
         fd.append('reportMonth', String(reportMonth));
         fd.append('reportYear', String(reportYear));
@@ -673,6 +695,7 @@ export default function BulkImportPage() {
             <p><span className="font-medium text-slate-800">Single Metric (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/COUNT/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Count | Volume</p>
             <p><span className="font-medium text-slate-800">All Metrics (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/TRANSMITTED/APPROVALS/BOOKED/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Transmitted | Approvals | Booked | Volume</p>
             <p><span className="font-medium text-slate-800">ACQ (.xlsx) or CSV:</span> AGENT CODE | LAST NAME | FIRST NAME | DATE ONBOARD | SEAT CATEGORY | TOTAL + per-date NTB/SUPPLEMENTARY pairs — reads name from Last + First and the highest NTB &amp; Supplementary per agent</p>
+            <p><span className="font-medium text-slate-800">BDO Dashboard (.xlsx/.xls):</span> Automatically scans YTD Performance, Manpower Monitoring, CI/Cross Sell agent and HOH monitoring, and TLs Scorecard worksheets. Merged monthly groups and populated months are detected dynamically.</p>
             <p className="text-xs text-slate-400">For single metric mode, the COUNT column is stored as the selected type. For all metrics mode, each column is stored separately. Use the Report Month picker to set the period.</p>
             <Button onClick={downloadTemplate} variant="outline" size="sm" className="gap-2 mt-1">
               <Download className="h-4 w-4" /> Download CSV Template
@@ -685,7 +708,7 @@ export default function BulkImportPage() {
           <CardHeader>
             <CardTitle className="text-lg">Import Settings</CardTitle>
           </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">Import Mode</label>
               <select
@@ -744,6 +767,15 @@ export default function BulkImportPage() {
                 <option value="daily">Daily</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option>
               </select>
               <p className="text-xs text-slate-500">Controls how the reporting date is normalized.</p>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Duplicate Handling</label>
+              <select value={duplicateMode} onChange={(event) => setDuplicateMode(event.target.value as DuplicateMode)} className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="skip">Skip Existing Records</option>
+                <option value="update">Update Existing Records</option>
+                <option value="replace_period">Replace Matching Period Data</option>
+              </select>
+              <p className="text-xs text-slate-500">Applied using campaign, source, entity, metric, month, and year.</p>
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">{reportPeriodType === 'daily' ? 'Report Date' : reportPeriodType === 'monthly' ? 'Report Month' : 'Report Year'}</label>
@@ -1094,6 +1126,19 @@ export default function BulkImportPage() {
                   <p className="text-xs text-amber-600">Duplicates</p>
                 </div>
               </div>
+
+              {workbookSummary.supportedWorksheets && (
+                <div className="grid gap-3 rounded-lg border bg-slate-50 p-4 text-sm md:grid-cols-2 xl:grid-cols-4">
+                  <div><p className="font-medium text-slate-700">Workbook Year</p><p className="text-slate-600">{workbookSummary.workbookYear || 'Default report year'}</p></div>
+                  <div><p className="font-medium text-slate-700">Detected People</p><p className="text-slate-600">{workbookSummary.agentCount || 0} agents · {workbookSummary.teamLeaderCount || 0} team leaders</p></div>
+                  <div><p className="font-medium text-slate-700">Manpower Records</p><p className="text-slate-600">{(workbookSummary.manpowerRecordCount || 0).toLocaleString()}</p></div>
+                  <div><p className="font-medium text-slate-700">Detected Months</p><p className="text-slate-600">{workbookSummary.detectedMonths?.join(', ') || 'None'}</p></div>
+                  <div className="md:col-span-2"><p className="font-medium text-slate-700">Supported Worksheets</p><p className="text-slate-600">{workbookSummary.supportedWorksheets.join(', ') || 'None'}</p></div>
+                  <div className="md:col-span-2"><p className="font-medium text-slate-700">Skipped Worksheets</p><p className="text-slate-600">{workbookSummary.unsupportedWorksheets?.join(', ') || 'None'}</p></div>
+                  <div className="md:col-span-2"><p className="font-medium text-slate-700">Categories</p><p className="text-slate-600">{workbookSummary.detectedCategories?.join(', ') || 'None'}</p></div>
+                  <div className="md:col-span-2"><p className="font-medium text-slate-700">Metrics</p><p className="text-slate-600">{workbookSummary.detectedMetrics?.join(', ') || 'None'}</p></div>
+                </div>
+              )}
 
               <div className="grid gap-3 lg:grid-cols-2">
                 {worksheetPreviews.map((sheet) => {

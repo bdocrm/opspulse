@@ -5,11 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useState, useEffect, useMemo } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
+import * as XLSX from 'xlsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { CampaignSummaryCard } from '@/components/campaign-summary-card';
 import {
@@ -71,6 +72,33 @@ interface CampaignBlock {
   production: Record<string, Production>;
   attendance: Record<string, { status: string; remarks: string | null }>;
   entriesCount: number;
+}
+
+const CAMPAIGN_GROUP_PREFIX = '__campaign_group__:';
+const EXPORT_HEADERS = ['Campaign', 'Rank', 'Seat', 'Agent Name', 'Status', 'Transmittals', 'Approvals', 'Booked', 'Booked Volume (₱)', 'Target', 'Progress %'] as const;
+
+function campaignOrganization(campaignName: string) {
+  return campaignName.trim().split(/\s+/)[0]?.replace(/[^a-z0-9]/gi, '').toUpperCase() || 'OTHER';
+}
+
+function campaignGroupValue(organization: string) {
+  return `${CAMPAIGN_GROUP_PREFIX}${organization}`;
+}
+
+function selectedOrganization(value: string | null) {
+  return value?.startsWith(CAMPAIGN_GROUP_PREFIX) ? value.slice(CAMPAIGN_GROUP_PREFIX.length) : null;
+}
+
+function safeWorksheetName(name: string, used: Set<string>) {
+  const base = name.replace(/[\\/?*\[\]:]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 31) || 'Campaign';
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate.toLowerCase())) {
+    const marker = ` (${suffix++})`;
+    candidate = `${base.slice(0, 31 - marker.length)}${marker}`;
+  }
+  used.add(candidate.toLowerCase());
+  return candidate;
 }
 
 const ZERO_PROD: Production = {
@@ -396,9 +424,25 @@ export default function CollectorDashboard() {
     [dashboardData]
   );
 
+  const campaignGroups = useMemo(() => {
+    const groups = new Map<string, CampaignBlock[]>();
+    for (const campaign of allCampaigns) {
+      const organization = campaignOrganization(campaign.campaignName);
+      groups.set(organization, [...(groups.get(organization) || []), campaign]);
+    }
+    const priority = (organization: string) => organization === 'BDO' ? 0 : organization === 'BPI' ? 1 : 2;
+    return [...groups.entries()]
+      .map(([organization, groupedCampaigns]) => ({ organization, campaigns: groupedCampaigns }))
+      .sort((a, b) => priority(a.organization) - priority(b.organization) || a.organization.localeCompare(b.organization));
+  }, [allCampaigns]);
+
   // Filter campaigns based on selected campaign
   const campaigns: CampaignBlock[] = useMemo(
-    () => selectedCampaignId ? allCampaigns.filter(c => c.id === selectedCampaignId) : allCampaigns,
+    () => {
+      const organization = selectedOrganization(selectedCampaignId);
+      if (organization) return allCampaigns.filter((campaign) => campaignOrganization(campaign.campaignName) === organization);
+      return selectedCampaignId ? allCampaigns.filter((campaign) => campaign.id === selectedCampaignId) : allCampaigns;
+    },
     [allCampaigns, selectedCampaignId]
   );
 
@@ -633,8 +677,8 @@ export default function CollectorDashboard() {
     }
   };
 
-  const handleDeleteAllAgents = async () => {
-    const selectedCampaign = allCampaigns.find(c => c.id === selectedCampaignId);
+  const handleDeleteAllAgents = async (campaignId = selectedCampaignId) => {
+    const selectedCampaign = allCampaigns.find(c => c.id === campaignId);
     if (!selectedCampaign) return;
 
     const agentCount = selectedCampaign.agents.length;
@@ -643,7 +687,7 @@ export default function CollectorDashboard() {
 
     setDeletingAllAgents(true);
     try {
-      const res = await fetch(`/api/collectors/campaigns/${selectedCampaignId}/agents`, {
+      const res = await fetch(`/api/collectors/campaigns/${campaignId}/agents`, {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error('Failed to delete agents');
@@ -656,36 +700,52 @@ export default function CollectorDashboard() {
     }
   };
 
-  // Export every assigned campaign's agents to a single CSV (Campaign column
-  // disambiguates the grouped data).
+  const campaignExportRows = (campaign: CampaignBlock): Record<string, string | number>[] => {
+    const sorted = [...campaign.agents].sort(
+      (a, b) => (campaign.production[b.id]?.volume || 0) - (campaign.production[a.id]?.volume || 0)
+    );
+    return sorted.map((agent, index) => {
+      const prod = campaign.production[agent.id] || ZERO_PROD;
+      const record = campaign.attendance[agent.id];
+      const target = agent.monthlyTarget || 0;
+      return {
+        Campaign: campaign.campaignName,
+        Rank: index + 1,
+        Seat: agent.seatNumber ?? '',
+        'Agent Name': agent.name,
+        Status: record?.status || 'PRESENT',
+        Transmittals: prod.transmittals,
+        Approvals: prod.approvals,
+        Booked: prod.booked,
+        'Booked Volume (₱)': Number(prod.volume || 0),
+        Target: target,
+        'Progress %': target > 0 ? ((prod.booked / target) * 100).toFixed(1) : '0',
+      };
+    });
+  };
+
   const handleExport = () => {
-    const rows: Record<string, string | number>[] = [];
-    for (const c of campaigns) {
-      const sorted = [...c.agents].sort(
-        (a, b) => (c.production[b.id]?.volume || 0) - (c.production[a.id]?.volume || 0)
-      );
-      sorted.forEach((agent, index) => {
-        const prod = c.production[agent.id] || ZERO_PROD;
-        const record = c.attendance[agent.id];
-        const attendance = record?.status || 'PRESENT';
-        const target = agent.monthlyTarget || 0;
-        const progress = target > 0 ? ((prod.booked / target) * 100).toFixed(1) : '0';
-        rows.push({
-          Campaign: c.campaignName,
-          Rank: index + 1,
-          Seat: agent.seatNumber ?? '',
-          'Agent Name': agent.name,
-          Status: attendance,
-          Transmittals: prod.transmittals,
-          Approvals: prod.approvals,
-          Booked: prod.booked,
-          'Booked Volume (₱)': Number(prod.volume || 0),
-          Target: target,
-          'Progress %': progress,
-        });
-      });
+    const organization = selectedOrganization(selectedCampaignId);
+    if (organization) {
+      const groupedCampaigns = allCampaigns.filter((campaign) => campaignOrganization(campaign.campaignName) === organization);
+      if (!groupedCampaigns.length) return;
+      const workbook = XLSX.utils.book_new();
+      const usedSheetNames = new Set<string>();
+      for (const campaign of groupedCampaigns) {
+        const worksheet = XLSX.utils.json_to_sheet(campaignExportRows(campaign), { header: [...EXPORT_HEADERS] });
+        worksheet['!cols'] = [
+          { wch: 24 }, { wch: 8 }, { wch: 8 }, { wch: 28 }, { wch: 14 },
+          { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 20 }, { wch: 14 }, { wch: 12 },
+        ];
+        worksheet['!autofilter'] = { ref: `A1:K${Math.max(campaign.agents.length + 1, 1)}` };
+        XLSX.utils.book_append_sheet(workbook, worksheet, safeWorksheetName(campaign.campaignName, usedSheetNames));
+      }
+      XLSX.writeFile(workbook, `ALL_${organization}_CAMPAIGNS_${today}.xlsx`, { compression: true });
+      return;
     }
 
+    // Preserve the existing single-campaign CSV export.
+    const rows = campaigns.flatMap(campaignExportRows);
     if (rows.length === 0) return;
     const headers = Object.keys(rows[0]);
     const csvContent = [
@@ -741,12 +801,25 @@ export default function CollectorDashboard() {
               <div className="flex items-center gap-3">
                 <label className="text-sm font-medium text-muted-foreground">Select Campaign:</label>
                 <Select value={selectedCampaignId || ''} onValueChange={setSelectedCampaignId}>
-                  <SelectTrigger className="w-64">
+                  <SelectTrigger className="w-72">
                     <SelectValue placeholder="Choose a campaign..." />
                   </SelectTrigger>
                   <SelectContent>
-                    {allCampaigns.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>{c.campaignName}</SelectItem>
+                    <SelectGroup>
+                      {campaignGroups.map((group) => (
+                        <SelectItem key={campaignGroupValue(group.organization)} value={campaignGroupValue(group.organization)} className="font-semibold">
+                          ALL {group.organization} CAMPAIGNS
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                    <div className="my-1 border-t" aria-hidden="true" />
+                    {campaignGroups.map((group) => (
+                      <SelectGroup key={group.organization}>
+                        <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{group.organization}</div>
+                        {group.campaigns.map((campaign) => (
+                          <SelectItem key={campaign.id} value={campaign.id}>{campaign.campaignName}</SelectItem>
+                        ))}
+                      </SelectGroup>
                     ))}
                   </SelectContent>
                 </Select>
@@ -755,7 +828,8 @@ export default function CollectorDashboard() {
                 variant="destructive"
                 size="sm"
                 onClick={handleDeleteCampaignData}
-                disabled={deletingCampaignData}
+                disabled={deletingCampaignData || Boolean(selectedOrganization(selectedCampaignId))}
+                title={selectedOrganization(selectedCampaignId) ? 'Select one campaign to delete its data.' : undefined}
               >
                 {deletingCampaignData ? 'Deleting...' : 'Delete All Data'}
               </Button>
@@ -963,7 +1037,9 @@ export default function CollectorDashboard() {
                 <div className="p-2 rounded-lg bg-green-500/10"><Download className="w-6 h-6 text-green-500" /></div>
                 <div>
                   <p className="font-semibold">Export Report</p>
-                  <p className="text-sm text-muted-foreground">Download CSV</p>
+                  <p className="text-sm text-muted-foreground">
+                    {selectedOrganization(selectedCampaignId) ? 'Download grouped Excel workbook' : 'Download CSV'}
+                  </p>
                 </div>
               </div>
               <ChevronRight className="w-5 h-5 text-muted-foreground group-hover:text-green-500 transition-colors" />
@@ -1251,7 +1327,7 @@ export default function CollectorDashboard() {
                   production={block.production}
                   attendance={block.attendance}
                   entriesCount={block.entriesCount}
-                  onDeleteAllAgents={() => handleDeleteAllAgents()}
+                  onDeleteAllAgents={() => handleDeleteAllAgents(block.id)}
                   isDeletingAgents={deletingAllAgents}
                 >
                   {/* Collector Table */}
