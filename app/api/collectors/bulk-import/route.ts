@@ -38,8 +38,28 @@ type ParsedEntry = {
 };
 
 type AssignedCampaign = { id: string; campaignName: string };
+type WorksheetCampaignMappings = Record<string, string[]>;
 type ReportPeriodType = 'daily' | 'monthly' | 'yearly';
 type DuplicateMode = 'skip' | 'update' | 'replace_period';
+
+function parseWorksheetCampaignMappings(value: FormDataEntryValue | null): WorksheetCampaignMappings {
+  if (typeof value !== 'string' || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).map(([key, rawIds]) => {
+      const ids = Array.isArray(rawIds) ? rawIds : typeof rawIds === 'string' && rawIds ? [rawIds] : [];
+      return [key, [...new Set(ids.filter((id): id is string => typeof id === 'string' && Boolean(id.trim())).map((id) => id.trim()))]];
+    }));
+  } catch {
+    return {};
+  }
+}
+
+function hasInvalidCampaignMapping(ids: string[], selectedCampaigns: AssignedCampaign[]) {
+  const selectedIds = new Set(selectedCampaigns.map((campaign) => campaign.id));
+  return ids.some((id) => !selectedIds.has(id));
+}
 
 type NormalizedMetric = {
   metricType: string;
@@ -1467,7 +1487,7 @@ async function persistBdoImport({
 }: {
   preview: ReturnType<typeof buildBdoPreview>;
   selectedCampaigns: AssignedCampaign[];
-  campaignMappings: Record<string, string>;
+  campaignMappings: WorksheetCampaignMappings;
   fileName: string;
   importMode: string;
   duplicateMode: DuplicateMode;
@@ -1478,14 +1498,33 @@ async function persistBdoImport({
   skipUnresolvedRecordMappings?: boolean;
 }) {
   const selectedSheets = preview.worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key));
-  const campaignBySheet = new Map(selectedSheets.map((sheet) => [sheet.sheetName, campaignMappings[sheet.key] || (sheet.campaignMapping === 'unresolved' ? '' : sheet.campaignId)]));
-  const explicitlyMappedSheets = new Set(selectedSheets.filter((sheet) => Boolean(campaignMappings[sheet.key])).map((sheet) => sheet.sheetName));
+  const campaignIdsBySheet = new Map(selectedSheets.map((sheet) => [
+    sheet.sheetName,
+    campaignMappings[sheet.key]?.length
+      ? campaignMappings[sheet.key]
+      : sheet.campaignMapping === 'unresolved'
+        ? []
+        : [sheet.campaignId],
+  ]));
+  const explicitCampaignIdsBySheet = new Map(selectedSheets.map((sheet) => [sheet.sheetName, campaignMappings[sheet.key] || []]));
   const records = preview.parsed.records
-    .filter((record) => campaignBySheet.has(record.worksheetSource))
-    .filter((record) => !skipUnresolvedRecordMappings || preview.recordMappings.get(record)?.source !== 'unresolved' || explicitlyMappedSheets.has(record.worksheetSource))
-    .map((record) => {
+    .flatMap((record) => {
+      if (!campaignIdsBySheet.has(record.worksheetSource)) return [];
+      const explicitIds = explicitCampaignIdsBySheet.get(record.worksheetSource) || [];
       const detected = preview.recordMappings.get(record);
-      return { record, campaignId: !explicitlyMappedSheets.has(record.worksheetSource) && detected?.source === 'sheet' ? detected.campaign.id : campaignBySheet.get(record.worksheetSource)! };
+      const detectedId = detected?.source !== 'unresolved' ? detected?.campaign.id : '';
+
+      // Multiple worksheet selections are an allow-list, not an instruction to
+      // clone every row into every campaign. Keep record-level detection when
+      // possible; a single explicit campaign remains the manual fallback.
+      if (explicitIds.length > 1) {
+        return detectedId && explicitIds.includes(detectedId) ? [{ record, campaignId: detectedId }] : [];
+      }
+      if (explicitIds.length === 1) return [{ record, campaignId: explicitIds[0] }];
+      if (detectedId) return [{ record, campaignId: detectedId }];
+      if (skipUnresolvedRecordMappings) return [];
+      const fallbackIds = campaignIdsBySheet.get(record.worksheetSource) || [];
+      return fallbackIds.length === 1 ? [{ record, campaignId: fallbackIds[0] }] : [];
     });
   const importedCampaignIds = [...new Set(records.map((item) => item.campaignId))];
   return prisma.$transaction(async (tx) => {
@@ -1865,16 +1904,26 @@ export async function POST(req: NextRequest) {
           ? bpiPreview.worksheetPreviews.filter((sheet) => sheet.selected).map((sheet) => sheet.key)
           : submittedWorksheetKeys;
         if (selectedWorksheetKeys.length === 0) return NextResponse.json({ error: 'Select at least one valid mapped worksheet before importing.' }, { status: 400 });
-        const campaignMappings: Record<string, string> = JSON.parse((formData.get('campaignMappings') as string) || '{}');
+        const campaignMappings = parseWorksheetCampaignMappings(formData.get('campaignMappings'));
         const selectedBpiSheets = bpiPreview.worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key) && sheet.validRows > 0);
         if (!selectedBpiSheets.length) return NextResponse.json({ error: 'No selected worksheets contain valid mapped rows to import.' }, { status: 400 });
         const invalidMapping = selectedBpiSheets.find((sheet) => {
-          const mappedId = campaignMappings[sheet.key];
-          return (sheet.campaignMapping === 'unresolved' && !mappedId) || Boolean(mappedId && !selectedCampaigns.some((campaign) => campaign.id === mappedId));
+          const mappedIds = campaignMappings[sheet.key] || [];
+          return (sheet.campaignMapping === 'unresolved' && mappedIds.length === 0) || hasInvalidCampaignMapping(mappedIds, selectedCampaigns);
         });
         if (invalidMapping) return NextResponse.json({ error: 'Some BPI worksheets or sections are unmapped. Review the campaign mapping before importing.' }, { status: 400 });
-        if (selectedBpiSheets.some((sheet) => sheet.campaignMapping === 'record' && campaignMappings[sheet.key])) {
-          return NextResponse.json({ error: 'Worksheets mapped per record cannot be overridden with one campaign. Clear the worksheet override to preserve section-level campaign mapping.' }, { status: 400 });
+        const hasImportableBpiRecord = selectedBpiSheets.some((sheet) => {
+          const mappedIds = campaignMappings[sheet.key] || [];
+          return bpiPreview.parsed.records.some((record) => {
+            if (record.worksheetSource !== sheet.sheetName) return false;
+            const detected = bpiPreview.recordMappings.get(record);
+            if (mappedIds.length === 1) return true;
+            if (mappedIds.length > 1) return detected?.source !== 'unresolved' && mappedIds.includes(detected!.campaign.id);
+            return detected?.source !== 'unresolved';
+          });
+        });
+        if (!hasImportableBpiRecord) {
+          return NextResponse.json({ error: 'The selected worksheets have no records that can be matched to the chosen campaigns. If campaign values are not present in the workbook, select one campaign as the fallback.' }, { status: 400 });
         }
         const result = await persistBdoImport({
           preview: bpiPreview as ReturnType<typeof buildBdoPreview>,
@@ -1930,14 +1979,14 @@ export async function POST(req: NextRequest) {
         if (selectedWorksheetKeys.length === 0) {
           return NextResponse.json({ error: 'Select at least one valid worksheet before importing.' }, { status: 400 });
         }
-        const campaignMappings: Record<string, string> = JSON.parse((formData.get('campaignMappings') as string) || '{}');
+        const campaignMappings = parseWorksheetCampaignMappings(formData.get('campaignMappings'));
         const selectedBdoSheets = bdoPreview.worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key) && sheet.validRows > 0);
         if (selectedBdoSheets.length === 0) {
           return NextResponse.json({ error: 'No selected worksheets contain valid rows to import.' }, { status: 400 });
         }
         const invalidMapping = selectedBdoSheets.find((sheet) => {
-          const mappedId = campaignMappings[sheet.key];
-          return (sheet.campaignMapping === 'unresolved' && !mappedId) || Boolean(mappedId && !selectedCampaigns.some((campaign) => campaign.id === mappedId));
+          const mappedIds = campaignMappings[sheet.key] || [];
+          return (sheet.campaignMapping === 'unresolved' && mappedIds.length === 0) || hasInvalidCampaignMapping(mappedIds, selectedCampaigns);
         });
         if (invalidMapping) {
           return NextResponse.json({ error: 'Some worksheets could not be matched to the selected campaigns. Please review the campaign mapping.' }, { status: 400 });
@@ -1995,7 +2044,7 @@ export async function POST(req: NextRequest) {
       const confirmedNewAgents: string[] = JSON.parse((formData.get('confirmedNewAgents') as string) || '[]');
       const selectedWorksheetKeysValue = formData.get('selectedWorksheetKeys');
       const submittedWorksheetKeys: string[] = JSON.parse((selectedWorksheetKeysValue as string) || '[]');
-      const campaignMappings: Record<string, string> = JSON.parse((formData.get('campaignMappings') as string) || '{}');
+      const campaignMappings = parseWorksheetCampaignMappings(formData.get('campaignMappings'));
       const selectedKeySet = new Set(
         selectedWorksheetKeysValue !== null
           ? submittedWorksheetKeys
@@ -2003,22 +2052,25 @@ export async function POST(req: NextRequest) {
       );
       const selectedSheets = preview.sheets.filter((sheet) => selectedKeySet.has(sheet.key) && sheet.validRows > 0);
       const invalidMapping = selectedSheets.find((sheet) => {
-        const mappedId = campaignMappings[sheet.key];
-        return (sheet.campaignMapping === 'unresolved' && !mappedId) || Boolean(mappedId && !selectedCampaigns.some((campaign) => campaign.id === mappedId));
+        const mappedIds = campaignMappings[sheet.key] || [];
+        return (sheet.campaignMapping === 'unresolved' && mappedIds.length === 0) || hasInvalidCampaignMapping(mappedIds, selectedCampaigns);
       });
       if (invalidMapping) {
         return NextResponse.json({ error: 'Some worksheets could not be matched to the selected campaigns. Please review the campaign mapping.' }, { status: 400 });
       }
       const entries = selectedSheets.flatMap((sheet) => {
-        const mappedCampaignId = campaignMappings[sheet.key];
-        const mappedCampaign = mappedCampaignId ? selectedCampaigns.find((campaign) => campaign.id === mappedCampaignId) : null;
-        return sheet.entries.map((entry) => mappedCampaign
-          ? { ...entry, campaignId: mappedCampaign.id, campaignName: mappedCampaign.campaignName }
-          : entry);
+        const mappedCampaignIds = campaignMappings[sheet.key] || [];
+        if (mappedCampaignIds.length === 0) return sheet.entries;
+        if (mappedCampaignIds.length === 1) {
+          const mappedCampaign = selectedCampaigns.find((campaign) => campaign.id === mappedCampaignIds[0])!;
+          return sheet.entries.map((entry) => ({ ...entry, campaignId: mappedCampaign.id, campaignName: mappedCampaign.campaignName }));
+        }
+        const allowed = new Set(mappedCampaignIds);
+        return sheet.entries.filter((entry) => Boolean(entry.campaignId && allowed.has(entry.campaignId)));
       }).sort((a, b) => (a.reportDate?.getTime() || 0) - (b.reportDate?.getTime() || 0) || a.rowIdx - b.rowIdx);
 
       if (entries.length === 0) {
-        return NextResponse.json({ error: 'No selected worksheets contain valid rows to import.' }, { status: 400 });
+        return NextResponse.json({ error: 'No selected worksheet records could be matched to the chosen campaigns. Select one campaign as the fallback when rows do not contain campaign values.' }, { status: 400 });
       }
 
       const importPayload = await prisma.$transaction(async (tx) => {
@@ -2503,9 +2555,13 @@ export async function POST(req: NextRequest) {
     }
 
     // Import mode for CSV
-    const csvCampaignMappings: Record<string, string> = JSON.parse((formData.get('campaignMappings') as string) || '{}');
+    const csvCampaignMappings = parseWorksheetCampaignMappings(formData.get('campaignMappings'));
     const csvSheetPreview = csvPreview.sheets[0];
-    const csvTargetCampaignId = csvCampaignMappings[csvSheetPreview.key] || (csvSheetPreview.campaignMapping === 'unresolved' ? '' : csvSheetPreview.campaignId);
+    const csvMappedCampaignIds = csvCampaignMappings[csvSheetPreview.key] || [];
+    if (csvMappedCampaignIds.length > 1) {
+      return NextResponse.json({ error: 'This CSV does not contain per-record campaign mappings. Select one campaign for this worksheet before importing.' }, { status: 400 });
+    }
+    const csvTargetCampaignId = csvMappedCampaignIds[0] || (csvSheetPreview.campaignMapping === 'unresolved' ? '' : csvSheetPreview.campaignId);
     if (!csvTargetCampaignId || !selectedCampaigns.some((campaign) => campaign.id === csvTargetCampaignId)) {
       return NextResponse.json({ error: 'The CSV could not be matched automatically. Please review the campaign mapping.' }, { status: 400 });
     }

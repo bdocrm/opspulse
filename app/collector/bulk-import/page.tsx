@@ -182,15 +182,17 @@ interface MonthImportSummary {
   invalid: number;
 }
 
-function worksheetValidationReason(sheet: WorksheetPreview, mappings: Record<string, string>) {
+type WorksheetCampaignMappings = Record<string, string[]>;
+
+function worksheetValidationReason(sheet: WorksheetPreview, mappings: WorksheetCampaignMappings) {
   if (sheet.validRows <= 0) return sheet.totalRows <= 0 ? 'Worksheet is empty.' : 'No valid importable records were detected.';
   if (/^(unsupported|skipped|invalid)$/i.test(sheet.format)) return `Unsupported or invalid worksheet format: ${sheet.format}.`;
   if (sheet.errors.length > 0) return sheet.errors[0] || 'Worksheet validation failed.';
-  if (sheet.campaignMapping !== 'record' && !mappings[sheet.key]) return 'Campaign mapping could not be detected confidently. Select a campaign to continue.';
+  if (sheet.campaignMapping !== 'record' && !mappings[sheet.key]?.length) return 'Campaign mapping could not be detected confidently. Select one or more campaigns to continue.';
   return '';
 }
 
-function isWorksheetEligible(sheet: WorksheetPreview, mappings: Record<string, string>) {
+function isWorksheetEligible(sheet: WorksheetPreview, mappings: WorksheetCampaignMappings) {
   return worksheetValidationReason(sheet, mappings) === '';
 }
 
@@ -281,7 +283,7 @@ export default function BulkImportPage() {
   const [worksheetPreviews, setWorksheetPreviews] = useState<WorksheetPreview[]>([]);
   const [workbookSummary, setWorkbookSummary] = useState<WorkbookSummary | null>(null);
   const [selectedWorksheetKeys, setSelectedWorksheetKeys] = useState<string[]>([]);
-  const [worksheetCampaigns, setWorksheetCampaigns] = useState<Record<string, string>>({});
+  const [worksheetCampaigns, setWorksheetCampaigns] = useState<WorksheetCampaignMappings>({});
   const [importResult, setImportResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [importDateSort, setImportDateSort] = useState<DateSortDirection>('desc');
@@ -502,7 +504,18 @@ export default function BulkImportPage() {
       const sheets = responses.flatMap(({ data, file: previewFile, index }) =>
         (data.worksheetPreviews || []).map((sheet: WorksheetPreview) => ({ ...sheet, key: `${index}::${sheet.key}`, fileName: previewFile.name }))
       );
-      const initialMappings = Object.fromEntries(sheets.map((sheet: WorksheetPreview) => [sheet.key, sheet.campaignMapping === 'unresolved' || sheet.campaignMapping === 'record' ? '' : sheet.campaignId || campaignIds[0] || '']));
+      const initialMappings: WorksheetCampaignMappings = Object.fromEntries(
+        sheets.map((sheet: WorksheetPreview) => [
+          sheet.key,
+          sheet.campaignMapping === 'unresolved' || sheet.campaignMapping === 'record'
+            ? []
+            : sheet.campaignId
+              ? [sheet.campaignId]
+              : campaignIds[0]
+                ? [campaignIds[0]]
+                : [],
+        ])
+      );
       setWorksheetPreviews(sheets);
       setWorksheetCampaigns(initialMappings);
       setSelectedWorksheetKeys(sheets.filter((sheet: WorksheetPreview) => sheet.selected && isWorksheetEligible(sheet, initialMappings)).map((sheet: WorksheetPreview) => sheet.key));
@@ -527,8 +540,10 @@ export default function BulkImportPage() {
     );
   };
 
-  const handleWorksheetCampaignChange = (sheet: WorksheetPreview, campaignId: string) => {
-    const nextMappings = { ...worksheetCampaigns, [sheet.key]: campaignId };
+  const handleWorksheetCampaignChange = (sheet: WorksheetPreview, mappedCampaignIds: string[]) => {
+    const allowedIds = new Set(selectedCampaigns.map((campaign) => campaign.id));
+    const nextIds = [...new Set(mappedCampaignIds)].filter((campaignId) => allowedIds.has(campaignId));
+    const nextMappings = { ...worksheetCampaigns, [sheet.key]: nextIds };
     setWorksheetCampaigns(nextMappings);
     setSelectedWorksheetKeys((current) => {
       const withoutSheet = current.filter((key) => key !== sheet.key);
@@ -596,7 +611,7 @@ export default function BulkImportPage() {
 
   const handleConfirmImport = async () => {
     if (!previewFiles.length) return;
-    const unresolved = worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key) && sheet.validRows > 0 && sheet.campaignMapping === 'unresolved' && !worksheetCampaigns[sheet.key]);
+    const unresolved = worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key) && sheet.validRows > 0 && sheet.campaignMapping === 'unresolved' && !worksheetCampaigns[sheet.key]?.length);
     if (unresolved.length) {
       setError('Some worksheets could not be matched to the selected campaigns. Please review the campaign mapping.');
       return;
@@ -1285,18 +1300,27 @@ export default function BulkImportPage() {
                             <span className="rounded-full bg-white px-2 py-0.5 text-xs text-slate-600">{sheet.format}</span>
                           </div>
                           {sheet.fileName && <p className="mt-1 truncate text-xs font-medium text-blue-700">{sheet.fileName}</p>}
-                          <select
-                            value={worksheetCampaigns[sheet.key] ?? ''}
-                            onChange={(event) => handleWorksheetCampaignChange(sheet, event.target.value)}
-                            className={`mt-2 w-full rounded-md border bg-white px-2 py-1 text-xs ${sheet.campaignMapping === 'unresolved' && !worksheetCampaigns[sheet.key] ? 'border-amber-400' : 'border-slate-300'}`}
-                            aria-label={`Campaign for ${sheet.sheetName}`}
-                          >
-                            <option value="">{sheet.campaignMapping === 'record' ? 'Detected per record' : 'Select campaign mapping…'}</option>
-                            {selectedCampaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.campaignName}</option>)}
-                          </select>
+                          <CampaignMultiSelect
+                            id={`worksheet-campaigns-${sheet.key.replace(/[^a-zA-Z0-9_-]/g, '-')}`}
+                            campaigns={selectedCampaigns}
+                            value={worksheetCampaigns[sheet.key] ?? []}
+                            onChange={(ids) => handleWorksheetCampaignChange(sheet, ids)}
+                            placeholder={sheet.campaignMapping === 'record' ? 'Detected per record — optionally limit campaigns' : 'Select campaign mapping…'}
+                            className={`mt-2 [&>button]:min-h-8 [&>button]:px-2 [&>button]:py-1 [&>button]:text-xs ${sheet.campaignMapping === 'unresolved' && !worksheetCampaigns[sheet.key]?.length ? '[&>button]:border-amber-400' : ''}`}
+                            maxVisibleChips={2}
+                          />
                           <p className="mt-1 text-xs text-slate-500">
-                            {worksheetCampaigns[sheet.key] ? selectedCampaigns.find((campaign) => campaign.id === worksheetCampaigns[sheet.key])?.campaignName : sheet.campaignMapping === 'record' ? 'Campaign detected per record' : 'Campaign mapping required'} ({sheet.campaignMapping === 'sheet' ? 'matched from sheet' : sheet.campaignMapping === 'record' ? 'matched from record data' : sheet.campaignMapping === 'unresolved' ? 'confirmation required' : 'selected campaign'}) · {metricLabel(sheet.metricType)} · {formatDate(sheet.reportDate)}
+                            {worksheetCampaigns[sheet.key]?.length
+                              ? `${worksheetCampaigns[sheet.key].length} campaign${worksheetCampaigns[sheet.key].length === 1 ? '' : 's'} selected`
+                              : sheet.campaignMapping === 'record'
+                                ? 'Campaign detected per record'
+                                : 'Campaign mapping required'} ({sheet.campaignMapping === 'sheet' ? 'matched from sheet' : sheet.campaignMapping === 'record' ? 'matched from record data' : sheet.campaignMapping === 'unresolved' ? 'confirmation required' : 'selected campaign'}) · {metricLabel(sheet.metricType)} · {formatDate(sheet.reportDate)}
                           </p>
+                          {Boolean(worksheetCampaigns[sheet.key]?.length && worksheetCampaigns[sheet.key].length > 1) && (
+                            <p className="mt-1 text-xs text-blue-700">
+                              Multiple selections limit this worksheet to those campaigns. Each record still uses its detected campaign; unresolved records are not duplicated.
+                            </p>
+                          )}
                           <p className="mt-2 text-xs text-slate-600">
                             Rows {sheet.totalRows} · Valid {sheet.validRows} · Invalid {sheet.invalidRows} · Duplicates {sheet.duplicateRows} · Unmapped {sheet.unmappedRows || 0}
                           </p>
