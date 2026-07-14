@@ -4,6 +4,7 @@ import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import * as XLSX from 'xlsx';
 import bcrypt from 'bcryptjs';
+import { Prisma } from '@prisma/client';
 import { matchMetricAlias, normalizeMetricHeader } from '@/lib/metric-import-mapping';
 import { isBdoDashboardWorkbook, parseBdoDashboardWorkbook, type BdoImportRecord } from '@/lib/bdo-dashboard-import';
 import { isBpiDashboardWorkbook, parseBpiDashboardWorkbook } from '@/lib/bpi-dashboard-import';
@@ -1225,8 +1226,20 @@ async function buildWorkbookPreview({
   };
 }
 
-function bdoNaturalKey(record: BdoImportRecord) {
+type DashboardNaturalKeyRecord = Pick<BdoImportRecord, 'worksheetSource' | 'recordKind' | 'entityName' | 'category' | 'product' | 'metric' | 'year' | 'month'>;
+
+function bdoNaturalKey(record: DashboardNaturalKeyRecord) {
   return [record.worksheetSource, record.recordKind, record.entityName || '', record.category || '', record.product || '', record.metric, record.year, record.month || 0].map((value) => String(value).trim().toLowerCase()).join('|');
+}
+
+function dashboardImportNaturalKey(campaignId: string, record: DashboardNaturalKeyRecord) {
+  return `${campaignId}|${bdoNaturalKey(record)}`;
+}
+
+function inChunks<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) chunks.push(items.slice(index, index + size));
+  return chunks;
 }
 
 function dashboardMonthLabel(year: number, month: number) {
@@ -1544,38 +1557,63 @@ async function persistBdoImport({
         await tx.$executeRaw`DELETE FROM "DashboardImportRecord" WHERE "campaignId" = ${campaignId} AND "worksheetSource" = ${worksheet} AND "year" = ${Number(year)} AND COALESCE("month", 0) = ${Number(month)} AND "reportPeriodType" = ${reportPeriodType}`;
       }
     }
+    type ExistingDashboardRecord = DashboardNaturalKeyRecord & { id: string; campaignId: string };
+    const existingRows = importedCampaignIds.length
+      ? await tx.$queryRaw<ExistingDashboardRecord[]>(Prisma.sql`
+          SELECT "id", "campaignId", "worksheetSource", "recordKind", "entityName", "category", "product", "metric", "year", "month"
+          FROM "DashboardImportRecord"
+          WHERE "campaignId" IN (${Prisma.join(importedCampaignIds)}) AND "reportPeriodType" = ${reportPeriodType}
+        `)
+      : [];
+    const existingByKey = new Map(existingRows.map((row) => [dashboardImportNaturalKey(row.campaignId, row), row.id]));
+    const pendingInserts: typeof records = [];
+
     for (const item of records) {
-      const { record, campaignId } = item;
-      const entityName = record.entityName || '';
-      const category = record.category || '';
-      const product = record.product || '';
-      const month = record.month || 0;
-      const existing = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id" FROM "DashboardImportRecord"
-        WHERE "campaignId" = ${campaignId} AND "worksheetSource" = ${record.worksheetSource} AND "recordKind" = ${record.recordKind}
-          AND "entityName" = ${entityName} AND "category" = ${category} AND "product" = ${product} AND "metric" = ${record.metric}
-          AND "year" = ${record.year} AND COALESCE("month", 0) = ${month} AND "reportPeriodType" = ${reportPeriodType}
-        LIMIT 1
-      `;
-      if (existing.length && duplicateMode === 'skip') { skipped++; continue; }
-      if (existing.length) {
-        await tx.$executeRaw`
-          UPDATE "DashboardImportRecord" SET "batchId" = ${batchId}, "sourceRow" = ${record.sourceRow}, "monitoringType" = ${record.monitoringType || null}, "level" = ${record.level || null},
-            "reportDate" = ${record.reportDate}, "target" = ${record.target ?? null}, "actual" = ${record.actual ?? null}, "achievement" = ${record.achievement ?? null},
-            "numericValue" = ${record.numericValue ?? null}, "declaredSeat" = ${record.declaredSeat ?? null}, "actualHeadCount" = ${record.actualHeadCount ?? null}, "remark" = ${record.remark || null}, "sourceFile" = ${fileName}, "importedById" = ${importedById}, "updatedAt" = CURRENT_TIMESTAMP
-          WHERE "id" = ${existing[0].id}
-        `;
-        updated++;
-      } else {
-        await tx.$executeRaw`
-          INSERT INTO "DashboardImportRecord" ("id", "batchId", "campaignId", "worksheetSource", "sourceRow", "recordKind", "monitoringType", "entityName", "level", "category", "product", "metric", "month", "year", "reportPeriodType", "reportDate", "target", "actual", "achievement", "numericValue", "declaredSeat", "actualHeadCount", "remark", "sourceFile", "importedById")
-          VALUES (${crypto.randomUUID()}, ${batchId}, ${campaignId}, ${record.worksheetSource}, ${record.sourceRow}, ${record.recordKind}, ${record.monitoringType || null}, ${entityName}, ${record.level || null}, ${category}, ${product}, ${record.metric}, ${record.month || null}, ${record.year}, ${reportPeriodType}, ${record.reportDate}, ${record.target ?? null}, ${record.actual ?? null}, ${record.achievement ?? null}, ${record.numericValue ?? null}, ${record.declaredSeat ?? null}, ${record.actualHeadCount ?? null}, ${record.remark || null}, ${fileName}, ${importedById})
-        `;
-        inserted++;
+      const existingId = existingByKey.get(dashboardImportNaturalKey(item.campaignId, item.record));
+      if (!existingId) {
+        pendingInserts.push(item);
+        continue;
       }
+      if (duplicateMode === 'skip') {
+        skipped++;
+        continue;
+      }
+      const { record } = item;
+      await tx.$executeRaw`
+        UPDATE "DashboardImportRecord" SET "batchId" = ${batchId}, "sourceRow" = ${record.sourceRow}, "monitoringType" = ${record.monitoringType || null}, "level" = ${record.level || null},
+          "reportDate" = ${record.reportDate}, "target" = ${record.target ?? null}, "actual" = ${record.actual ?? null}, "achievement" = ${record.achievement ?? null},
+          "numericValue" = ${record.numericValue ?? null}, "declaredSeat" = ${record.declaredSeat ?? null}, "actualHeadCount" = ${record.actualHeadCount ?? null}, "remark" = ${record.remark || null}, "sourceFile" = ${fileName}, "importedById" = ${importedById}, "updatedAt" = CURRENT_TIMESTAMP
+        WHERE "id" = ${existingId}
+      `;
+      updated++;
     }
-    for (const issue of preview.parsed.issues.slice(0, 2000)) {
-      await tx.$executeRaw`INSERT INTO "DashboardImportIssue" ("id", "batchId", "worksheetSource", "sourceRow", "message", "rawValue") VALUES (${crypto.randomUUID()}, ${batchId}, ${issue.worksheet}, ${issue.row || null}, ${issue.message}, ${issue.rawValue || null})`;
+
+    // Large dashboard workbooks can contain thousands of records. Insert them
+    // in bounded batches and let the natural key reject concurrent duplicates,
+    // keeping existing data intact while adding only genuinely new records.
+    for (const chunk of inChunks(pendingInserts, 200)) {
+      const values = chunk.map(({ record, campaignId }) => Prisma.sql`(
+        ${crypto.randomUUID()}, ${batchId}, ${campaignId}, ${record.worksheetSource}, ${record.sourceRow}, ${record.recordKind},
+        ${record.monitoringType || null}, ${record.entityName || ''}, ${record.level || null}, ${record.category || ''}, ${record.product || ''},
+        ${record.metric}, ${record.month || 0}, ${record.year}, ${reportPeriodType}, ${record.reportDate}, ${record.target ?? null},
+        ${record.actual ?? null}, ${record.achievement ?? null}, ${record.numericValue ?? null}, ${record.declaredSeat ?? null},
+        ${record.actualHeadCount ?? null}, ${record.remark || null}, ${fileName}, ${importedById}
+      )`);
+      inserted += await tx.$executeRaw(Prisma.sql`
+        INSERT INTO "DashboardImportRecord" ("id", "batchId", "campaignId", "worksheetSource", "sourceRow", "recordKind", "monitoringType", "entityName", "level", "category", "product", "metric", "month", "year", "reportPeriodType", "reportDate", "target", "actual", "achievement", "numericValue", "declaredSeat", "actualHeadCount", "remark", "sourceFile", "importedById")
+        VALUES ${Prisma.join(values)}
+        ON CONFLICT ("campaignId", "worksheetSource", "recordKind", "entityName", "category", "product", "metric", "year", "month", "reportPeriodType") DO NOTHING
+      `);
+    }
+    skipped += Math.max(0, pendingInserts.length - inserted);
+
+    const issues = preview.parsed.issues.slice(0, 2000);
+    for (const chunk of inChunks(issues, 250)) {
+      const values = chunk.map((issue) => Prisma.sql`(${crypto.randomUUID()}, ${batchId}, ${issue.worksheet}, ${issue.row || null}, ${issue.message}, ${issue.rawValue || null})`);
+      await tx.$executeRaw(Prisma.sql`
+        INSERT INTO "DashboardImportIssue" ("id", "batchId", "worksheetSource", "sourceRow", "message", "rawValue")
+        VALUES ${Prisma.join(values)}
+      `);
     }
     const invalid = preview.parsed.issues.filter((issue) => !/unsupported worksheet/i.test(issue.message)).length;
     await tx.$executeRaw`UPDATE "DashboardImportBatch" SET "insertedCount" = ${inserted}, "updatedCount" = ${updated}, "skippedCount" = ${skipped}, "duplicateCount" = ${skipped}, "failedCount" = ${invalid}, "status" = 'COMPLETED', "completedAt" = CURRENT_TIMESTAMP WHERE "id" = ${batchId}`;
