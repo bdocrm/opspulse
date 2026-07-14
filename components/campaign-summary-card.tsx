@@ -55,6 +55,21 @@ function kpiValueFor(metric: string, prod: Production): number {
   }
 }
 
+function kpiLabel(metric: string): string {
+  switch (metric) {
+    case 'transmittals': return 'Transmittals';
+    case 'activations': return 'Activations';
+    case 'approvals': return 'Approvals';
+    case 'volume': return 'Volume';
+    default: return 'Booked';
+  }
+}
+
+function formatKpiValue(metric: string, value: number): string {
+  const formatted = Number(value).toLocaleString();
+  return metric === 'volume' ? `₱${formatted}` : formatted;
+}
+
 export function CampaignSummaryCard({
   id,
   campaignName,
@@ -85,12 +100,6 @@ export function CampaignSummaryCard({
     return sum + kpiValueFor(kpiMetric, prod);
   }, 0);
 
-  // Always calculate booked volume for display
-  const totalBookedVolume = agents.reduce((sum, agent) => {
-    const prod = production[agent.id] || ZERO_PROD;
-    return sum + (prod.volume || 0);
-  }, 0);
-
   // ACQ campaigns track NTB + Supplementary instead of booked volume.
   const acq = isAcqCampaign(campaignName);
   const totalNtb = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).ntb || 0), 0);
@@ -99,35 +108,40 @@ export function CampaignSummaryCard({
   // For ACQ the header %/achievement tracks NTB vs the NTB goal (legacy monthly goal).
   const achievement = acq
     ? (goal > 0 ? ((totalNtb / goal) * 100).toFixed(1) : '0')
-    : (goal > 0 ? ((totalBookedVolume / goal) * 100).toFixed(1) : '0');
-  const remainingGoal = Math.max(0, goal - totalBookedVolume);
+    : (goal > 0 ? ((totalProduction / goal) * 100).toFixed(1) : '0');
+  const remainingGoal = Math.max(0, goal - (acq ? totalNtb : totalProduction));
+  const metricLabel = kpiLabel(kpiMetric);
+  const hasRecordsInRange = entriesCount > 0;
 
-  // Performance distribution based on booked volume
+  // Performance distribution follows the campaign's configured KPI.
   const performanceDistribution = useMemo(() => {
     const distribution = { excellent: 0, good: 0, average: 0, needsImprovement: 0 };
-    if (goal === 0) return distribution; // No distribution if no goal
+    if (goal === 0 || entriesCount === 0) return distribution;
     agents.forEach(agent => {
       const prod = production[agent.id] || ZERO_PROD;
-      const bookedVolume = prod.volume || 0;
+      const value = acq ? (prod.ntb || 0) : kpiValueFor(kpiMetric, prod);
       // Calculate agent's share of total goal proportionally, or use their monthly target if set
       const agentGoal = agent.monthlyTarget || (goal / Math.max(agents.length, 1));
       if (agentGoal === 0) return;
-      const progress = (bookedVolume / agentGoal) * 100;
+      const progress = (value / agentGoal) * 100;
       if (progress >= 100) distribution.excellent++;
       else if (progress >= 80) distribution.good++;
       else if (progress >= 50) distribution.average++;
       else distribution.needsImprovement++;
     });
     return distribution;
-  }, [agents, production, goal]);
+  }, [agents, production, goal, entriesCount, acq, kpiMetric]);
 
   // Top and bottom performers. ACQ ranks by NTB (Supplementary as tiebreaker),
-  // matching the collector-details table; others rank by booked volume.
+  // matching the collector-details table; others use their configured KPI.
   const performerStats = useMemo(() => {
+    if (entriesCount === 0) {
+      return { topPerformer: undefined, bottomPerformer: undefined, reachedGoal: 0, belowTarget: 0, withProduction: 0, zeroProduction: 0 };
+    }
     const performers = agents
       .map(agent => {
         const prod = production[agent.id] || ZERO_PROD;
-        const value = acq ? (prod.ntb || 0) : (prod.volume || 0);
+        const value = acq ? (prod.ntb || 0) : kpiValueFor(kpiMetric, prod);
         const secondary = acq ? (prod.supplementary || 0) : 0;
         const agentGoal = agent.monthlyTarget || (goal / Math.max(agents.length, 1));
         return { agent, value, secondary, target: agentGoal, progress: agentGoal > 0 ? (value / agentGoal) * 100 : 0 };
@@ -142,7 +156,7 @@ export function CampaignSummaryCard({
       withProduction: performers.filter(p => p.value > 0).length,
       zeroProduction: performers.filter(p => p.value === 0).length,
     };
-  }, [agents, production, goal, acq]);
+  }, [agents, production, goal, acq, kpiMetric, entriesCount]);
 
   const filteredAgents = useMemo(() => {
     if (!searchQuery.trim()) return agents;
@@ -167,11 +181,11 @@ export function CampaignSummaryCard({
             />
             <div className="min-w-0 flex-1">
               <h3 className="font-bold text-lg text-foreground truncate">{campaignName}</h3>
-              <p className="text-xs text-muted-foreground capitalize mt-1">{acq ? 'NTB & Supplementary' : kpiMetric}</p>
+              <p className="text-xs text-muted-foreground mt-1">{acq ? 'NTB & Supplementary' : metricLabel}</p>
             </div>
           </div>
           <div className="text-right flex-shrink-0 ml-4">
-            <p className="text-2xl font-bold text-primary">{achievement}%</p>
+            <p className="text-2xl font-bold text-primary">{hasRecordsInRange ? `${achievement}%` : 'No data'}</p>
             <p className="text-xs text-muted-foreground">{activeCollectors} collectors</p>
           </div>
         </div>
@@ -180,6 +194,11 @@ export function CampaignSummaryCard({
       {/* Expanded Content */}
       {expanded && (
         <CardContent className="pt-0 space-y-6">
+          {!hasRecordsInRange && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              No production records fall within the selected date range. Adjust the date filter to view this campaign&apos;s imported performance.
+            </div>
+          )}
           {/* KPI Cards */}
           {acq ? (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -203,19 +222,19 @@ export function CampaignSummaryCard({
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
-                <p className="text-xs text-muted-foreground mb-1">Monthly Goal (Booked Vol)</p>
-                <p className="text-xl font-bold text-blue-600">₱{goal.toLocaleString()}</p>
+                <p className="text-xs text-muted-foreground mb-1">Goal ({metricLabel})</p>
+                <p className="text-xl font-bold text-blue-600">{formatKpiValue(kpiMetric, goal)}</p>
               </div>
               <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
-                <p className="text-xs text-muted-foreground mb-1">Current Prod. (Booked Vol)</p>
-                <p className="text-xl font-bold text-purple-600">₱{Number(totalBookedVolume).toLocaleString()}</p>
+                <p className="text-xs text-muted-foreground mb-1">Current {metricLabel}</p>
+                <p className="text-xl font-bold text-purple-600">{formatKpiValue(kpiMetric, totalProduction)}</p>
               </div>
               <div className="bg-gradient-to-br from-orange-50 to-orange-100/50 rounded-lg p-3">
                 <p className="text-xs text-muted-foreground mb-1">Remaining to Goal</p>
-                <p className="text-xl font-bold text-orange-600">₱{Number(remainingGoal).toLocaleString()}</p>
+                <p className="text-xl font-bold text-orange-600">{formatKpiValue(kpiMetric, remainingGoal)}</p>
               </div>
               <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
-                <p className="text-xs text-muted-foreground mb-1">Entries</p>
+                <p className="text-xs text-muted-foreground mb-1">Records in Range</p>
                 <p className="text-xl font-bold text-green-600">{entriesCount}</p>
               </div>
             </div>

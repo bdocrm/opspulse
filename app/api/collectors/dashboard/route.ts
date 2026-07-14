@@ -172,6 +172,7 @@ export async function GET(req: NextRequest) {
           year: true,
           month: true,
           reportDate: true,
+          target: true,
           actual: true,
         },
         orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
@@ -291,7 +292,7 @@ export async function GET(req: NextRequest) {
     // month, and metric are never counted twice.
     const preferredDashboardRecords = new Map<string, (typeof dashboardAgentRecords)[number]>();
     for (const record of dashboardAgentRecords) {
-      if (record.reportDate < startDate || record.reportDate > endDate || record.actual == null) continue;
+      if (record.reportDate < startDate || record.reportDate > endDate || (record.actual == null && record.target == null)) continue;
       const normalizedName = normalizeImportedAgentName(record.entityName);
       const key = `${record.campaignId}|${normalizedName}|${record.year}|${record.month || 0}|${record.metric}`;
       const existing = preferredDashboardRecords.get(key);
@@ -299,17 +300,32 @@ export async function GET(req: NextRequest) {
       const existingPriority = existing?.monitoringType?.endsWith("_AGENT") ? 2 : existing ? 1 : 0;
       if (priority > existingPriority) preferredDashboardRecords.set(key, record);
     }
-    const campaignKpiById = new Map(campaigns.map((campaign) => [campaign.id, campaign.kpiMetric || "booked"]));
+    const campaignsWithCashInstallment = new Set(
+      dashboardAgentRecords.filter((record) => /cash installment/i.test(record.metric)).map((record) => record.campaignId)
+    );
+    const campaignKpiById = new Map(campaigns.map((campaign) => [
+      campaign.id,
+      campaignsWithCashInstallment.has(campaign.id) ? "volume" : campaign.kpiMetric || "booked",
+    ]));
     const importedEntryCountByCampaign = new Map<string, number>();
+    const importedGoalByCampaign = new Map<string, number>();
+    const importedTargetByAgent = new Map<string, number>();
     for (const record of preferredDashboardRecords.values()) {
       const normalizedName = normalizeImportedAgentName(record.entityName);
       const agentId = actualAgentIdByCampaignAndName.get(`${record.campaignId}|${normalizedName}`) || importedAgentId(record.campaignId, record.entityName);
+      const target = Number(record.target || 0);
+      if (target) {
+        importedGoalByCampaign.set(record.campaignId, (importedGoalByCampaign.get(record.campaignId) ?? 0) + target);
+        importedTargetByAgent.set(agentId, (importedTargetByAgent.get(agentId) ?? 0) + target);
+      }
+      if (record.actual == null) continue;
       const byAgent = prodByCampaign.get(record.campaignId) ?? {};
       const cur = byAgent[agentId] ?? emptyProduction();
       const actual = Number(record.actual || 0);
-      cur.volume += actual;
       const kpiMetric = campaignKpiById.get(record.campaignId);
-      if (kpiMetric === "transmittals" || kpiMetric === "activations" || kpiMetric === "approvals" || kpiMetric === "booked") {
+      if (kpiMetric === "volume") {
+        cur.volume += actual;
+      } else if (kpiMetric === "transmittals" || kpiMetric === "activations" || kpiMetric === "approvals" || kpiMetric === "booked") {
         cur[kpiMetric] += actual;
       }
       byAgent[agentId] = cur;
@@ -338,8 +354,8 @@ export async function GET(req: NextRequest) {
       return {
         id: c.id,
         campaignName: c.campaignName,
-        kpiMetric: savedGoal?.kpiMetric || c.kpiMetric || "booked",
-        goal: Number(savedGoal?.monthlyGoal ?? c.monthlyGoal ?? 0),
+        kpiMetric: campaignKpiById.get(c.id) || savedGoal?.kpiMetric || c.kpiMetric || "booked",
+        goal: importedGoalByCampaign.get(c.id) || Number(savedGoal?.monthlyGoal ?? c.monthlyGoal ?? 0),
         supplementaryGoal: Number(savedGoal?.supplementaryGoal ?? c.supplementaryGoal ?? 0),
         agents: [
           ...(agentsByCampaign.get(c.id) ?? []).map((a) => ({
@@ -347,7 +363,7 @@ export async function GET(req: NextRequest) {
           name: a.name,
           email: a.email,
           seatNumber: a.seatNumber,
-          monthlyTarget: a.monthlyTarget,
+          monthlyTarget: importedTargetByAgent.get(a.id) || a.monthlyTarget,
           monthlyTargetSupplementary: a.monthlyTargetSupplementary,
           mbLevel: a.mbLevel,
           disbursedTxnTarget: a.disbursedTxnTarget,
@@ -356,7 +372,10 @@ export async function GET(req: NextRequest) {
           grossTurnInsVolTarget: a.grossTurnInsVolTarget,
           importedOnly: false,
           })),
-          ...(importedRosterByCampaign.get(c.id) ?? []),
+          ...(importedRosterByCampaign.get(c.id) ?? []).map((agent) => ({
+            ...agent,
+            monthlyTarget: importedTargetByAgent.get(agent.id) || null,
+          })),
         ],
         production: prodByCampaign.get(c.id) ?? {},
         attendance: attByCampaign.get(c.id) ?? {},

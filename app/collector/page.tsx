@@ -138,6 +138,21 @@ function kpiValueFor(metric: string, prod: Production): number {
   }
 }
 
+function kpiLabel(metric: string): string {
+  switch (metric) {
+    case 'transmittals': return 'Transmittals';
+    case 'activations': return 'Activations';
+    case 'approvals': return 'Approvals';
+    case 'volume': return 'Volume';
+    default: return 'Booked';
+  }
+}
+
+function formatKpiValue(metric: string, value: number): string {
+  const formatted = Number(value).toLocaleString();
+  return metric === 'volume' ? `₱${formatted}` : formatted;
+}
+
 const getProgressColor = (progress: number) => {
   if (progress >= 100) return 'bg-green-500';
   if (progress >= 75) return 'bg-blue-500';
@@ -494,10 +509,13 @@ export default function CollectorDashboard() {
 
     // When every assigned campaign is ACQ, the global roll-up switches to NTB.
     const allAcq = campaigns.length > 0 && campaigns.every((c) => isAcqCampaign(c.campaignName));
+    const campaignKpis = new Set(campaigns.map((campaign) => campaign.kpiMetric || 'booked'));
+    const mixedKpis = !allAcq && campaignKpis.size > 1;
+    const primaryKpi = allAcq ? 'ntb' : (campaigns[0]?.kpiMetric || 'booked');
 
     let goal = totalGoal;
     if (goal === 0 && totalTarget > 0) goal = totalTarget;
-    const actual = allAcq ? totalNtb : totalVolume;
+    const actual = allAcq ? totalNtb : kpiValue;
     const targetProgress = goal > 0 ? ((actual / goal) * 100).toFixed(1) : '0';
     const remainingGoal = Math.max(0, goal - actual);
 
@@ -511,6 +529,7 @@ export default function CollectorDashboard() {
       totalNtb, totalSupplementary, allAcq,
       totalSuppGoal, suppProgress, remainingSupp,
       goal, kpiValue, targetProgress, remainingGoal, totalTarget, entriesCount,
+      mixedKpis, primaryKpi,
     };
   }, [campaigns]);
 
@@ -935,17 +954,25 @@ export default function CollectorDashboard() {
         <Card className="bg-gradient-to-br from-indigo-500/10 to-indigo-600/5 border-indigo-500/20">
           <CardContent className="pt-4">
             <div className="flex flex-col gap-2">
-              <p className="text-xs text-muted-foreground uppercase tracking-wide">{kpis.allAcq ? 'Total Goal (NTB)' : 'Total Goal (Booked Vol)'}</p>
-              <p className="text-3xl font-bold text-indigo-500">{kpis.allAcq ? kpis.goal.toLocaleString() : `₱${kpis.goal.toLocaleString()}`}</p>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">
-                  {kpis.allAcq ? `Progress: ${kpis.totalNtb.toLocaleString()}` : `Progress: ₱${kpis.totalVolume.toLocaleString()}`}
-                </span>
-                <span className="font-semibold text-indigo-500">{kpis.targetProgress}%</span>
-              </div>
-              {kpis.remainingGoal > 0 && (
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">
+                {kpis.mixedKpis ? 'Campaign KPI Goals' : `Total Goal (${kpis.allAcq ? 'NTB' : kpiLabel(kpis.primaryKpi)})`}
+              </p>
+              <p className="text-3xl font-bold text-indigo-500">
+                {kpis.mixedKpis ? '—' : (kpis.allAcq ? kpis.goal.toLocaleString() : formatKpiValue(kpis.primaryKpi, kpis.goal))}
+              </p>
+              {kpis.mixedKpis ? (
+                <p className="text-xs text-muted-foreground">Mixed KPIs are shown per campaign below.</p>
+              ) : (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">
+                    Progress: {kpis.allAcq ? kpis.totalNtb.toLocaleString() : formatKpiValue(kpis.primaryKpi, kpis.kpiValue)}
+                  </span>
+                  <span className="font-semibold text-indigo-500">{kpis.targetProgress}%</span>
+                </div>
+              )}
+              {!kpis.mixedKpis && kpis.remainingGoal > 0 && (
                 <p className="text-xs text-orange-500 font-semibold">
-                  {kpis.allAcq ? `To Go: ${kpis.remainingGoal.toLocaleString()}` : `To Go: ₱${kpis.remainingGoal.toLocaleString()}`}
+                  To Go: {kpis.allAcq ? kpis.remainingGoal.toLocaleString() : formatKpiValue(kpis.primaryKpi, kpis.remainingGoal)}
                 </p>
               )}
             </div>
@@ -966,9 +993,15 @@ export default function CollectorDashboard() {
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
               <div className="flex-1 min-w-0">
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">{kpis.allAcq ? 'Total Supplementary' : 'Booked Volume (₱)'}</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">
+                  {kpis.allAcq ? 'Total Supplementary' : kpis.mixedKpis ? 'Imported Volume' : `Current ${kpiLabel(kpis.primaryKpi)}`}
+                </p>
                 <p className="text-3xl font-bold mt-1 text-purple-500">
-                  {kpis.allAcq ? (kpis.totalSupplementary?.toLocaleString() || '0') : `₱${kpis.totalVolume?.toLocaleString() || '0'}`}
+                  {kpis.allAcq
+                    ? (kpis.totalSupplementary?.toLocaleString() || '0')
+                    : kpis.mixedKpis
+                      ? formatKpiValue('volume', kpis.totalVolume)
+                      : formatKpiValue(kpis.primaryKpi, kpis.kpiValue)}
                 </p>
                 {kpis.allAcq ? (
                   <>
@@ -992,7 +1025,7 @@ export default function CollectorDashboard() {
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Entries Today</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">Records in Range</p>
                 <p className="text-3xl font-bold mt-1 text-orange-500">{kpis.entriesCount}</p>
               </div>
               <ClipboardList className="w-8 h-8 text-orange-500 opacity-80" />
@@ -1153,25 +1186,25 @@ export default function CollectorDashboard() {
                 const prod = campaign.production[agent.id] || ZERO_PROD;
                 return sum + kpiValueFor(campaignKpi, prod);
               }, 0);
-              // Calculate total booked volume for the campaign
-              const totalBookedVolume = campaignAgents.reduce((sum, agent) => {
-                const prod = campaign.production[agent.id] || ZERO_PROD;
-                return sum + (prod.volume || 0);
-              }, 0);
-              const goalProgress = campaignGoal > 0 ? ((totalBookedVolume / campaignGoal) * 100).toFixed(1) : '0';
+              const metricLabel = kpiLabel(campaignKpi);
+              const goalProgress = campaignGoal > 0 ? ((totalKpiValue / campaignGoal) * 100).toFixed(1) : '0';
+              const acq = isAcqCampaign(campaign.campaignName);
 
-              // Find top booked volume performer
+              // Find the top performer using this campaign's configured KPI.
               const topPerformer = campaignAgents.length > 0
                 ? campaignAgents.reduce((max, agent) => {
-                    const currentVolume = (campaign.production[agent.id] || ZERO_PROD).volume || 0;
-                    const maxVolume = (campaign.production[max.id] || ZERO_PROD).volume || 0;
-                    return currentVolume > maxVolume ? agent : max;
+                    const currentProd = campaign.production[agent.id] || ZERO_PROD;
+                    const maxProd = campaign.production[max.id] || ZERO_PROD;
+                    const currentValue = acq ? (currentProd.ntb || 0) : kpiValueFor(campaignKpi, currentProd);
+                    const maxValue = acq ? (maxProd.ntb || 0) : kpiValueFor(campaignKpi, maxProd);
+                    return currentValue > maxValue ? agent : max;
                   })
                 : null;
-              const topBookedVolume = topPerformer ? (campaign.production[topPerformer.id] || ZERO_PROD).volume || 0 : 0;
+              const topKpiValue = topPerformer
+                ? (acq ? ((campaign.production[topPerformer.id] || ZERO_PROD).ntb || 0) : kpiValueFor(campaignKpi, campaign.production[topPerformer.id] || ZERO_PROD))
+                : 0;
 
               // ACQ campaigns report NTB + Supplementary instead of booked volume.
-              const acq = isAcqCampaign(campaign.campaignName);
               const totalNtb = campaignAgents.reduce((sum, agent) => sum + ((campaign.production[agent.id] || ZERO_PROD).ntb || 0), 0);
               const totalSupplementary = campaignAgents.reduce((sum, agent) => sum + ((campaign.production[agent.id] || ZERO_PROD).supplementary || 0), 0);
               const ntbGoal = campaignGoal; // legacy monthly goal doubles as the NTB goal
@@ -1188,7 +1221,7 @@ export default function CollectorDashboard() {
                       <div>
                         <h3 className="font-bold text-lg text-foreground">{campaign.campaignName}</h3>
                         <p className="text-xs text-muted-foreground capitalize mt-1">
-                          {acq ? 'NTB Goal' : 'Booked Volume Goal (₱)'}
+                          {acq ? 'NTB Goal' : `${metricLabel} Goal`}
                         </p>
                       </div>
 
@@ -1197,7 +1230,7 @@ export default function CollectorDashboard() {
                         <div className="flex items-baseline justify-between">
                           <span className="text-xs text-muted-foreground uppercase tracking-wide">{acq ? 'NTB Goal' : 'Goal'}</span>
                           <span className="text-xl font-bold text-blue-600">
-                            {acq ? Number(ntbGoal).toLocaleString() : `₱${campaignGoal.toLocaleString()}`}
+                            {acq ? Number(ntbGoal).toLocaleString() : formatKpiValue(campaignKpi, campaignGoal)}
                           </span>
                         </div>
                         <div className="flex items-center gap-2">
@@ -1212,7 +1245,9 @@ export default function CollectorDashboard() {
                               style={{ width: `${Math.min(Number(acq ? ntbProgress : goalProgress), 100)}%` }}
                             />
                           </div>
-                          <span className="text-sm font-semibold text-foreground w-12 text-right">{acq ? ntbProgress : goalProgress}%</span>
+                          <span className="text-sm font-semibold text-foreground min-w-12 text-right">
+                            {campaign.entriesCount > 0 ? `${acq ? ntbProgress : goalProgress}%` : 'No data'}
+                          </span>
                         </div>
                       </div>
 
@@ -1235,19 +1270,19 @@ export default function CollectorDashboard() {
                             <p className="text-xs text-muted-foreground mt-1">Agents</p>
                           </div>
                           <div className="text-center">
-                            <p className="text-2xl font-bold text-purple-600">₱{Number(totalBookedVolume).toLocaleString()}</p>
-                            <p className="text-xs text-muted-foreground mt-1">Booked Volume</p>
+                            <p className="text-2xl font-bold text-purple-600">{formatKpiValue(campaignKpi, totalKpiValue)}</p>
+                            <p className="text-xs text-muted-foreground mt-1">{metricLabel}</p>
                           </div>
                         </div>
                       )}
 
-                      {/* Top Booked Volume Performer */}
-                      {topPerformer && topBookedVolume > 0 && (
+                      {/* Top KPI Performer */}
+                      {campaign.entriesCount > 0 && topPerformer && topKpiValue > 0 && (
                         <div className="pt-2 border-t bg-yellow-50/50 rounded-lg p-2 mx-[-0.75rem] px-3">
-                          <p className="text-xs text-muted-foreground uppercase tracking-wide font-semibold">🥇 Top Booked Volume</p>
+                          <p className="text-xs text-muted-foreground uppercase tracking-wide font-semibold">🥇 Top {metricLabel}</p>
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-sm font-medium text-foreground truncate">{topPerformer.name}</span>
-                            <span className="text-sm font-bold text-yellow-600">₱{Number(topBookedVolume).toLocaleString()}</span>
+                            <span className="text-sm font-bold text-yellow-600">{formatKpiValue(campaignKpi, topKpiValue)}</span>
                           </div>
                         </div>
                       )}
@@ -1255,7 +1290,7 @@ export default function CollectorDashboard() {
                       {/* Entries */}
                       <div className="pt-2 border-t">
                         <div className="flex items-center justify-between">
-                          <span className="text-xs text-muted-foreground">Entries Today</span>
+                          <span className="text-xs text-muted-foreground">Records in Range</span>
                           <span className="text-sm font-semibold text-orange-500">{campaign.entriesCount}</span>
                         </div>
                       </div>
@@ -1276,7 +1311,7 @@ export default function CollectorDashboard() {
               <Trophy className="w-5 h-5 text-yellow-500" />
               Production Leaderboard
             </h2>
-            <p className="text-sm text-muted-foreground">Ranked by booked sales, grouped by campaign</p>
+            <p className="text-sm text-muted-foreground">Ranked by each campaign&apos;s KPI, grouped by campaign</p>
           </div>
           <div className="flex items-center gap-2">
             {loadingDashboard && <RefreshCw className="w-4 h-4 animate-spin text-muted-foreground" />}
@@ -1289,7 +1324,7 @@ export default function CollectorDashboard() {
               onChange={(e) => setSortBy(e.target.value as 'seat' | 'booked' | 'name')}
               className="h-9 px-3 rounded-md border bg-background text-sm"
             >
-              <option value="booked">Sort by Booked</option>
+              <option value="booked">Sort by KPI</option>
               <option value="seat">Sort by Seat</option>
               <option value="name">Sort by Name</option>
             </select>
@@ -1307,14 +1342,13 @@ export default function CollectorDashboard() {
               let filtered = block.agents.filter((a) => a.name.toLowerCase().includes(q));
               filtered = [...filtered].sort((a, b) => {
                 if (sortBy === 'booked') {
-                  // ACQ ranks by highest NTB, then Supplementary as the tiebreaker
-                  // (not summed); others rank by booked volume.
+                  // ACQ ranks by highest NTB, then Supplementary as the tiebreaker.
                   if (acq) {
                     const ntbDiff = (prodFor(b.id).ntb || 0) - (prodFor(a.id).ntb || 0);
                     if (ntbDiff !== 0) return ntbDiff;
                     return (prodFor(b.id).supplementary || 0) - (prodFor(a.id).supplementary || 0);
                   }
-                  return (prodFor(b.id).volume || 0) - (prodFor(a.id).volume || 0);
+                  return kpiValueFor(block.kpiMetric, prodFor(b.id)) - kpiValueFor(block.kpiMetric, prodFor(a.id));
                 }
                 if (sortBy === 'name') return a.name.localeCompare(b.name);
                 return (a.seatNumber || 0) - (b.seatNumber || 0);
@@ -1401,6 +1435,7 @@ export default function CollectorDashboard() {
                                   <TableHead className="text-center w-20">Attendance</TableHead>
                                   <TableHead className="text-center">Transmitted</TableHead>
                                   <TableHead className="text-center">Approved</TableHead>
+                                  <TableHead className="text-center">Activated</TableHead>
                                   <TableHead className="text-center">Booked</TableHead>
                                   <TableHead className="text-right">Booked Volume (₱)</TableHead>
                                 </>
@@ -1416,13 +1451,13 @@ export default function CollectorDashboard() {
                             const record = block.attendance[agent.id];
                             const isPresent = !record || record.status === 'PRESENT';
                             const value = kpiValueFor(block.kpiMetric, prod);
-                            // ACQ tracks (NTB + Supplementary) vs (NTB + Supplementary targets); others track booked volume vs target.
+                            // ACQ tracks its paired metrics; other campaigns track their configured KPI.
                             const acqTarget = (agent.monthlyTarget || 0) + (agent.monthlyTargetSupplementary || 0);
                             const acqActual = (prod.ntb || 0) + (prod.supplementary || 0);
                             const hasTarget = acq ? acqTarget > 0 : !!agent.monthlyTarget;
                             const progressNum = acq
                               ? (acqTarget > 0 ? (acqActual / acqTarget) * 100 : 0)
-                              : (agent.monthlyTarget ? ((prod.volume || 0) / agent.monthlyTarget) * 100 : 0);
+                              : (agent.monthlyTarget ? (value / agent.monthlyTarget) * 100 : 0);
                             // Separate NTB / Supplementary progress bars for ACQ.
                             const ntbProgress = (agent.monthlyTarget || 0) > 0 ? ((prod.ntb || 0) / (agent.monthlyTarget as number)) * 100 : 0;
                             const suppProgress = (agent.monthlyTargetSupplementary || 0) > 0 ? ((prod.supplementary || 0) / (agent.monthlyTargetSupplementary as number)) * 100 : 0;
@@ -1438,7 +1473,7 @@ export default function CollectorDashboard() {
                             return (
                               <TableRow key={agent.id} className={!isPresent ? 'opacity-50 bg-muted/30' : ''}>
                                 <TableCell className="text-center">
-                                  {sortBy === 'booked' ? getRankBadge(index) : <span className="text-muted-foreground text-sm">-</span>}
+                                  {sortBy === 'booked' && block.entriesCount > 0 ? getRankBadge(index) : <span className="text-muted-foreground text-sm">-</span>}
                                 </TableCell>
                                 <TableCell className="font-semibold text-muted-foreground">{agent.seatNumber}</TableCell>
                                 <TableCell className="font-medium">{agent.name}</TableCell>
@@ -1493,6 +1528,7 @@ export default function CollectorDashboard() {
                                     </TableCell>
                                     <TableCell className="text-center">{prod.transmittals}</TableCell>
                                     <TableCell className="text-center">{prod.approvals}</TableCell>
+                                    <TableCell className="text-center">{prod.activations}</TableCell>
                                     <TableCell className="text-center font-semibold text-primary">{prod.booked}</TableCell>
                                     <TableCell className="text-right font-semibold text-purple-600">₱{Number(prod.volume || 0).toLocaleString()}</TableCell>
                                   </>
