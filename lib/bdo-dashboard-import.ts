@@ -237,10 +237,15 @@ function parseManpower(rows: unknown[][], sheetName: string, detectedType: BdoWo
       const hit = monthFrom(cell);
       return hit ? [{ col, month: hit.month, year: hit.year || year }] : [];
     });
+    const anchorRows = Array.from({ length: Math.max(0, nextHeaderRow - particularHit.row - 1) }, (_, offset) => particularHit.row + offset + 1)
+      .filter((rowIndex) => /^(?:declared seat count|actual head count|actual headcount)$/.test(normalizedKey(rows[rowIndex]?.[particularHit.col])));
+    const activeMonthColumns = anchorRows.length
+      ? monthColumns.filter((period) => anchorRows.some((rowIndex) => normalizeBdoText(rows[rowIndex]?.[period.col]) !== ''))
+      : monthColumns;
     for (let rowIndex = particularHit.row + 1; rowIndex < nextHeaderRow; rowIndex++) {
       const particular = normalizeBdoText(rows[rowIndex]?.[particularHit.col]);
       if (!particular || SUMMARY_NAME.test(particular)) continue;
-      for (const period of monthColumns) {
+      for (const period of activeMonthColumns) {
         const percentage = /percentage|rate|turnover/i.test(particular);
         const parsed = parseNumeric(rows[rowIndex]?.[period.col], percentage);
         addNumericIssue(warnings, sheetName, rowIndex + 1, parsed, rows[rowIndex]?.[period.col]);
