@@ -29,6 +29,7 @@ export interface CampaignSummaryProps {
   campaignName: string;
   kpiMetric: string;
   goal: number;
+  actual?: number | null;
   supplementaryGoal?: number;
   agents: Agent[];
   production: Record<string, Production>;
@@ -76,6 +77,7 @@ export function CampaignSummaryCard({
   campaignName,
   kpiMetric,
   goal,
+  actual,
   supplementaryGoal = 0,
   agents,
   production,
@@ -97,10 +99,11 @@ export function CampaignSummaryCard({
     return !record || record.status === 'PRESENT';
   }).length;
 
-  const totalProduction = agents.reduce((sum, agent) => {
+  const agentProduction = agents.reduce((sum, agent) => {
     const prod = production[agent.id] || ZERO_PROD;
     return sum + kpiValueFor(kpiMetric, prod);
   }, 0);
+  const totalProduction = actual ?? agentProduction;
 
   // ACQ campaigns track NTB + Supplementary instead of booked volume.
   const acq = isAcqCampaign(campaignName);

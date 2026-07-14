@@ -12,7 +12,7 @@ add('YTD Performance', [
   ['', 'PA SIP Loans Outbound', 'PA SIP Loans Outbound', 'PA SIP Loans Outbound', 'PA SIP Loans Inbound', 'PA SIP Loans Inbound', 'PA SIP Loans Inbound', 'Personal Loans', 'Personal Loans', 'Personal Loans', 'Fulfillment', 'Fulfillment', 'Fulfillment'],
   ['Month', 'Target', 'Actual', 'Achievement', 'Target', 'Actual', 'Achievement', 'Target', 'Actual', 'Achievement', 'Target', 'Actual', 'Achievement'],
   ['January', 100, 80, 0.8, 90, 70, 0.777, 50, 25, 0.5, 40, 30, 0.75],
-  ['February', 110, 99, 0.9, 95, 76, 0.8, 55, 44, 0.8, 45, 36, 0.8],
+  ['February', 110, 99, 0.9, 95, 76, 0.8, 55, 44, 0.8, 45, null, 0.8],
 ]);
 add('Manpower Monitoring', [
   ['Particular', 'January 2026', 'February 2026'],
@@ -64,6 +64,7 @@ assert.deepEqual(new Set(parsed.detectedMonths), new Set(['Jan 2026', 'Feb 2026'
 
 const ytd = parsed.records.filter((record) => record.recordKind === 'ytd');
 assert.equal(ytd.length, 8);
+assert.equal(ytd.find((record) => record.category === 'Fulfillment' && record.month === 2)?.actual, 36);
 assert.deepEqual(new Set(ytd.map((record) => mapWorksheetCampaign(`${record.category} ${record.metric}`, campaigns).campaign.campaignName)), new Set(['BPI PA OUTBOUND', 'BPI PA INBOUND', 'BPI PL', 'BPI FF']));
 
 const productivity = parsed.records.filter((record) => record.monitoringType === 'PL_PRODUCTIVITY');

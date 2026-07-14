@@ -176,6 +176,7 @@ export async function GET(req: NextRequest) {
           reportDate: true,
           target: true,
           actual: true,
+          achievement: true,
         },
         orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
       }).catch(() => []),
@@ -257,12 +258,23 @@ export async function GET(req: NextRequest) {
       importedRosterByCampaign.set(record.campaignId, list);
     }
 
+    const importedActual = (record: (typeof dashboardAgentRecords)[number]) => {
+      if (record.actual != null) return Number(record.actual);
+      if (record.target != null && record.achievement != null) return Math.round(Number(record.target) * Number(record.achievement));
+      return null;
+    };
+    const hasUsableImportedActual = (record: (typeof dashboardAgentRecords)[number]) => {
+      const actual = importedActual(record);
+      return actual != null && (actual !== 0 || Number(record.target || 0) > 0);
+    };
     const campaignsWithImportedAgentMonitoring = new Set(
-      dashboardAgentRecords.filter((record) => record.recordKind === "agent_monitoring" && record.actual != null).map((record) => record.campaignId)
+      dashboardAgentRecords.filter((record) => record.recordKind === "agent_monitoring" && importedActual(record) != null).map((record) => record.campaignId)
     );
+    const campaignsWithStandardProduction = new Set(details.map((detail) => detail.campaignId));
+    const campaignsWithRegisteredAgents = new Set(agents.map((agent) => agent.campaignId).filter((id): id is string => Boolean(id)));
     const campaignNameById = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
     for (const record of dashboardAgentRecords) {
-      if (record.recordKind !== "ytd" || campaignsWithImportedAgentMonitoring.has(record.campaignId)) continue;
+      if (record.recordKind !== "ytd" || campaignsWithImportedAgentMonitoring.has(record.campaignId) || campaignsWithRegisteredAgents.has(record.campaignId)) continue;
       const summaryName = `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
       const identity = `${record.campaignId}|${normalizeImportedAgentName(summaryName)}`;
       if (importedRosterSeen.has(identity)) continue;
@@ -316,8 +328,7 @@ export async function GET(req: NextRequest) {
     // month, and metric are never counted twice.
     const allPreferredDashboardRecords = new Map<string, (typeof dashboardAgentRecords)[number]>();
     for (const record of dashboardAgentRecords) {
-      if (record.recordKind === "ytd" && campaignsWithImportedAgentMonitoring.has(record.campaignId)) continue;
-      if (record.actual == null && record.target == null) continue;
+      if (importedActual(record) == null && record.target == null) continue;
       const entityName = record.entityName || `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
       const normalizedName = normalizeImportedAgentName(entityName);
       const key = `${record.campaignId}|${normalizedName}|${record.year}|${record.month || 0}|${record.metric}`;
@@ -338,15 +349,14 @@ export async function GET(req: NextRequest) {
     // (for example CIE through May while NTH/VC/Supple end in March). If the
     // selected range has no imported actuals for one campaign, show that
     // campaign's latest imported month instead of returning misleading zeros.
-    const campaignsWithStandardProduction = new Set(details.map((detail) => detail.campaignId));
     const campaignsWithImportedActualsInRange = new Set(
-      [...preferredDashboardRecords.values()].filter((record) => record.actual != null).map((record) => record.campaignId)
+      [...preferredDashboardRecords.values()].filter(hasUsableImportedActual).map((record) => record.campaignId)
     );
     const importedFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
     for (const campaign of campaigns) {
       if (campaignsWithStandardProduction.has(campaign.id) || campaignsWithImportedActualsInRange.has(campaign.id)) continue;
       const candidates = [...allPreferredDashboardRecords.values()].filter(
-        (record) => record.campaignId === campaign.id && record.actual != null && record.month != null
+        (record) => record.campaignId === campaign.id && hasUsableImportedActual(record) && record.month != null
       );
       if (candidates.length === 0) continue;
       const latest = candidates.reduce((current, record) => {
@@ -368,26 +378,50 @@ export async function GET(req: NextRequest) {
     const campaignsWithCashInstallment = new Set(
       dashboardAgentRecords.filter((record) => /cash installment/i.test(record.metric)).map((record) => record.campaignId)
     );
+    const campaignsWithBpiCurrencyTargets = new Set(
+      dashboardAgentRecords
+        .filter((record) => record.recordKind === "ytd" && Number(record.target || 0) >= 1_000_000 && /^BPI\b/i.test(campaignNameById.get(record.campaignId) || ""))
+        .map((record) => record.campaignId)
+    );
     const campaignKpiById = new Map(campaigns.map((campaign) => [
       campaign.id,
-      campaignsWithCashInstallment.has(campaign.id) ? "volume" : campaign.kpiMetric || "booked",
+      campaignsWithCashInstallment.has(campaign.id) || campaignsWithBpiCurrencyTargets.has(campaign.id) ? "volume" : campaign.kpiMetric || "booked",
     ]));
     const importedEntryCountByCampaign = new Map<string, number>();
     const importedGoalByCampaign = new Map<string, number>();
+    const importedActualByCampaign = new Map<string, number>();
     const importedTargetByAgent = new Map<string, number>();
+
+    // YTD rows are campaign summaries from the workbook. Sum one target and
+    // one derived/explicit actual per selected month; never multiply them by
+    // the number of agents or mix their currency values with count KPIs.
     for (const record of preferredDashboardRecords.values()) {
+      if (record.recordKind !== "ytd") continue;
+      const target = Number(record.target || 0);
+      const actual = importedActual(record);
+      if (target === 0 && actual === 0) continue;
+      if (target) importedGoalByCampaign.set(record.campaignId, (importedGoalByCampaign.get(record.campaignId) ?? 0) + target);
+      if (actual != null) importedActualByCampaign.set(record.campaignId, (importedActualByCampaign.get(record.campaignId) ?? 0) + actual);
+      importedEntryCountByCampaign.set(record.campaignId, (importedEntryCountByCampaign.get(record.campaignId) ?? 0) + 1);
+    }
+
+    for (const record of preferredDashboardRecords.values()) {
+      if (record.recordKind === "ytd") {
+        // Keep a synthetic total only when no agent-level or regular production
+        // exists. Otherwise the YTD value is exposed as the campaign summary
+        // while the real agents remain the leaderboard source.
+        if (campaignsWithImportedAgentMonitoring.has(record.campaignId) || campaignsWithRegisteredAgents.has(record.campaignId)) continue;
+      }
       const entityName = record.entityName || `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
       const normalizedName = normalizeImportedAgentName(entityName);
       const agentId = actualAgentIdByCampaignAndName.get(`${record.campaignId}|${normalizedName}`) || importedAgentId(record.campaignId, entityName);
       const target = Number(record.target || 0);
-      if (target) {
-        importedGoalByCampaign.set(record.campaignId, (importedGoalByCampaign.get(record.campaignId) ?? 0) + target);
-        importedTargetByAgent.set(agentId, (importedTargetByAgent.get(agentId) ?? 0) + target);
-      }
-      if (record.actual == null) continue;
+      if (target) importedTargetByAgent.set(agentId, (importedTargetByAgent.get(agentId) ?? 0) + target);
+      const effectiveActual = importedActual(record);
+      if (effectiveActual == null) continue;
       const byAgent = prodByCampaign.get(record.campaignId) ?? {};
       const cur = byAgent[agentId] ?? emptyProduction();
-      const actual = Number(record.actual || 0);
+      const actual = effectiveActual;
       const kpiMetric = campaignKpiById.get(record.campaignId);
       const importedMetric = record.metric.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
       if (importedMetric === "transmitted count") {
@@ -410,7 +444,9 @@ export async function GET(req: NextRequest) {
       }
       byAgent[agentId] = cur;
       prodByCampaign.set(record.campaignId, byAgent);
-      importedEntryCountByCampaign.set(record.campaignId, (importedEntryCountByCampaign.get(record.campaignId) ?? 0) + 1);
+      if (record.recordKind !== "ytd") {
+        importedEntryCountByCampaign.set(record.campaignId, (importedEntryCountByCampaign.get(record.campaignId) ?? 0) + 1);
+      }
     }
 
     const attByCampaign = new Map<
@@ -436,6 +472,7 @@ export async function GET(req: NextRequest) {
         campaignName: c.campaignName,
         kpiMetric: campaignKpiById.get(c.id) || savedGoal?.kpiMetric || c.kpiMetric || "booked",
         goal: importedGoalByCampaign.get(c.id) || Number(savedGoal?.monthlyGoal ?? c.monthlyGoal ?? 0),
+        actual: importedActualByCampaign.get(c.id) ?? null,
         supplementaryGoal: Number(savedGoal?.supplementaryGoal ?? c.supplementaryGoal ?? 0),
         agents: [
           ...(agentsByCampaign.get(c.id) ?? []).map((a) => ({

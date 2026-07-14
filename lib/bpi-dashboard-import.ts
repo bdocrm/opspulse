@@ -123,6 +123,11 @@ function achievement(target?: number, actual?: number, supplied?: number) {
   return target != null && target !== 0 && actual != null ? actual / target : undefined;
 }
 
+function actualFromAchievement(target?: number, actual?: number, suppliedAchievement?: number) {
+  if (actual != null) return actual;
+  return target != null && suppliedAchievement != null ? Math.round(target * suppliedAchievement) : undefined;
+}
+
 type MonthlyColumn = { col: number; month: number; year: number; field: string };
 
 function monitoringField(value: unknown) {
@@ -265,7 +270,7 @@ function parseYtd(rows: unknown[][], sheetName: string, detectedType: BpiWorkshe
           const target = values.get('target'); const actual = values.get('actual'); const supplied = values.get('achievement');
           if (target == null && actual == null && supplied == null) continue;
           const recordYear = period.year || year;
-          records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'ytd', category: group.label, product: group.label, metric: 'YTD Performance', month: period.month, year: recordYear, reportDate: new Date(recordYear, period.month - 1, 1), target, actual, achievement: achievement(target, actual, supplied) });
+          records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'ytd', category: group.label, product: group.label, metric: 'YTD Performance', month: period.month, year: recordYear, reportDate: new Date(recordYear, period.month - 1, 1), target, actual: actualFromAchievement(target, actual, supplied), achievement: achievement(target, actual, supplied) });
         }
       }
     }
@@ -291,7 +296,7 @@ function parseYtd(rows: unknown[][], sheetName: string, detectedType: BpiWorkshe
       const target = read(columns.target); const actual = read(columns.actual); const supplied = read(columns.achievement, true);
       if (target == null && actual == null && supplied == null) continue;
       const recordYear = period.year || year;
-      records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'ytd', category: activeCampaign, product: activeCampaign, metric: 'YTD Performance', month: period.month, year: recordYear, reportDate: new Date(recordYear, period.month - 1, 1), target, actual, achievement: achievement(target, actual, supplied) });
+      records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'ytd', category: activeCampaign, product: activeCampaign, metric: 'YTD Performance', month: period.month, year: recordYear, reportDate: new Date(recordYear, period.month - 1, 1), target, actual: actualFromAchievement(target, actual, supplied), achievement: achievement(target, actual, supplied) });
     }
   }
   return { sheetName, detectedType, records, months: [...new Set(records.map((record) => monthLabel(record.year, record.month!)))], warnings: records.length ? warnings : [{ worksheet: sheetName, message: 'No campaign sections with populated monthly YTD data were found.' }], status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped' };

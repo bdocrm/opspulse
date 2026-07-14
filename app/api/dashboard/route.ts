@@ -95,16 +95,23 @@ export async function GET(req: NextRequest) {
         campaignId: { in: cIds },
         recordKind: { in: ["agent_monitoring", "ytd"] },
         reportDate: { gte: startDate, lte: endDate },
-        actual: { not: null },
+        OR: [{ actual: { not: null } }, { achievement: { not: null } }],
       },
-      select: { campaignId: true, recordKind: true, entityName: true, monitoringType: true, metric: true, year: true, month: true, reportDate: true, target: true, actual: true },
+      select: { campaignId: true, recordKind: true, entityName: true, monitoringType: true, metric: true, year: true, month: true, reportDate: true, target: true, actual: true, achievement: true },
       orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
     }).catch(() => []);
     const campaignById = new Map(campaigns.map((campaign) => [campaign.id, campaign]));
+    const importedActual = (row: (typeof dashboardRows)[number]) => row.actual != null
+      ? Number(row.actual)
+      : row.target != null && row.achievement != null
+        ? Math.round(Number(row.target) * Number(row.achievement))
+        : null;
+    const bpiCurrencyCampaigns = new Set(
+      dashboardRows.filter((row) => row.recordKind === "ytd" && Number(row.target || 0) >= 1_000_000 && /^BPI\b/i.test(campaignById.get(row.campaignId)?.campaignName || "")).map((row) => row.campaignId)
+    );
     const campaignsWithAgentRows = new Set(dashboardRows.filter((row) => row.recordKind === "agent_monitoring").map((row) => row.campaignId));
     const preferredDashboardRows = new Map<string, (typeof dashboardRows)[number]>();
     for (const row of dashboardRows) {
-      if (row.recordKind === "ytd" && campaignsWithAgentRows.has(row.campaignId)) continue;
       const normalizedName = (row.entityName || "Campaign Total").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
       const rowKey = `${row.campaignId}|${normalizedName}|${row.year}|${row.month || 0}|${row.metric}`;
       const existing = preferredDashboardRows.get(rowKey);
@@ -116,20 +123,25 @@ export async function GET(req: NextRequest) {
       const campaign = campaignById.get(row.campaignId);
       if (!campaign) return [];
       const metric = row.metric.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-      const kpi = /cash installment/.test(metric) ? "volume" : campaign.kpiMetric || "booked";
+      const kpi = /cash installment/.test(metric) || bpiCurrencyCampaigns.has(row.campaignId) ? "volume" : campaign.kpiMetric || "booked";
+      const actual = importedActual(row);
+      if (actual == null || (row.recordKind === "ytd" && actual === 0 && Number(row.target || 0) === 0)) return [];
       const matchesKpi =
         (kpi === "transmittals" && (metric === "transmitted count" || !/\b(?:volume|approvals|booked)\b/.test(metric))) ||
         (kpi === "approvals" && (metric === "approvals count" || !/\b(?:volume|transmitted|booked)\b/.test(metric))) ||
         (kpi === "booked" && (metric === "booked count" || !/\b(?:volume|transmitted|approvals)\b/.test(metric))) ||
         (kpi === "activations" && !/\b(?:volume|transmitted|approvals|booked)\b/.test(metric)) ||
-        (kpi === "volume" && (metric.includes("volume") || metric.includes("cash installment")));
-      return matchesKpi ? [{ ...row, value: Number(row.actual || 0), agentName: row.entityName || `${campaign.campaignName} Total` }] : [];
+        (kpi === "volume" && (row.recordKind === "ytd" || metric.includes("booked volume") || metric.includes("cash installment") || (!campaignsWithAgentRows.has(row.campaignId) && metric.includes("volume"))));
+      return matchesKpi ? [{ ...row, value: actual, agentName: row.entityName || `${campaign.campaignName} Total` }] : [];
     });
+    const campaignsWithYtdSummary = new Set(importedRows.filter((row) => row.recordKind === "ytd").map((row) => row.campaignId));
     const importedByCampaign = new Map<string, typeof importedRows>();
     const importedGoalByCampaign = new Map<string, number>();
     for (const row of importedRows) {
       importedByCampaign.set(row.campaignId, [...(importedByCampaign.get(row.campaignId) || []), row]);
-      if (row.target) importedGoalByCampaign.set(row.campaignId, (importedGoalByCampaign.get(row.campaignId) || 0) + Number(row.target));
+      if (row.target && (row.recordKind === "ytd" || !campaignsWithYtdSummary.has(row.campaignId))) {
+        importedGoalByCampaign.set(row.campaignId, (importedGoalByCampaign.get(row.campaignId) || 0) + Number(row.target));
+      }
     }
     const dashboardPeriods = await prisma.$queryRaw<Array<{ year: number; month: number }>>`
       SELECT DISTINCT "year", "month" FROM "DashboardImportRecord" WHERE "month" IS NOT NULL ORDER BY "year" DESC, "month" DESC
@@ -152,7 +164,11 @@ export async function GET(req: NextRequest) {
       const dLapsed = Number(extrasById[c.id]?.daysLapsed  ?? 0);
       // MTD = sum of volume (peso amounts) for standard campaigns, or NTB for ACQ
       // campaigns — matching the OM / Collector dashboards.
-      const mtd     = details.reduce((sum, d) => sum + metricValue(c.campaignName, d), 0) + imported.reduce((sum, row) => sum + row.value, 0);
+      const ytdSummary = imported.filter((row) => row.recordKind === "ytd");
+      const importedDetails = imported.filter((row) => row.recordKind !== "ytd");
+      const mtd = ytdSummary.length
+        ? ytdSummary.reduce((sum, row) => sum + row.value, 0)
+        : details.reduce((sum, d) => sum + metricValue(c.campaignName, d), 0) + importedDetails.reduce((sum, row) => sum + row.value, 0);
       const goal    = importedGoalByCampaign.get(c.id) || c.monthlyGoal;
       const rr      = calcRunRate(mtd, dLapsed, wDays);
       const ach     = calcAchievement(mtd, goal);
@@ -162,7 +178,7 @@ export async function GET(req: NextRequest) {
         id: c.id,
         campaignName: c.campaignName,
         // Show the metric that actually drives MTD (NTB for acquisition campaigns).
-        kpiMetric: isAcqCampaign(c.campaignName) ? "ntb" : c.kpiMetric,
+        kpiMetric: isAcqCampaign(c.campaignName) ? "ntb" : bpiCurrencyCampaigns.has(c.id) ? "volume" : c.kpiMetric,
         goal,
         mtd:          Math.round(mtd),
         achievement:  ach,
@@ -197,7 +213,7 @@ export async function GET(req: NextRequest) {
       const key = new Date(d.productionEntry.date).toISOString().slice(0, 10);
       dailyMap.set(key, (dailyMap.get(key) ?? 0) + metricValue(campaignNameById.get(d.campaignId), d));
     }
-    for (const row of importedRows) {
+    for (const row of importedRows.filter((record) => !campaignsWithYtdSummary.has(record.campaignId) || record.recordKind === "ytd")) {
       const date = row.month ? `${row.year}-${String(row.month).padStart(2, "0")}-01` : new Date(row.reportDate).toISOString().slice(0, 10);
       dailyMap.set(date, (dailyMap.get(date) ?? 0) + row.value);
     }
@@ -218,7 +234,7 @@ export async function GET(req: NextRequest) {
       if (!agentMap.has(aid)) agentMap.set(aid, { name: d.agent.name, value: 0 });
       agentMap.get(aid)!.value += val;
     }
-    for (const row of importedRows) {
+    for (const row of importedRows.filter((record) => record.recordKind !== "ytd")) {
       const key = `imported:${row.campaignId}:${row.agentName.toUpperCase()}`;
       if (!agentMap.has(key)) agentMap.set(key, { name: row.agentName, value: 0 });
       agentMap.get(key)!.value += row.value;

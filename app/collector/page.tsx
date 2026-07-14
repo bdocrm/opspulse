@@ -68,6 +68,7 @@ interface CampaignBlock {
   campaignName: string;
   kpiMetric: string;
   goal: number;
+  actual?: number | null;
   supplementaryGoal?: number;
   agents: Agent[];
   production: Record<string, Production>;
@@ -511,7 +512,7 @@ export default function CollectorDashboard() {
         if (record?.status === 'ABSENT') absentCount++;
         else presentCount++;
       }
-      kpiValue += campaignKpi;
+      kpiValue += c.actual ?? campaignKpi;
     }
 
     // When every assigned campaign is ACQ, the global roll-up switches to NTB.
@@ -1189,10 +1190,11 @@ export default function CollectorDashboard() {
                 const record = campaign.attendance[a.id];
                 return !record || record.status === 'PRESENT';
               }).length;
-              const totalKpiValue = campaignAgents.reduce((sum, agent) => {
+              const agentKpiValue = campaignAgents.reduce((sum, agent) => {
                 const prod = campaign.production[agent.id] || ZERO_PROD;
                 return sum + kpiValueFor(campaignKpi, prod);
               }, 0);
+              const totalKpiValue = campaign.actual ?? agentKpiValue;
               const metricLabel = kpiLabel(campaignKpi);
               const goalProgress = campaignGoal > 0 ? ((totalKpiValue / campaignGoal) * 100).toFixed(1) : '0';
               const acq = isAcqCampaign(campaign.campaignName);
@@ -1369,6 +1371,7 @@ export default function CollectorDashboard() {
                   campaignName={block.campaignName}
                   kpiMetric={block.kpiMetric}
                   goal={block.goal}
+                  actual={block.actual}
                   supplementaryGoal={block.supplementaryGoal || 0}
                   agents={block.agents}
                   production={block.production}
