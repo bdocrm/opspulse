@@ -32,6 +32,7 @@ interface Agent {
   disbursedVolTarget?: number | null;
   grossTurnInsTxnTarget?: number | null;
   grossTurnInsVolTarget?: number | null;
+  importedOnly?: boolean;
 }
 
 interface Production {
@@ -681,7 +682,11 @@ export default function CollectorDashboard() {
     const selectedCampaign = allCampaigns.find(c => c.id === campaignId);
     if (!selectedCampaign) return;
 
-    const agentCount = selectedCampaign.agents.length;
+    const agentCount = selectedCampaign.agents.filter((agent) => !agent.importedOnly).length;
+    if (agentCount === 0) {
+      setMessage('Imported dashboard agents are managed through Bulk Import history.');
+      return;
+    }
     const confirmMessage = `Are you sure you want to delete all ${agentCount} agents in "${selectedCampaign.campaignName}"? This action cannot be undone.`;
     if (!confirm(confirmMessage)) return;
 
@@ -1327,7 +1332,7 @@ export default function CollectorDashboard() {
                   production={block.production}
                   attendance={block.attendance}
                   entriesCount={block.entriesCount}
-                  onDeleteAllAgents={() => handleDeleteAllAgents(block.id)}
+                  onDeleteAllAgents={block.agents.some((agent) => !agent.importedOnly) ? () => handleDeleteAllAgents(block.id) : undefined}
                   isDeletingAgents={deletingAllAgents}
                 >
                   {/* Collector Table */}
@@ -1469,18 +1474,22 @@ export default function CollectorDashboard() {
                                 ) : (
                                   <>
                                     <TableCell className="text-center">
-                                      <button
-                                        onClick={() => handleToggleAttendance(agent.id, record?.status || 'PRESENT')}
-                                        className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors cursor-pointer ${
-                                          isPresent
-                                            ? 'text-green-500 bg-green-500/10 hover:bg-green-500/20'
-                                            : 'text-red-500 bg-red-500/10 hover:bg-red-500/20'
-                                        }`}
-                                        title="Click to toggle"
-                                      >
-                                        {isPresent ? <UserCheck className="w-3 h-3" /> : <UserX className="w-3 h-3" />}
-                                        <span>{isPresent ? 'P' : 'A'}</span>
-                                      </button>
+                                      {agent.importedOnly ? (
+                                        <span className="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-600">Imported</span>
+                                      ) : (
+                                        <button
+                                          onClick={() => handleToggleAttendance(agent.id, record?.status || 'PRESENT')}
+                                          className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors cursor-pointer ${
+                                            isPresent
+                                              ? 'text-green-500 bg-green-500/10 hover:bg-green-500/20'
+                                              : 'text-red-500 bg-red-500/10 hover:bg-red-500/20'
+                                          }`}
+                                          title="Click to toggle"
+                                        >
+                                          {isPresent ? <UserCheck className="w-3 h-3" /> : <UserX className="w-3 h-3" />}
+                                          <span>{isPresent ? 'P' : 'A'}</span>
+                                        </button>
+                                      )}
                                     </TableCell>
                                     <TableCell className="text-center">{prod.transmittals}</TableCell>
                                     <TableCell className="text-center">{prod.approvals}</TableCell>
@@ -1553,7 +1562,9 @@ export default function CollectorDashboard() {
                                   )}
                                 </TableCell>
                                 <TableCell className="text-right">
-                                  <div className="flex gap-1 justify-end">
+                                  {agent.importedOnly ? (
+                                    <span className="text-xs text-muted-foreground">Bulk Import</span>
+                                  ) : <div className="flex gap-1 justify-end">
                                     <Button
                                       variant="ghost" size="icon" className="h-7 w-7"
                                       onClick={() => setTargetModal({ agentId: agent.id, agentName: agent.name, currentTarget: agent.monthlyTarget, currentTargetSupplementary: agent.monthlyTargetSupplementary, isAcq: acq, isMbPl: mbpl, currentMbLevel: agent.mbLevel, currentDisbursedTxn: agent.disbursedTxnTarget, currentDisbursedVol: agent.disbursedVolTarget, currentGtiTxn: agent.grossTurnInsTxnTarget, currentGtiVol: agent.grossTurnInsVolTarget, campaignId: block.id, agentCount: block.agents.length })}
@@ -1569,7 +1580,7 @@ export default function CollectorDashboard() {
                                     >
                                       <Trash2 className="h-3.5 w-3.5" />
                                     </Button>
-                                  </div>
+                                  </div>}
                                 </TableCell>
                               </TableRow>
                             );

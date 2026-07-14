@@ -23,6 +23,19 @@ function monthYearFromYmd(value: string) {
   return { month: now.getMonth() + 1, year: now.getFullYear() };
 }
 
+function normalizeImportedAgentName(value: string) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, " ")
+    .trim();
+}
+
+function importedAgentId(campaignId: string, name: string) {
+  return `imported:${campaignId}:${Buffer.from(normalizeImportedAgentName(name)).toString("base64url")}`;
+}
+
 /**
  * Aggregate Collector Dashboard data, grouped by the logged-in collector's
  * assigned campaigns.
@@ -67,7 +80,7 @@ export async function GET(req: NextRequest) {
     await ensureCampaignGoalTable();
 
     // Pull everything in a few batched queries scoped to the assigned set.
-    const [campaigns, agents, details, entries, monthlyGoalRows] = await Promise.all([
+    const [campaigns, agents, details, entries, monthlyGoalRows, dashboardAgentRecords] = await Promise.all([
       prisma.campaign.findMany({
         where: { id: { in: assignedIds } },
         select: {
@@ -144,6 +157,25 @@ export async function GET(req: NextRequest) {
           AND "year" = ${goalYear}
           AND "deletedAt" IS NULL
       `,
+      prisma.dashboardImportRecord.findMany({
+        where: {
+          campaignId: { in: assignedIds },
+          recordKind: "agent_monitoring",
+          entityName: { not: "" },
+        },
+        select: {
+          campaignId: true,
+          entityName: true,
+          level: true,
+          monitoringType: true,
+          metric: true,
+          year: true,
+          month: true,
+          reportDate: true,
+          actual: true,
+        },
+        orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
+      }).catch(() => []),
     ]);
     const monthlyGoalsByCampaignId = new Map(
       monthlyGoalRows.map((row) => [row.campaignId, row])
@@ -177,6 +209,50 @@ export async function GET(req: NextRequest) {
       agentsByCampaign.set(a.campaignId!, list);
     }
 
+    const actualAgentIdByCampaignAndName = new Map(
+      agents.map((agent) => [`${agent.campaignId}|${normalizeImportedAgentName(agent.name)}`, agent.id])
+    );
+    const importedRosterByCampaign = new Map<string, Array<{
+      id: string;
+      name: string;
+      email: string;
+      seatNumber: null;
+      monthlyTarget: null;
+      monthlyTargetSupplementary: null;
+      mbLevel: string | null;
+      disbursedTxnTarget: null;
+      disbursedVolTarget: null;
+      grossTurnInsTxnTarget: null;
+      grossTurnInsVolTarget: null;
+      campaignId: string;
+      importedOnly: true;
+    }>>();
+    const importedRosterSeen = new Set<string>();
+    for (const record of dashboardAgentRecords) {
+      const normalizedName = normalizeImportedAgentName(record.entityName);
+      if (!normalizedName) continue;
+      const identity = `${record.campaignId}|${normalizedName}`;
+      if (actualAgentIdByCampaignAndName.has(identity) || importedRosterSeen.has(identity)) continue;
+      importedRosterSeen.add(identity);
+      const list = importedRosterByCampaign.get(record.campaignId) ?? [];
+      list.push({
+        id: importedAgentId(record.campaignId, record.entityName),
+        name: record.entityName,
+        email: "",
+        seatNumber: null,
+        monthlyTarget: null,
+        monthlyTargetSupplementary: null,
+        mbLevel: record.level || null,
+        disbursedTxnTarget: null,
+        disbursedVolTarget: null,
+        grossTurnInsTxnTarget: null,
+        grossTurnInsVolTarget: null,
+        campaignId: record.campaignId,
+        importedOnly: true,
+      });
+      importedRosterByCampaign.set(record.campaignId, list);
+    }
+
     // Per-category MB PL fields aggregated alongside the standard metrics.
     const CATEGORY_KEYS = [
       'bauPayrollTxn', 'bauPayrollVol', 'bauDepositorTxn', 'bauDepositorVol',
@@ -185,17 +261,18 @@ export async function GET(req: NextRequest) {
       'c2gTxn', 'c2gVol', 'btTxn', 'btVol', 'balconTxn', 'balconVol', 'grandTotalTxn', 'grandTotalVol',
     ] as const;
 
+    const emptyProduction = () => ({
+      transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0,
+      bauPayrollTxn: 0, bauPayrollVol: 0, bauDepositorTxn: 0, bauDepositorVol: 0,
+      topupPayrollTxn: 0, topupPayrollVol: 0, topupDepositorTxn: 0, topupDepositorVol: 0,
+      openMarketTxn: 0, openMarketVol: 0,
+      c2gTxn: 0, c2gVol: 0, btTxn: 0, btVol: 0, balconTxn: 0, balconVol: 0, grandTotalTxn: 0, grandTotalVol: 0,
+    });
+
     const prodByCampaign = new Map<string, Record<string, Record<string, number>>>();
     for (const d of details) {
       const byAgent = prodByCampaign.get(d.campaignId) ?? {};
-      const cur =
-        byAgent[d.agentId] ?? {
-          transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0,
-          bauPayrollTxn: 0, bauPayrollVol: 0, bauDepositorTxn: 0, bauDepositorVol: 0,
-          topupPayrollTxn: 0, topupPayrollVol: 0, topupDepositorTxn: 0, topupDepositorVol: 0,
-          openMarketTxn: 0, openMarketVol: 0,
-          c2gTxn: 0, c2gVol: 0, btTxn: 0, btVol: 0, balconTxn: 0, balconVol: 0, grandTotalTxn: 0, grandTotalVol: 0,
-        };
+      const cur = byAgent[d.agentId] ?? emptyProduction();
       cur.transmittals += Number(d.transmittals);
       cur.activations += Number(d.activations);
       cur.approvals += Number(d.approvals);
@@ -206,6 +283,38 @@ export async function GET(req: NextRequest) {
       for (const k of CATEGORY_KEYS) cur[k] += Number((d as any)[k] ?? 0);
       byAgent[d.agentId] = cur;
       prodByCampaign.set(d.campaignId, byAgent);
+    }
+
+
+    // BDO dashboard imports are stored separately from ProductionEntry/Detail.
+    // Prefer the regular agent worksheet over its HOH mirror so the same agent,
+    // month, and metric are never counted twice.
+    const preferredDashboardRecords = new Map<string, (typeof dashboardAgentRecords)[number]>();
+    for (const record of dashboardAgentRecords) {
+      if (record.reportDate < startDate || record.reportDate > endDate || record.actual == null) continue;
+      const normalizedName = normalizeImportedAgentName(record.entityName);
+      const key = `${record.campaignId}|${normalizedName}|${record.year}|${record.month || 0}|${record.metric}`;
+      const existing = preferredDashboardRecords.get(key);
+      const priority = record.monitoringType?.endsWith("_AGENT") ? 2 : 1;
+      const existingPriority = existing?.monitoringType?.endsWith("_AGENT") ? 2 : existing ? 1 : 0;
+      if (priority > existingPriority) preferredDashboardRecords.set(key, record);
+    }
+    const campaignKpiById = new Map(campaigns.map((campaign) => [campaign.id, campaign.kpiMetric || "booked"]));
+    const importedEntryCountByCampaign = new Map<string, number>();
+    for (const record of preferredDashboardRecords.values()) {
+      const normalizedName = normalizeImportedAgentName(record.entityName);
+      const agentId = actualAgentIdByCampaignAndName.get(`${record.campaignId}|${normalizedName}`) || importedAgentId(record.campaignId, record.entityName);
+      const byAgent = prodByCampaign.get(record.campaignId) ?? {};
+      const cur = byAgent[agentId] ?? emptyProduction();
+      const actual = Number(record.actual || 0);
+      cur.volume += actual;
+      const kpiMetric = campaignKpiById.get(record.campaignId);
+      if (kpiMetric === "transmittals" || kpiMetric === "activations" || kpiMetric === "approvals" || kpiMetric === "booked") {
+        cur[kpiMetric] += actual;
+      }
+      byAgent[agentId] = cur;
+      prodByCampaign.set(record.campaignId, byAgent);
+      importedEntryCountByCampaign.set(record.campaignId, (importedEntryCountByCampaign.get(record.campaignId) ?? 0) + 1);
     }
 
     const attByCampaign = new Map<
@@ -232,7 +341,8 @@ export async function GET(req: NextRequest) {
         kpiMetric: savedGoal?.kpiMetric || c.kpiMetric || "booked",
         goal: Number(savedGoal?.monthlyGoal ?? c.monthlyGoal ?? 0),
         supplementaryGoal: Number(savedGoal?.supplementaryGoal ?? c.supplementaryGoal ?? 0),
-        agents: (agentsByCampaign.get(c.id) ?? []).map((a) => ({
+        agents: [
+          ...(agentsByCampaign.get(c.id) ?? []).map((a) => ({
           id: a.id,
           name: a.name,
           email: a.email,
@@ -244,10 +354,13 @@ export async function GET(req: NextRequest) {
           disbursedVolTarget: a.disbursedVolTarget,
           grossTurnInsTxnTarget: a.grossTurnInsTxnTarget,
           grossTurnInsVolTarget: a.grossTurnInsVolTarget,
-        })),
+          importedOnly: false,
+          })),
+          ...(importedRosterByCampaign.get(c.id) ?? []),
+        ],
         production: prodByCampaign.get(c.id) ?? {},
         attendance: attByCampaign.get(c.id) ?? {},
-        entriesCount: entryCountByCampaign.get(c.id) ?? 0,
+        entriesCount: (entryCountByCampaign.get(c.id) ?? 0) + (importedEntryCountByCampaign.get(c.id) ?? 0),
       };
     });
 
