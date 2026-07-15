@@ -77,6 +77,7 @@ const KPI_METRICS = [
   { value: 'activations', label: 'Activations' },
   { value: 'volume', label: 'Volume' },
   { value: 'transaction', label: 'Transaction' },
+  { value: 'achievements', label: 'Achievements' },
   { value: 'qualityRate', label: 'Quality Rate' },
   { value: 'conversionRate', label: 'Conversion Rate' },
 ];
