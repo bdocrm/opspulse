@@ -37,6 +37,7 @@ export interface CampaignSummaryProps {
   attendance: Record<string, { status: string; remarks: string | null }>;
   entriesCount: number;
   dataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
+  agentDataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
   onCollectorSearch?: (query: string) => void;
   onDeleteAllAgents?: () => void;
   isDeletingAgents?: boolean;
@@ -88,6 +89,7 @@ export function CampaignSummaryCard({
   attendance,
   entriesCount,
   dataPeriod,
+  agentDataPeriod,
   children,
   onCollectorSearch,
   onDeleteAllAgents,
@@ -124,6 +126,9 @@ export function CampaignSummaryCard({
   const hasRecordsInRange = entriesCount > 0;
   const fallbackPeriodLabel = dataPeriod?.source === 'latest_import' && dataPeriod.month && dataPeriod.year
     ? new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(dataPeriod.year, dataPeriod.month - 1, 1)))
+    : null;
+  const agentFallbackPeriodLabel = agentDataPeriod?.source === 'latest_import' && agentDataPeriod.month && agentDataPeriod.year
+    ? new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(agentDataPeriod.year, agentDataPeriod.month - 1, 1)))
     : null;
 
   // Performance distribution follows the campaign's configured KPI.
@@ -209,7 +214,10 @@ export function CampaignSummaryCard({
         <CardContent className="pt-0 space-y-6">
           {fallbackPeriodLabel && (
             <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-              The selected dates have no records for this campaign. Showing its latest imported workbook data from {fallbackPeriodLabel}.
+              The selected dates have no records for this campaign. Showing its latest imported campaign summary from {fallbackPeriodLabel}
+              {agentFallbackPeriodLabel && agentFallbackPeriodLabel !== fallbackPeriodLabel
+                ? ` and collector monitoring data from ${agentFallbackPeriodLabel}`
+                : ''}.
             </div>
           )}
           {!hasRecordsInRange && (

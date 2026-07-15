@@ -392,6 +392,53 @@ export async function GET(req: NextRequest) {
         }
       }
     }
+
+    // Campaign summary (YTD) and collector monitoring worksheets do not
+    // always end in the same month. Select agent-level imports independently
+    // so a newer YTD row cannot hide the latest uploaded collector results.
+    const preferredAgentDetailRecords = new Map(preferredDashboardRecords);
+    const importedAgentFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
+    for (const campaign of campaigns) {
+      if (!/^BDO\b/i.test(campaign.campaignName)) continue;
+
+      const agentRecordsInRange = [...allPreferredDashboardRecords.entries()].filter(([, record]) =>
+        record.campaignId === campaign.id &&
+        record.recordKind === "agent_monitoring" &&
+        record.reportDate >= startDate &&
+        record.reportDate <= endDate
+      );
+      let selectedAgentRecords = agentRecordsInRange;
+
+      if (selectedAgentRecords.length === 0) {
+        const candidates = [...allPreferredDashboardRecords.entries()].filter(([, record]) =>
+          record.campaignId === campaign.id &&
+          record.recordKind === "agent_monitoring" &&
+          record.month != null &&
+          (hasUsableImportedActual(record) || record.target != null)
+        );
+        if (candidates.length > 0) {
+          const latestRecord = candidates.reduce((current, candidate) => {
+            const currentPeriod = current[1].year * 12 + (current[1].month || 0);
+            const candidatePeriod = candidate[1].year * 12 + (candidate[1].month || 0);
+            return candidatePeriod > currentPeriod ? candidate : current;
+          })[1];
+          const period = { year: latestRecord.year, month: latestRecord.month as number };
+          importedAgentFallbackPeriodByCampaign.set(campaign.id, period);
+          selectedAgentRecords = candidates.filter(([, record]) =>
+            record.year === period.year && record.month === period.month
+          );
+        }
+      }
+
+      for (const [key, record] of preferredAgentDetailRecords) {
+        if (record.campaignId === campaign.id && record.recordKind === "agent_monitoring") {
+          preferredAgentDetailRecords.delete(key);
+        }
+      }
+      for (const [key, record] of selectedAgentRecords) {
+        preferredAgentDetailRecords.set(key, record);
+      }
+    }
     const campaignsWithCashInstallment = new Set(
       usableDashboardAgentRecords.filter((record) => /cash installment/i.test(record.metric)).map((record) => record.campaignId)
     );
@@ -426,7 +473,7 @@ export async function GET(req: NextRequest) {
       importedEntryCountByCampaign.set(record.campaignId, (importedEntryCountByCampaign.get(record.campaignId) ?? 0) + 1);
     }
 
-    for (const record of preferredDashboardRecords.values()) {
+    for (const record of preferredAgentDetailRecords.values()) {
       if (record.recordKind === "ytd") {
         // Keep a synthetic total only when no agent-level or regular production
         // exists. Otherwise the YTD value is exposed as the campaign summary
@@ -522,36 +569,39 @@ export async function GET(req: NextRequest) {
           .map((record) => [`${record.year}-${record.month}`, { year: record.year, month: record.month as number }])
       ).values()];
       const goalPeriods = importedPeriods.length > 0 ? importedPeriods : [{ year: goalYear, month: goalMonth }];
+      const importedAgentPeriods = [...new Map(
+        [...preferredAgentDetailRecords.values()]
+          .filter((record) => record.campaignId === c.id && record.recordKind === "agent_monitoring" && record.month != null)
+          .map((record) => [`${record.year}-${record.month}`, { year: record.year, month: record.month as number }])
+      ).values()];
+      const agentGoalPeriods = importedAgentPeriods.length > 0 ? importedAgentPeriods : goalPeriods;
       const ceoGoal = isBdoCampaign
         ? goalPeriods.reduce((sum, period) => {
             const configured = monthlyGoalsByCampaignPeriod.get(`${c.id}|${period.year}|${period.month}`);
             return sum + Number(configured?.monthlyGoal ?? c.monthlyGoal ?? 0);
           }, 0)
         : Number(savedGoal?.monthlyGoal ?? c.monthlyGoal ?? 0);
+      const agentCeoGoal = isBdoCampaign
+        ? agentGoalPeriods.reduce((sum, period) => {
+            const configured = monthlyGoalsByCampaignPeriod.get(`${c.id}|${period.year}|${period.month}`);
+            return sum + Number(configured?.monthlyGoal ?? c.monthlyGoal ?? 0);
+          }, 0)
+        : ceoGoal;
       const latestGoalPeriod = [...goalPeriods].sort((a, b) => b.year - a.year || b.month - a.month)[0];
       const effectiveBdoGoalConfig = isBdoCampaign
         ? monthlyGoalsByCampaignPeriod.get(`${c.id}|${latestGoalPeriod.year}|${latestGoalPeriod.month}`)
         : null;
       const importedBdoPerformance = importedBdoPerformanceByCampaign.get(c.id) ?? {};
-      const explicitAgentGoalTotal = campaignAgents.reduce(
-        (sum, agent) => sum + Math.max(0, Number(agent.monthlyTarget || 0)),
-        0
-      );
-      const agentsWithoutExplicitGoals = campaignAgents.filter((agent) => Number(agent.monthlyTarget || 0) <= 0);
-      const unallocatedCeoGoal = Math.max(0, ceoGoal - explicitAgentGoalTotal);
-      const unallocatedImportedTargetTotal = agentsWithoutExplicitGoals.reduce(
+      const importedTargetTotal = campaignAgents.reduce(
         (sum, agent) => sum + Number(importedBdoPerformance[agent.id]?.importedTarget || 0),
         0
       );
       const bdoPerformance = isBdoCampaign
         ? Object.fromEntries(campaignAgents.map((agent) => {
             const imported = importedBdoPerformance[agent.id] ?? { importedTarget: 0, actual: 0 };
-            const explicitGoal = Math.max(0, Number(agent.monthlyTarget || 0));
-            const allocatedGoal = explicitGoal > 0
-              ? explicitGoal
-              : unallocatedImportedTargetTotal > 0
-                ? unallocatedCeoGoal * (imported.importedTarget / unallocatedImportedTargetTotal)
-                : unallocatedCeoGoal / Math.max(agentsWithoutExplicitGoals.length, 1);
+            const allocatedGoal = importedTargetTotal > 0
+              ? agentCeoGoal * (imported.importedTarget / importedTargetTotal)
+              : agentCeoGoal / Math.max(campaignAgents.length, 1);
             return [agent.id, {
               goal: allocatedGoal,
               actual: imported.actual,
@@ -577,6 +627,9 @@ export async function GET(req: NextRequest) {
         entriesCount: (entryCountByCampaign.get(c.id) ?? 0) + (importedEntryCountByCampaign.get(c.id) ?? 0),
         dataPeriod: importedFallbackPeriodByCampaign.has(c.id)
           ? { source: "latest_import", ...importedFallbackPeriodByCampaign.get(c.id)! }
+          : { source: "selected_range" },
+        agentDataPeriod: importedAgentFallbackPeriodByCampaign.has(c.id)
+          ? { source: "latest_import", ...importedAgentFallbackPeriodByCampaign.get(c.id)! }
           : { source: "selected_range" },
       };
     });

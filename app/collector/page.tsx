@@ -76,6 +76,7 @@ interface CampaignBlock {
   attendance: Record<string, { status: string; remarks: string | null }>;
   entriesCount: number;
   dataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
+  agentDataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
 }
 
 function campaignDataPeriodLabel(period?: CampaignBlock['dataPeriod']): string | null {
@@ -1404,6 +1405,7 @@ export default function CollectorDashboard() {
                   attendance={block.attendance}
                   entriesCount={block.entriesCount}
                   dataPeriod={block.dataPeriod}
+                  agentDataPeriod={block.agentDataPeriod}
                   onDeleteAllAgents={block.agents.some((agent) => !agent.importedOnly) ? () => handleDeleteAllAgents(block.id) : undefined}
                   isDeletingAgents={deletingAllAgents}
                 >
