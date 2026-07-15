@@ -42,7 +42,6 @@ async function main() {
     { name: "BPI PA INBOUND", goal: 450, metric: "transmittals" },
     { name: "BPI PL", goal: 400, metric: "activations" },
     { name: "BPI BL", goal: 350, metric: "activations" },
-    { name: "BPI FF", goal: 300, metric: "booked" },
     { name: "MB ACQ", goal: 480, metric: "transmittals" },
     { name: "MB PL", goal: 420, metric: "activations" },
     { name: "MB PA", goal: 380, metric: "booked" },
@@ -78,13 +77,13 @@ async function main() {
   // Agent configuration: Each agent with their assigned campaigns
   const agentConfigs = [
     { name: "John Smith", seat: 1, campaignIndices: [0, 1, 2] }, // BPI campaigns
-    { name: "Jane Doe", seat: 2, campaignIndices: [3, 4, 5] }, // BPI + MB
-    { name: "Mike Johnson", seat: 3, campaignIndices: [6, 7, 8] }, // MB + BDO
-    { name: "Emily Davis", seat: 4, campaignIndices: [9, 10, 11] }, // BDO
-    { name: "Chris Wilson", seat: 5, campaignIndices: [12, 13, 14] }, // BDO + AXA
-    { name: "Anna Brown", seat: 6, campaignIndices: [15, 16, 17] }, // CBC + MEDICARD
-    { name: "David Lee", seat: 7, campaignIndices: [0, 6, 12] }, // Mixed
-    { name: "Lisa Chen", seat: 8, campaignIndices: [1, 7, 13] }, // Mixed
+    { name: "Jane Doe", seat: 2, campaignIndices: [3, 4] }, // BPI + MB
+    { name: "Mike Johnson", seat: 3, campaignIndices: [5, 6, 7] }, // MB + BDO
+    { name: "Emily Davis", seat: 4, campaignIndices: [8, 9, 10] }, // BDO
+    { name: "Chris Wilson", seat: 5, campaignIndices: [11, 12, 13] }, // BDO + AXA
+    { name: "Anna Brown", seat: 6, campaignIndices: [14, 15, 16] }, // CBC + MEDICARD
+    { name: "David Lee", seat: 7, campaignIndices: [0, 5, 11] }, // Mixed
+    { name: "Lisa Chen", seat: 8, campaignIndices: [1, 6, 12] }, // Mixed
   ];
 
   // Create agents and assign to campaigns (idempotent)
@@ -109,7 +108,10 @@ async function main() {
   // Create collectors dynamically - one collector per campaign (idempotent)
   const collectors = await Promise.all(
     campaigns.map((campaign, index) => {
-      const email = `collector.${index + 1}@opsview.com`;
+      // Keep the established collector login numbers stable; collector.5 was
+      // dedicated to the retired campaign.
+      const collectorNumber = index >= 4 ? index + 2 : index + 1;
+      const email = `collector.${collectorNumber}@opsview.com`;
       return prisma.user.upsert({
         where: { email },
         update: {},
@@ -201,7 +203,7 @@ async function main() {
   console.log("   Admin:     admin@opsview.com / password123");
   console.log("   Manager:   manager@opsview.com / password123");
   console.log("   Agent:     john.smith@opsview.com / password123");
-  console.log("   Collector: allianzsynergia.tgermedia@gmail.com / password123 (all 18 campaigns)");
+  console.log("   Collector: allianzsynergia.tgermedia@gmail.com / password123 (all 17 campaigns)");
   console.log("");
   console.log("📊 Agent-Campaign Assignments:");
   agentConfigs.forEach((config, idx) => {

@@ -2,7 +2,7 @@
 
 ## System Status
 - **Dev Server**: Running on http://127.0.0.1:3001
-- **Database**: Seeded with 28 users, 18 campaigns, 144 sales records
+- **Database**: Seeded with 27 users, 17 campaigns, 144 sales records
 - **Status**: 100% Functional - Ready for Testing
 
 ---
@@ -19,7 +19,7 @@
 
 **Expected Results**:
 - ✅ Dashboard loads
-- ✅ Can see all 18 campaigns
+- ✅ Can see all 17 campaigns
 - ✅ Can see all sales agents
 - ✅ All metrics display correctly
 
@@ -137,7 +137,7 @@
 **Expected Results**:
 - ✅ Campaign KPIs update based on filter
 - ✅ Sales records filtered by date range
-- ✅ All 18 campaigns display correctly
+- ✅ All 17 campaigns display correctly
 
 ---
 
@@ -173,13 +173,12 @@
 
 ## Database Test Credentials
 
-### All 18 Collectors (One per Campaign)
+### All 17 Collectors (One per Campaign)
 ```
 collector.1@opsview.com  → BPI PA OUTBOUND
 collector.2@opsview.com  → BPI PA INBOUND
 collector.3@opsview.com  → BPI PL
 collector.4@opsview.com  → BPI BL
-collector.5@opsview.com  → BPI FF
 collector.6@opsview.com  → MB ACQ
 collector.7@opsview.com  → MB PL
 collector.8@opsview.com  → MB PA
@@ -197,10 +196,10 @@ collector.18@opsview.com → MEDICARD
 All passwords: password123
 ```
 
-### All 8 Agents (Assigned to 3 campaigns each)
+### All 8 Agents
 ```
 john.smith@opsview.com    → BPI PA OUTBOUND, BPI PA INBOUND, BPI PL
-jane.doe@opsview.com      → BPI BL, BPI FF, MB ACQ
+jane.doe@opsview.com      → BPI BL, MB ACQ
 mike.johnson@opsview.com  → MB PL, MB PA, BDO SGM
 emily.davis@opsview.com   → BDO CIE, BDO SUPPLE, BDO VC
 chris.wilson@opsview.com  → BDO NTH CARD, AXA, AXA CLP

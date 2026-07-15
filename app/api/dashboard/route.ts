@@ -23,6 +23,17 @@ function metricValue(campaignName: string | undefined, d: { volume: bigint | num
   return isAcqCampaign(campaignName) ? Number(d.ntb) : Number(d.volume);
 }
 
+function isImportedClassificationRow(row: {
+  worksheetSource: string;
+  monitoringType: string | null;
+  entityName: string;
+}) {
+  const normalizedName = row.entityName.toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+  return row.worksheetSource === "PL YTD Productivity" &&
+    row.monitoringType === "PL_PRODUCTIVITY" &&
+    /^(?:OLD|SEMI OLD|NEW|(?:OLD|SEMI OLD|NEW|TOTAL) AVERAGE PER AGENT)$/.test(normalizedName);
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -97,9 +108,10 @@ export async function GET(req: NextRequest) {
         reportDate: { gte: startDate, lte: endDate },
         OR: [{ actual: { not: null } }, { achievement: { not: null } }],
       },
-      select: { campaignId: true, recordKind: true, entityName: true, monitoringType: true, metric: true, year: true, month: true, reportDate: true, target: true, actual: true, achievement: true },
+      select: { campaignId: true, recordKind: true, worksheetSource: true, entityName: true, monitoringType: true, metric: true, year: true, month: true, reportDate: true, target: true, actual: true, achievement: true },
       orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
     }).catch(() => []);
+    const usableDashboardRows = dashboardRows.filter((row) => !isImportedClassificationRow(row));
     const campaignById = new Map(campaigns.map((campaign) => [campaign.id, campaign]));
     const importedActual = (row: (typeof dashboardRows)[number]) => row.actual != null
       ? Number(row.actual)
@@ -107,11 +119,11 @@ export async function GET(req: NextRequest) {
         ? Math.round(Number(row.target) * Number(row.achievement))
         : null;
     const bpiCurrencyCampaigns = new Set(
-      dashboardRows.filter((row) => row.recordKind === "ytd" && Number(row.target || 0) >= 1_000_000 && /^BPI\b/i.test(campaignById.get(row.campaignId)?.campaignName || "")).map((row) => row.campaignId)
+      usableDashboardRows.filter((row) => row.recordKind === "ytd" && Number(row.target || 0) >= 1_000_000 && /^BPI\b/i.test(campaignById.get(row.campaignId)?.campaignName || "")).map((row) => row.campaignId)
     );
-    const campaignsWithAgentRows = new Set(dashboardRows.filter((row) => row.recordKind === "agent_monitoring").map((row) => row.campaignId));
+    const campaignsWithAgentRows = new Set(usableDashboardRows.filter((row) => row.recordKind === "agent_monitoring").map((row) => row.campaignId));
     const preferredDashboardRows = new Map<string, (typeof dashboardRows)[number]>();
-    for (const row of dashboardRows) {
+    for (const row of usableDashboardRows) {
       const normalizedName = (row.entityName || "Campaign Total").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
       const rowKey = `${row.campaignId}|${normalizedName}|${row.year}|${row.month || 0}|${row.metric}`;
       const existing = preferredDashboardRows.get(rowKey);

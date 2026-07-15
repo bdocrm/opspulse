@@ -24,7 +24,10 @@ type SheetResult = {
 };
 
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-const SUMMARY_NAME = /^(?:total|grand total|average|avg|summary|ranking|rank|team total|overall|notes?|remarks?)$/i;
+// BPI productivity workbooks use OLD / SEMI OLD / NEW as tenure buckets and
+// place their aggregate totals in the agent-name column. They are headings,
+// not collectors, so never normalize them into agent monitoring records.
+const SUMMARY_NAME = /^(?:total|grand total|average|avg|summary|ranking|rank|team total|overall|notes?|remarks?|old|semi[\s-]*old|new|(?:old|semi[\s-]*old|new|total)[\s-]*average[\s-]*per[\s-]*agent)$/i;
 const INVALID_NUMBER = /^#(?:div\/0!|value!|n\/a|ref!|num!|name\?|null!)$/i;
 
 export function normalizeBpiText(value: unknown) {
@@ -115,7 +118,7 @@ function findColumn(rows: unknown[][], aliases: RegExp[], limit = 35) {
 
 function campaignEvidence(values: unknown[], fallback = '') {
   const labels = values.map(normalizeBpiText).filter(Boolean);
-  return labels.find((label) => canonicalCampaignName(label)) || labels.find((label) => /\b(?:pa|pl|personal loans|fulfillment|business loans|sip loans)\b/i.test(label)) || fallback;
+  return labels.find((label) => canonicalCampaignName(label)) || labels.find((label) => /\b(?:pa|pl|personal loans|business loans|sip loans)\b/i.test(label)) || fallback;
 }
 
 function achievement(target?: number, actual?: number, supplied?: number) {

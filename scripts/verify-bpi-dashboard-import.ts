@@ -30,6 +30,13 @@ add('PL YTD Productivity', [
   ['Agent Name', 'January', 'January', 'January', 'January', 'January', 'January', 'February', 'February', 'February', 'February', 'February', 'February'],
   ['Agent Name', 'Transmitted Count', 'Transmitted Volume', 'Approvals Count', 'Approvals Volume', 'Booked Count', 'Booked Volume', 'Transmitted Count', 'Transmitted Volume', 'Approvals Count', 'Approvals Volume', 'Booked Count', 'Booked Volume'],
   ['PL Agent', 5, 50000, 4, 40000, 3, 30000, 6, 60000, 5, 50000, 4, 40000],
+  ['OLD', 100, 1000000, 90, 900000, 80, 800000, 110, 1100000, 95, 950000, 85, 850000],
+  ['SEMI OLD', 100, 1000000, 90, 900000, 80, 800000, 110, 1100000, 95, 950000, 85, 850000],
+  ['NEW', 100, 1000000, 90, 900000, 80, 800000, 110, 1100000, 95, 950000, 85, 850000],
+  ['OLD AVERAGE PER AGENT', 100, 1000000, 90, 900000, 80, 800000, 110, 1100000, 95, 950000, 85, 850000],
+  ['SEMI OLD AVERAGE PER AGENT', 100, 1000000, 90, 900000, 80, 800000, 110, 1100000, 95, 950000, 85, 850000],
+  ['NEW AVERAGE PER AGENT', 100, 1000000, 90, 900000, 80, 800000, 110, 1100000, 95, 950000, 85, 850000],
+  ['TOTAL AVERAGE PER AGENT', 100, 1000000, 90, 900000, 80, 800000, 110, 1100000, 95, 950000, 85, 850000],
 ]);
 add('PA HOH Monitoring', [
   ['PA SIP Loans Outbound 2026'],
@@ -46,7 +53,6 @@ add('PL HOH Monitoring', [
 
 const campaigns = [
   { id: 'bl', campaignName: 'BPI BL' },
-  { id: 'ff', campaignName: 'BPI FF' },
   { id: 'in', campaignName: 'BPI PA INBOUND' },
   { id: 'out', campaignName: 'BPI PA OUTBOUND' },
   { id: 'pl', campaignName: 'BPI PL' },
@@ -63,12 +69,13 @@ assert.equal(parsed.sheets.filter((sheet) => sheet.detectedType !== 'Unsupported
 assert.deepEqual(new Set(parsed.detectedMonths), new Set(['Jan 2026', 'Feb 2026']));
 
 const ytd = parsed.records.filter((record) => record.recordKind === 'ytd');
-assert.equal(ytd.length, 8);
-assert.equal(ytd.find((record) => record.category === 'Fulfillment' && record.month === 2)?.actual, 36);
-assert.deepEqual(new Set(ytd.map((record) => mapWorksheetCampaign(`${record.category} ${record.metric}`, campaigns).campaign.campaignName)), new Set(['BPI PA OUTBOUND', 'BPI PA INBOUND', 'BPI PL', 'BPI FF']));
+assert.equal(ytd.length, 6);
+assert.equal(ytd.some((record) => /^Fulfillment$/i.test(record.category || '')), false);
+assert.deepEqual(new Set(ytd.map((record) => mapWorksheetCampaign(`${record.category} ${record.metric}`, campaigns).campaign.campaignName)), new Set(['BPI PA OUTBOUND', 'BPI PA INBOUND', 'BPI PL']));
 
 const productivity = parsed.records.filter((record) => record.monitoringType === 'PL_PRODUCTIVITY');
 assert.equal(productivity.length, 12);
+assert.equal(productivity.some((record) => /^(?:OLD|SEMI OLD|NEW|(?:OLD|SEMI OLD|NEW|TOTAL) AVERAGE PER AGENT)$/.test(record.entityName || '')), false);
 assert.deepEqual(new Set(productivity.map((record) => record.metric)), new Set(['Transmitted Count', 'Transmitted Volume', 'Approvals Count', 'Approvals Volume', 'Booked Count', 'Booked Volume']));
 assert.equal(productivity.every((record) => mapWorksheetCampaign(`${record.category} ${record.metric}`, campaigns).campaign.campaignName === 'BPI PL'), true);
 

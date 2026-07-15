@@ -36,6 +36,16 @@ function importedAgentId(campaignId: string, name: string) {
   return `imported:${campaignId}:${Buffer.from(normalizeImportedAgentName(name)).toString("base64url")}`;
 }
 
+function isImportedClassificationRow(record: {
+  worksheetSource: string;
+  monitoringType: string | null;
+  entityName: string;
+}) {
+  return record.worksheetSource === "PL YTD Productivity" &&
+    record.monitoringType === "PL_PRODUCTIVITY" &&
+    /^(?:OLD|SEMI OLD|NEW|(?:OLD|SEMI OLD|NEW|TOTAL) AVERAGE PER AGENT)$/.test(normalizeImportedAgentName(record.entityName));
+}
+
 /**
  * Aggregate Collector Dashboard data, grouped by the logged-in collector's
  * assigned campaigns.
@@ -165,6 +175,7 @@ export async function GET(req: NextRequest) {
         select: {
           campaignId: true,
           recordKind: true,
+          worksheetSource: true,
           entityName: true,
           level: true,
           monitoringType: true,
@@ -181,6 +192,9 @@ export async function GET(req: NextRequest) {
         orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
       }).catch(() => []),
     ]);
+    const usableDashboardAgentRecords = dashboardAgentRecords.filter(
+      (record) => !isImportedClassificationRow(record)
+    );
     const monthlyGoalsByCampaignId = new Map(
       monthlyGoalRows.map((row) => [row.campaignId, row])
     );
@@ -232,7 +246,7 @@ export async function GET(req: NextRequest) {
       importedOnly: true;
     }>>();
     const importedRosterSeen = new Set<string>();
-    for (const record of dashboardAgentRecords) {
+    for (const record of usableDashboardAgentRecords) {
       if (record.recordKind !== "agent_monitoring") continue;
       const normalizedName = normalizeImportedAgentName(record.entityName);
       if (!normalizedName) continue;
@@ -268,12 +282,12 @@ export async function GET(req: NextRequest) {
       return actual != null && (actual !== 0 || Number(record.target || 0) > 0);
     };
     const campaignsWithImportedAgentMonitoring = new Set(
-      dashboardAgentRecords.filter((record) => record.recordKind === "agent_monitoring" && importedActual(record) != null).map((record) => record.campaignId)
+      usableDashboardAgentRecords.filter((record) => record.recordKind === "agent_monitoring" && importedActual(record) != null).map((record) => record.campaignId)
     );
     const campaignsWithStandardProduction = new Set(details.map((detail) => detail.campaignId));
     const campaignsWithRegisteredAgents = new Set(agents.map((agent) => agent.campaignId).filter((id): id is string => Boolean(id)));
     const campaignNameById = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
-    for (const record of dashboardAgentRecords) {
+    for (const record of usableDashboardAgentRecords) {
       if (record.recordKind !== "ytd" || campaignsWithImportedAgentMonitoring.has(record.campaignId) || campaignsWithRegisteredAgents.has(record.campaignId)) continue;
       const summaryName = `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
       const identity = `${record.campaignId}|${normalizeImportedAgentName(summaryName)}`;
@@ -327,7 +341,7 @@ export async function GET(req: NextRequest) {
     // Prefer the regular agent worksheet over its HOH mirror so the same agent,
     // month, and metric are never counted twice.
     const allPreferredDashboardRecords = new Map<string, (typeof dashboardAgentRecords)[number]>();
-    for (const record of dashboardAgentRecords) {
+    for (const record of usableDashboardAgentRecords) {
       if (importedActual(record) == null && record.target == null) continue;
       const entityName = record.entityName || `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
       const normalizedName = normalizeImportedAgentName(entityName);
@@ -376,10 +390,10 @@ export async function GET(req: NextRequest) {
       }
     }
     const campaignsWithCashInstallment = new Set(
-      dashboardAgentRecords.filter((record) => /cash installment/i.test(record.metric)).map((record) => record.campaignId)
+      usableDashboardAgentRecords.filter((record) => /cash installment/i.test(record.metric)).map((record) => record.campaignId)
     );
     const campaignsWithBpiCurrencyTargets = new Set(
-      dashboardAgentRecords
+      usableDashboardAgentRecords
         .filter((record) => record.recordKind === "ytd" && Number(record.target || 0) >= 1_000_000 && /^BPI\b/i.test(campaignNameById.get(record.campaignId) || ""))
         .map((record) => record.campaignId)
     );
