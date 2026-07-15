@@ -79,6 +79,17 @@ export async function GET(req: NextRequest) {
     startDate.setHours(0, 0, 0, 0);
     const endDate = new Date(dateTo);
     endDate.setHours(23, 59, 59, 999);
+    const selectedStartPeriod = monthYearFromYmd(dateFrom);
+    const selectedEndPeriod = monthYearFromYmd(dateTo);
+    const selectedStartPeriodIndex = selectedStartPeriod.year * 12 + selectedStartPeriod.month;
+    const selectedEndPeriodIndex = selectedEndPeriod.year * 12 + selectedEndPeriod.month;
+    const isImportedRecordInSelectedRange = (record: { year: number; month: number | null; reportDate: Date }) => {
+      if (record.month != null) {
+        const periodIndex = record.year * 12 + record.month;
+        return periodIndex >= selectedStartPeriodIndex && periodIndex <= selectedEndPeriodIndex;
+      }
+      return record.reportDate >= startDate && record.reportDate <= endDate;
+    };
     const { month: goalMonth, year: goalYear } = monthYearFromYmd(dateTo);
 
     // Resolve the collector's assigned campaigns (join table + legacy primary).
@@ -357,7 +368,7 @@ export async function GET(req: NextRequest) {
 
     const preferredDashboardRecords = new Map<string, (typeof dashboardAgentRecords)[number]>();
     for (const [key, record] of allPreferredDashboardRecords) {
-      if (record.reportDate >= startDate && record.reportDate <= endDate) {
+      if (isImportedRecordInSelectedRange(record)) {
         preferredDashboardRecords.set(key, record);
       }
     }
@@ -404,8 +415,7 @@ export async function GET(req: NextRequest) {
       const agentRecordsInRange = [...allPreferredDashboardRecords.entries()].filter(([, record]) =>
         record.campaignId === campaign.id &&
         record.recordKind === "agent_monitoring" &&
-        record.reportDate >= startDate &&
-        record.reportDate <= endDate
+        isImportedRecordInSelectedRange(record)
       );
       let selectedAgentRecords = agentRecordsInRange;
 
@@ -569,24 +579,12 @@ export async function GET(req: NextRequest) {
           .map((record) => [`${record.year}-${record.month}`, { year: record.year, month: record.month as number }])
       ).values()];
       const goalPeriods = importedPeriods.length > 0 ? importedPeriods : [{ year: goalYear, month: goalMonth }];
-      const importedAgentPeriods = [...new Map(
-        [...preferredAgentDetailRecords.values()]
-          .filter((record) => record.campaignId === c.id && record.recordKind === "agent_monitoring" && record.month != null)
-          .map((record) => [`${record.year}-${record.month}`, { year: record.year, month: record.month as number }])
-      ).values()];
-      const agentGoalPeriods = importedAgentPeriods.length > 0 ? importedAgentPeriods : goalPeriods;
       const ceoGoal = isBdoCampaign
         ? goalPeriods.reduce((sum, period) => {
             const configured = monthlyGoalsByCampaignPeriod.get(`${c.id}|${period.year}|${period.month}`);
             return sum + Number(configured?.monthlyGoal ?? c.monthlyGoal ?? 0);
           }, 0)
         : Number(savedGoal?.monthlyGoal ?? c.monthlyGoal ?? 0);
-      const agentCeoGoal = isBdoCampaign
-        ? agentGoalPeriods.reduce((sum, period) => {
-            const configured = monthlyGoalsByCampaignPeriod.get(`${c.id}|${period.year}|${period.month}`);
-            return sum + Number(configured?.monthlyGoal ?? c.monthlyGoal ?? 0);
-          }, 0)
-        : ceoGoal;
       const latestGoalPeriod = [...goalPeriods].sort((a, b) => b.year - a.year || b.month - a.month)[0];
       const effectiveBdoGoalConfig = isBdoCampaign
         ? monthlyGoalsByCampaignPeriod.get(`${c.id}|${latestGoalPeriod.year}|${latestGoalPeriod.month}`)
@@ -599,25 +597,25 @@ export async function GET(req: NextRequest) {
       const bdoPerformance = isBdoCampaign
         ? Object.fromEntries(campaignAgents.map((agent) => {
             const imported = importedBdoPerformance[agent.id] ?? { importedTarget: 0, actual: 0 };
-            const allocatedGoal = importedTargetTotal > 0
-              ? agentCeoGoal * (imported.importedTarget / importedTargetTotal)
-              : agentCeoGoal / Math.max(campaignAgents.length, 1);
             return [agent.id, {
-              goal: allocatedGoal,
+              goal: imported.importedTarget,
               actual: imported.actual,
-              achievement: allocatedGoal > 0 ? (imported.actual / allocatedGoal) * 100 : 0,
+              achievement: imported.importedTarget > 0 ? (imported.actual / imported.importedTarget) * 100 : 0,
             }];
           }))
         : undefined;
       const bdoActualFromAgents = Object.values(importedBdoPerformance).reduce((sum, row) => sum + row.actual, 0);
+      const hasBdoAgentImport = Object.keys(importedBdoPerformance).length > 0;
 
       return {
         id: c.id,
         campaignName: c.campaignName,
         kpiMetric: effectiveBdoGoalConfig?.kpiMetric || savedGoal?.kpiMetric || campaignKpiById.get(c.id) || c.kpiMetric || "booked",
-        goal: isBdoCampaign ? ceoGoal : importedGoalByCampaign.get(c.id) || ceoGoal,
+        goal: isBdoCampaign
+          ? (hasBdoAgentImport ? importedTargetTotal : importedGoalByCampaign.get(c.id) || ceoGoal)
+          : importedGoalByCampaign.get(c.id) || ceoGoal,
         actual: isBdoCampaign
-          ? importedActualByCampaign.get(c.id) ?? (bdoActualFromAgents || null)
+          ? (hasBdoAgentImport ? bdoActualFromAgents : importedActualByCampaign.get(c.id) ?? null)
           : importedActualByCampaign.get(c.id) ?? null,
         supplementaryGoal: Number(savedGoal?.supplementaryGoal ?? c.supplementaryGoal ?? 0),
         agents: campaignAgents,
@@ -625,8 +623,10 @@ export async function GET(req: NextRequest) {
         production: prodByCampaign.get(c.id) ?? {},
         attendance: attByCampaign.get(c.id) ?? {},
         entriesCount: (entryCountByCampaign.get(c.id) ?? 0) + (importedEntryCountByCampaign.get(c.id) ?? 0),
-        dataPeriod: importedFallbackPeriodByCampaign.has(c.id)
-          ? { source: "latest_import", ...importedFallbackPeriodByCampaign.get(c.id)! }
+        dataPeriod: isBdoCampaign && importedAgentFallbackPeriodByCampaign.has(c.id)
+          ? { source: "latest_import", ...importedAgentFallbackPeriodByCampaign.get(c.id)! }
+          : importedFallbackPeriodByCampaign.has(c.id)
+            ? { source: "latest_import", ...importedFallbackPeriodByCampaign.get(c.id)! }
           : { source: "selected_range" },
         agentDataPeriod: importedAgentFallbackPeriodByCampaign.has(c.id)
           ? { source: "latest_import", ...importedAgentFallbackPeriodByCampaign.get(c.id)! }

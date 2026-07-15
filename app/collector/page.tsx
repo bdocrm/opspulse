@@ -87,7 +87,7 @@ function campaignDataPeriodLabel(period?: CampaignBlock['dataPeriod']): string |
 
 const CAMPAIGN_GROUP_PREFIX = '__campaign_group__:';
 const EXPORT_HEADERS = ['Campaign', 'Rank', 'Seat', 'Agent Name', 'Status', 'Transmittals', 'Approvals', 'Booked', 'Booked Volume (₱)', 'Target', 'Progress %'] as const;
-const BDO_EXPORT_HEADERS = ['Campaign', 'Rank', 'Seat', 'Agent Name', 'Status', 'Goal', 'Actual', 'Achievement %', 'Booked', 'Booked Volume (₱)', 'Progress %'] as const;
+const BDO_EXPORT_HEADERS = ['Campaign', 'Rank', 'Seat', 'Agent Name', 'Status', 'Goal', 'Actual', 'Achievement %', 'Booked', 'Progress %'] as const;
 
 function campaignOrganization(campaignName: string) {
   return campaignName.trim().split(/\s+/)[0]?.replace(/[^a-z0-9]/gi, '').toUpperCase() || 'OTHER';
@@ -760,7 +760,6 @@ export default function CollectorDashboard() {
           Actual: performance.actual,
           'Achievement %': performance.achievement.toFixed(1),
           Booked: prod.booked,
-          'Booked Volume (₱)': Number(prod.volume || 0),
           'Progress %': performance.achievement.toFixed(1),
         };
       }
@@ -793,8 +792,8 @@ export default function CollectorDashboard() {
         worksheet['!cols'] = [
           { wch: 24 }, { wch: 8 }, { wch: 8 }, { wch: 28 }, { wch: 14 },
           { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 20 }, { wch: 14 }, { wch: 12 },
-        ];
-        worksheet['!autofilter'] = { ref: `A1:K${Math.max(campaign.agents.length + 1, 1)}` };
+        ].slice(0, headers.length);
+        worksheet['!autofilter'] = { ref: `A1:${XLSX.utils.encode_col(headers.length - 1)}${Math.max(campaign.agents.length + 1, 1)}` };
         XLSX.utils.book_append_sheet(workbook, worksheet, safeWorksheetName(campaign.campaignName, usedSheetNames));
       }
       XLSX.writeFile(workbook, `ALL_${organization}_CAMPAIGNS_${today}.xlsx`, { compression: true });
@@ -1477,7 +1476,6 @@ export default function CollectorDashboard() {
                                   <TableHead className="text-right">Actual</TableHead>
                                   <TableHead className="text-center">Achievement</TableHead>
                                   <TableHead className="text-center">Booked</TableHead>
-                                  <TableHead className="text-right">Booked Volume (₱)</TableHead>
                                 </>
                               ) : (
                                 <>
@@ -1580,7 +1578,6 @@ export default function CollectorDashboard() {
                                     <TableCell className="text-right font-semibold text-purple-600">{formatKpiValue(block.kpiMetric, bdoMetrics.actual)}</TableCell>
                                     <TableCell className="text-center font-semibold text-emerald-600">{bdoMetrics.achievement.toFixed(1)}%</TableCell>
                                     <TableCell className="text-center font-semibold text-primary">{Number(prod.booked || 0).toLocaleString()}</TableCell>
-                                    <TableCell className="text-right font-semibold text-purple-600">₱{Number(prod.volume || 0).toLocaleString()}</TableCell>
                                   </>
                                 ) : (
                                   <>
@@ -1671,7 +1668,7 @@ export default function CollectorDashboard() {
                                         </span>
                                       </div>
                                     ) : (
-                                      <span className="text-muted-foreground text-xs">No CEO goal</span>
+                                      <span className="text-muted-foreground text-xs">No imported goal</span>
                                     )
                                   ) : agent.monthlyTarget ? (
                                     <div className="flex items-center gap-2">
