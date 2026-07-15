@@ -82,6 +82,13 @@ const KPI_METRICS = [
   { value: 'conversionRate', label: 'Conversion Rate' },
 ];
 
+const BPI_KPI_VALUES = new Set(['transmittals', 'approvals', 'booked']);
+const BPI_KPI_METRICS = KPI_METRICS.filter((metric) => BPI_KPI_VALUES.has(metric.value));
+const usesBpiThreeKpis = (name?: string | null) => {
+  const normalized = String(name || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  return normalized.startsWith('BPI ') && normalized !== 'BPI PA OUTBOUND';
+};
+
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
@@ -359,7 +366,8 @@ export default function GoalsManagement() {
     selectedCampaignIdRef.current = campaign.id;
     setMonthlyGoal(formatInputNumber(campaign.monthlyGoal, 2));
     setSupplementaryGoal(formatInputNumber(campaign.supplementaryGoal ?? 0, 2));
-    setKpiMetric(campaign.kpiMetric || 'transmittals');
+    const savedMetric = campaign.kpiMetric || 'transmittals';
+    setKpiMetric(usesBpiThreeKpis(campaign.campaignName) && !BPI_KPI_VALUES.has(savedMetric) ? 'transmittals' : savedMetric);
     setWorkingDays((campaign.workingDays ?? 22).toString());
     setDaysLapsed((campaign.daysLapsed ?? 0).toString());
     const targets: Record<string, number> = {};
@@ -1259,10 +1267,15 @@ export default function GoalsManagement() {
                   onChange={(e) => setKpiMetric(e.target.value)}
                   className="mt-1 w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  {KPI_METRICS.map((m) => (
+                  {(usesBpiThreeKpis(selectedCampaign?.campaignName) ? BPI_KPI_METRICS : KPI_METRICS).map((m) => (
                     <option key={m.value} value={m.value}>{m.label}</option>
                   ))}
                 </select>
+                {usesBpiThreeKpis(selectedCampaign?.campaignName) && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    BPI campaigns use Transmittals, Approvals, or Booked. BPI PA OUTBOUND is excluded.
+                  </p>
+                )}
               </div>
 
               {/* Monthly Goal (NTB for ACQ campaigns) */}
