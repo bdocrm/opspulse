@@ -72,6 +72,7 @@ interface CampaignBlock {
   supplementaryGoal?: number;
   agents: Agent[];
   production: Record<string, Production>;
+  bdoPerformance?: Record<string, { goal: number; actual: number; achievement: number }>;
   attendance: Record<string, { status: string; remarks: string | null }>;
   entriesCount: number;
   dataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
@@ -85,6 +86,7 @@ function campaignDataPeriodLabel(period?: CampaignBlock['dataPeriod']): string |
 
 const CAMPAIGN_GROUP_PREFIX = '__campaign_group__:';
 const EXPORT_HEADERS = ['Campaign', 'Rank', 'Seat', 'Agent Name', 'Status', 'Transmittals', 'Approvals', 'Booked', 'Booked Volume (₱)', 'Target', 'Progress %'] as const;
+const BDO_EXPORT_HEADERS = ['Campaign', 'Rank', 'Seat', 'Agent Name', 'Status', 'Goal', 'Actual', 'Achievement %', 'Booked', 'Booked Volume (₱)', 'Progress %'] as const;
 
 function campaignOrganization(campaignName: string) {
   return campaignName.trim().split(/\s+/)[0]?.replace(/[^a-z0-9]/gi, '').toUpperCase() || 'OTHER';
@@ -121,6 +123,10 @@ const ZERO_PROD: Production = {
 // ACQ campaigns (name contains "ACQ") report NTB + Supplementary instead of booked volume.
 const isAcqCampaign = (name?: string | null) => /\bacq\b/i.test(name || '');
 
+// BDO campaigns use the Goal / Actual / Achievement triplet imported from the
+// BDO workbook, with Goal tied back to CEO Goals Management.
+const isBdoCampaign = (name?: string | null) => /^bdo\b/i.test((name || '').trim());
+
 // MB PL reports a BAU / Top Up transaction + volume breakdown.
 const isMbPlCampaign = (name?: string | null) => /\bmb pl\b/i.test(name || '');
 
@@ -152,6 +158,7 @@ function kpiLabel(metric: string): string {
     case 'activations': return 'Activations';
     case 'approvals': return 'Approvals';
     case 'volume': return 'Volume';
+    case 'achievements': return 'Achievements';
     default: return 'Booked';
   }
 }
@@ -736,10 +743,26 @@ export default function CollectorDashboard() {
     const sorted = [...campaign.agents].sort(
       (a, b) => (campaign.production[b.id]?.volume || 0) - (campaign.production[a.id]?.volume || 0)
     );
-    return sorted.map((agent, index) => {
+    return sorted.map((agent, index): Record<string, string | number> => {
       const prod = campaign.production[agent.id] || ZERO_PROD;
       const record = campaign.attendance[agent.id];
       const target = agent.monthlyTarget || 0;
+      if (isBdoCampaign(campaign.campaignName)) {
+        const performance = campaign.bdoPerformance?.[agent.id] || { goal: 0, actual: 0, achievement: 0 };
+        return {
+          Campaign: campaign.campaignName,
+          Rank: index + 1,
+          Seat: agent.seatNumber ?? '',
+          'Agent Name': agent.name,
+          Status: agent.importedOnly ? 'Imported' : record?.status || 'PRESENT',
+          Goal: performance.goal,
+          Actual: performance.actual,
+          'Achievement %': performance.achievement.toFixed(1),
+          Booked: prod.booked,
+          'Booked Volume (₱)': Number(prod.volume || 0),
+          'Progress %': performance.achievement.toFixed(1),
+        };
+      }
       return {
         Campaign: campaign.campaignName,
         Rank: index + 1,
@@ -764,7 +787,8 @@ export default function CollectorDashboard() {
       const workbook = XLSX.utils.book_new();
       const usedSheetNames = new Set<string>();
       for (const campaign of groupedCampaigns) {
-        const worksheet = XLSX.utils.json_to_sheet(campaignExportRows(campaign), { header: [...EXPORT_HEADERS] });
+        const headers = isBdoCampaign(campaign.campaignName) ? BDO_EXPORT_HEADERS : EXPORT_HEADERS;
+        const worksheet = XLSX.utils.json_to_sheet(campaignExportRows(campaign), { header: [...headers] });
         worksheet['!cols'] = [
           { wch: 24 }, { wch: 8 }, { wch: 8 }, { wch: 28 }, { wch: 14 },
           { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 20 }, { wch: 14 }, { wch: 12 },
@@ -1346,6 +1370,7 @@ export default function CollectorDashboard() {
             {nonEmptyCampaigns.map((block) => {
               const prodFor = (agentId: string) => block.production[agentId] || ZERO_PROD;
               const acq = isAcqCampaign(block.campaignName);
+              const bdo = isBdoCampaign(block.campaignName);
               const mbpl = isMbPlCampaign(block.campaignName);
               const mbpa = isMbPaCampaign(block.campaignName);
               const q = agentSearch.trim().toLowerCase();
@@ -1375,6 +1400,7 @@ export default function CollectorDashboard() {
                   supplementaryGoal={block.supplementaryGoal || 0}
                   agents={block.agents}
                   production={block.production}
+                  bdoPerformance={block.bdoPerformance}
                   attendance={block.attendance}
                   entriesCount={block.entriesCount}
                   dataPeriod={block.dataPeriod}
@@ -1442,6 +1468,15 @@ export default function CollectorDashboard() {
                                   <TableHead className="text-center">NTB</TableHead>
                                   <TableHead className="text-center">Supplementary</TableHead>
                                 </>
+                              ) : bdo ? (
+                                <>
+                                  <TableHead className="text-center w-20">Attendance</TableHead>
+                                  <TableHead className="text-right">Goal</TableHead>
+                                  <TableHead className="text-right">Actual</TableHead>
+                                  <TableHead className="text-center">Achievement</TableHead>
+                                  <TableHead className="text-center">Booked</TableHead>
+                                  <TableHead className="text-right">Booked Volume (₱)</TableHead>
+                                </>
                               ) : (
                                 <>
                                   <TableHead className="text-center w-20">Attendance</TableHead>
@@ -1463,6 +1498,7 @@ export default function CollectorDashboard() {
                             const record = block.attendance[agent.id];
                             const isPresent = !record || record.status === 'PRESENT';
                             const value = kpiValueFor(block.kpiMetric, prod);
+                            const bdoMetrics = block.bdoPerformance?.[agent.id] || { goal: 0, actual: 0, achievement: 0 };
                             // ACQ tracks its paired metrics; other campaigns track their configured KPI.
                             const acqTarget = (agent.monthlyTarget || 0) + (agent.monthlyTargetSupplementary || 0);
                             const acqActual = (prod.ntb || 0) + (prod.supplementary || 0);
@@ -1517,6 +1553,32 @@ export default function CollectorDashboard() {
                                   <>
                                     <TableCell className="text-center font-semibold text-blue-600">{Number(prod.ntb || 0).toLocaleString()}</TableCell>
                                     <TableCell className="text-center font-semibold text-purple-600">{Number(prod.supplementary || 0).toLocaleString()}</TableCell>
+                                  </>
+                                ) : bdo ? (
+                                  <>
+                                    <TableCell className="text-center">
+                                      {agent.importedOnly ? (
+                                        <span className="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-600">Imported</span>
+                                      ) : (
+                                        <button
+                                          onClick={() => handleToggleAttendance(agent.id, record?.status || 'PRESENT')}
+                                          className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors cursor-pointer ${
+                                            isPresent
+                                              ? 'text-green-500 bg-green-500/10 hover:bg-green-500/20'
+                                              : 'text-red-500 bg-red-500/10 hover:bg-red-500/20'
+                                          }`}
+                                          title="Click to toggle"
+                                        >
+                                          {isPresent ? <UserCheck className="w-3 h-3" /> : <UserX className="w-3 h-3" />}
+                                          <span>{isPresent ? 'P' : 'A'}</span>
+                                        </button>
+                                      )}
+                                    </TableCell>
+                                    <TableCell className="text-right font-semibold text-blue-600">{formatKpiValue(block.kpiMetric, bdoMetrics.goal)}</TableCell>
+                                    <TableCell className="text-right font-semibold text-purple-600">{formatKpiValue(block.kpiMetric, bdoMetrics.actual)}</TableCell>
+                                    <TableCell className="text-center font-semibold text-emerald-600">{bdoMetrics.achievement.toFixed(1)}%</TableCell>
+                                    <TableCell className="text-center font-semibold text-primary">{Number(prod.booked || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-right font-semibold text-purple-600">₱{Number(prod.volume || 0).toLocaleString()}</TableCell>
                                   </>
                                 ) : (
                                   <>
@@ -1587,6 +1649,27 @@ export default function CollectorDashboard() {
                                       </div>
                                     ) : (
                                       <span className="text-muted-foreground text-xs">No target</span>
+                                    )
+                                  ) : bdo ? (
+                                    bdoMetrics.goal > 0 ? (
+                                      <div className="flex items-center gap-2">
+                                        <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                                          <div
+                                            className={`h-full transition-all ${getProgressColor(bdoMetrics.achievement)}`}
+                                            style={{ width: `${Math.min(bdoMetrics.achievement, 100)}%` }}
+                                          />
+                                        </div>
+                                        <span className={`text-xs w-10 text-right ${
+                                          bdoMetrics.achievement >= 100 ? 'text-green-500 font-bold' :
+                                          bdoMetrics.achievement >= 75 ? 'text-blue-500' :
+                                          bdoMetrics.achievement >= 50 ? 'text-yellow-500' :
+                                          'text-muted-foreground'
+                                        }`}>
+                                          {bdoMetrics.achievement.toFixed(0)}%
+                                        </span>
+                                      </div>
+                                    ) : (
+                                      <span className="text-muted-foreground text-xs">No CEO goal</span>
                                     )
                                   ) : agent.monthlyTarget ? (
                                     <div className="flex items-center gap-2">

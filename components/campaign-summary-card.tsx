@@ -33,6 +33,7 @@ export interface CampaignSummaryProps {
   supplementaryGoal?: number;
   agents: Agent[];
   production: Record<string, Production>;
+  bdoPerformance?: Record<string, { goal: number; actual: number; achievement: number }>;
   attendance: Record<string, { status: string; remarks: string | null }>;
   entriesCount: number;
   dataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
@@ -46,6 +47,7 @@ const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, b
 
 // ACQ campaigns (name contains "ACQ") report NTB + Supplementary instead of booked volume.
 const isAcqCampaign = (name?: string | null) => /\bacq\b/i.test(name || '');
+const isBdoCampaign = (name?: string | null) => /^bdo\b/i.test((name || '').trim());
 
 function kpiValueFor(metric: string, prod: Production): number {
   switch (metric) {
@@ -63,6 +65,7 @@ function kpiLabel(metric: string): string {
     case 'activations': return 'Activations';
     case 'approvals': return 'Approvals';
     case 'volume': return 'Volume';
+    case 'achievements': return 'Achievements';
     default: return 'Booked';
   }
 }
@@ -81,6 +84,7 @@ export function CampaignSummaryCard({
   supplementaryGoal = 0,
   agents,
   production,
+  bdoPerformance,
   attendance,
   entriesCount,
   dataPeriod,
@@ -107,6 +111,7 @@ export function CampaignSummaryCard({
 
   // ACQ campaigns track NTB + Supplementary instead of booked volume.
   const acq = isAcqCampaign(campaignName);
+  const bdo = isBdoCampaign(campaignName);
   const totalNtb = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).ntb || 0), 0);
   const totalSupplementary = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).supplementary || 0), 0);
 
@@ -127,9 +132,9 @@ export function CampaignSummaryCard({
     if (goal === 0 || entriesCount === 0) return distribution;
     agents.forEach(agent => {
       const prod = production[agent.id] || ZERO_PROD;
-      const value = acq ? (prod.ntb || 0) : kpiValueFor(kpiMetric, prod);
+      const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : kpiValueFor(kpiMetric, prod);
       // Calculate agent's share of total goal proportionally, or use their monthly target if set
-      const agentGoal = agent.monthlyTarget || (goal / Math.max(agents.length, 1));
+      const agentGoal = bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || (goal / Math.max(agents.length, 1));
       if (agentGoal === 0) return;
       const progress = (value / agentGoal) * 100;
       if (progress >= 100) distribution.excellent++;
@@ -138,7 +143,7 @@ export function CampaignSummaryCard({
       else distribution.needsImprovement++;
     });
     return distribution;
-  }, [agents, production, goal, entriesCount, acq, kpiMetric]);
+  }, [agents, production, goal, entriesCount, acq, bdo, bdoPerformance, kpiMetric]);
 
   // Top and bottom performers. ACQ ranks by NTB (Supplementary as tiebreaker),
   // matching the collector-details table; others use their configured KPI.
@@ -149,9 +154,9 @@ export function CampaignSummaryCard({
     const performers = agents
       .map(agent => {
         const prod = production[agent.id] || ZERO_PROD;
-        const value = acq ? (prod.ntb || 0) : kpiValueFor(kpiMetric, prod);
+        const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : kpiValueFor(kpiMetric, prod);
         const secondary = acq ? (prod.supplementary || 0) : 0;
-        const agentGoal = agent.monthlyTarget || (goal / Math.max(agents.length, 1));
+        const agentGoal = bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || (goal / Math.max(agents.length, 1));
         return { agent, value, secondary, target: agentGoal, progress: agentGoal > 0 ? (value / agentGoal) * 100 : 0 };
       })
       .sort((a, b) => (b.value !== a.value ? b.value - a.value : b.secondary - a.secondary));
@@ -164,7 +169,7 @@ export function CampaignSummaryCard({
       withProduction: performers.filter(p => p.value > 0).length,
       zeroProduction: performers.filter(p => p.value === 0).length,
     };
-  }, [agents, production, goal, acq, kpiMetric, entriesCount]);
+  }, [agents, production, goal, acq, bdo, bdoPerformance, kpiMetric, entriesCount]);
 
   const filteredAgents = useMemo(() => {
     if (!searchQuery.trim()) return agents;

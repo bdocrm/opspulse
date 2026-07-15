@@ -160,11 +160,9 @@ export async function GET(req: NextRequest) {
         select: { id: true, campaignId: true },
       }),
       prisma.$queryRaw<any[]>`
-        SELECT "campaignId", "monthlyGoal", "supplementaryGoal", "kpiMetric"
+        SELECT "campaignId", "month", "year", "monthlyGoal", "supplementaryGoal", "kpiMetric"
         FROM "CampaignGoal"
         WHERE "campaignId" = ANY(${assignedIds}::text[])
-          AND "month" = ${goalMonth}
-          AND "year" = ${goalYear}
           AND "deletedAt" IS NULL
       `,
       prisma.dashboardImportRecord.findMany({
@@ -196,7 +194,12 @@ export async function GET(req: NextRequest) {
       (record) => !isImportedClassificationRow(record)
     );
     const monthlyGoalsByCampaignId = new Map(
-      monthlyGoalRows.map((row) => [row.campaignId, row])
+      monthlyGoalRows
+        .filter((row) => Number(row.month) === goalMonth && Number(row.year) === goalYear)
+        .map((row) => [row.campaignId, row])
+    );
+    const monthlyGoalsByCampaignPeriod = new Map(
+      monthlyGoalRows.map((row) => [`${row.campaignId}|${row.year}|${row.month}`, row])
     );
 
     // Attendance is optional (table may not exist on older DBs).
@@ -405,6 +408,10 @@ export async function GET(req: NextRequest) {
     const importedGoalByCampaign = new Map<string, number>();
     const importedActualByCampaign = new Map<string, number>();
     const importedTargetByAgent = new Map<string, number>();
+    const importedBdoPerformanceByCampaign = new Map<
+      string,
+      Record<string, { importedTarget: number; actual: number }>
+    >();
 
     // YTD rows are campaign summaries from the workbook. Sum one target and
     // one derived/explicit actual per selected month; never multiply them by
@@ -433,6 +440,14 @@ export async function GET(req: NextRequest) {
       if (target) importedTargetByAgent.set(agentId, (importedTargetByAgent.get(agentId) ?? 0) + target);
       const effectiveActual = importedActual(record);
       if (effectiveActual == null) continue;
+      if (record.recordKind !== "ytd" && /^BDO\b/i.test(campaignNameById.get(record.campaignId) || "")) {
+        const byAgent = importedBdoPerformanceByCampaign.get(record.campaignId) ?? {};
+        const performance = byAgent[agentId] ?? { importedTarget: 0, actual: 0 };
+        performance.importedTarget += target;
+        performance.actual += effectiveActual;
+        byAgent[agentId] = performance;
+        importedBdoPerformanceByCampaign.set(record.campaignId, byAgent);
+      }
       const byAgent = prodByCampaign.get(record.campaignId) ?? {};
       const cur = byAgent[agentId] ?? emptyProduction();
       const actual = effectiveActual;
@@ -480,21 +495,14 @@ export async function GET(req: NextRequest) {
 
     const result = campaigns.map((c) => {
       const savedGoal = monthlyGoalsByCampaignId.get(c.id);
-
-      return {
-        id: c.id,
-        campaignName: c.campaignName,
-        kpiMetric: campaignKpiById.get(c.id) || savedGoal?.kpiMetric || c.kpiMetric || "booked",
-        goal: importedGoalByCampaign.get(c.id) || Number(savedGoal?.monthlyGoal ?? c.monthlyGoal ?? 0),
-        actual: importedActualByCampaign.get(c.id) ?? null,
-        supplementaryGoal: Number(savedGoal?.supplementaryGoal ?? c.supplementaryGoal ?? 0),
-        agents: [
-          ...(agentsByCampaign.get(c.id) ?? []).map((a) => ({
+      const isBdoCampaign = /^BDO\b/i.test(c.campaignName);
+      const campaignAgents = [
+        ...(agentsByCampaign.get(c.id) ?? []).map((a) => ({
           id: a.id,
           name: a.name,
           email: a.email,
           seatNumber: a.seatNumber,
-          monthlyTarget: importedTargetByAgent.get(a.id) || a.monthlyTarget,
+          monthlyTarget: isBdoCampaign ? a.monthlyTarget : importedTargetByAgent.get(a.id) || a.monthlyTarget,
           monthlyTargetSupplementary: a.monthlyTargetSupplementary,
           mbLevel: a.mbLevel,
           disbursedTxnTarget: a.disbursedTxnTarget,
@@ -502,12 +510,68 @@ export async function GET(req: NextRequest) {
           grossTurnInsTxnTarget: a.grossTurnInsTxnTarget,
           grossTurnInsVolTarget: a.grossTurnInsVolTarget,
           importedOnly: false,
-          })),
-          ...(importedRosterByCampaign.get(c.id) ?? []).map((agent) => ({
-            ...agent,
-            monthlyTarget: importedTargetByAgent.get(agent.id) || null,
-          })),
-        ],
+        })),
+        ...(importedRosterByCampaign.get(c.id) ?? []).map((agent) => ({
+          ...agent,
+          monthlyTarget: isBdoCampaign ? null : importedTargetByAgent.get(agent.id) || null,
+        })),
+      ];
+      const importedPeriods = [...new Map(
+        [...preferredDashboardRecords.values()]
+          .filter((record) => record.campaignId === c.id && record.month != null)
+          .map((record) => [`${record.year}-${record.month}`, { year: record.year, month: record.month as number }])
+      ).values()];
+      const goalPeriods = importedPeriods.length > 0 ? importedPeriods : [{ year: goalYear, month: goalMonth }];
+      const ceoGoal = isBdoCampaign
+        ? goalPeriods.reduce((sum, period) => {
+            const configured = monthlyGoalsByCampaignPeriod.get(`${c.id}|${period.year}|${period.month}`);
+            return sum + Number(configured?.monthlyGoal ?? c.monthlyGoal ?? 0);
+          }, 0)
+        : Number(savedGoal?.monthlyGoal ?? c.monthlyGoal ?? 0);
+      const latestGoalPeriod = [...goalPeriods].sort((a, b) => b.year - a.year || b.month - a.month)[0];
+      const effectiveBdoGoalConfig = isBdoCampaign
+        ? monthlyGoalsByCampaignPeriod.get(`${c.id}|${latestGoalPeriod.year}|${latestGoalPeriod.month}`)
+        : null;
+      const importedBdoPerformance = importedBdoPerformanceByCampaign.get(c.id) ?? {};
+      const explicitAgentGoalTotal = campaignAgents.reduce(
+        (sum, agent) => sum + Math.max(0, Number(agent.monthlyTarget || 0)),
+        0
+      );
+      const agentsWithoutExplicitGoals = campaignAgents.filter((agent) => Number(agent.monthlyTarget || 0) <= 0);
+      const unallocatedCeoGoal = Math.max(0, ceoGoal - explicitAgentGoalTotal);
+      const unallocatedImportedTargetTotal = agentsWithoutExplicitGoals.reduce(
+        (sum, agent) => sum + Number(importedBdoPerformance[agent.id]?.importedTarget || 0),
+        0
+      );
+      const bdoPerformance = isBdoCampaign
+        ? Object.fromEntries(campaignAgents.map((agent) => {
+            const imported = importedBdoPerformance[agent.id] ?? { importedTarget: 0, actual: 0 };
+            const explicitGoal = Math.max(0, Number(agent.monthlyTarget || 0));
+            const allocatedGoal = explicitGoal > 0
+              ? explicitGoal
+              : unallocatedImportedTargetTotal > 0
+                ? unallocatedCeoGoal * (imported.importedTarget / unallocatedImportedTargetTotal)
+                : unallocatedCeoGoal / Math.max(agentsWithoutExplicitGoals.length, 1);
+            return [agent.id, {
+              goal: allocatedGoal,
+              actual: imported.actual,
+              achievement: allocatedGoal > 0 ? (imported.actual / allocatedGoal) * 100 : 0,
+            }];
+          }))
+        : undefined;
+      const bdoActualFromAgents = Object.values(importedBdoPerformance).reduce((sum, row) => sum + row.actual, 0);
+
+      return {
+        id: c.id,
+        campaignName: c.campaignName,
+        kpiMetric: effectiveBdoGoalConfig?.kpiMetric || savedGoal?.kpiMetric || campaignKpiById.get(c.id) || c.kpiMetric || "booked",
+        goal: isBdoCampaign ? ceoGoal : importedGoalByCampaign.get(c.id) || ceoGoal,
+        actual: isBdoCampaign
+          ? importedActualByCampaign.get(c.id) ?? (bdoActualFromAgents || null)
+          : importedActualByCampaign.get(c.id) ?? null,
+        supplementaryGoal: Number(savedGoal?.supplementaryGoal ?? c.supplementaryGoal ?? 0),
+        agents: campaignAgents,
+        bdoPerformance,
         production: prodByCampaign.get(c.id) ?? {},
         attendance: attByCampaign.get(c.id) ?? {},
         entriesCount: (entryCountByCampaign.get(c.id) ?? 0) + (importedEntryCountByCampaign.get(c.id) ?? 0),
