@@ -9,7 +9,7 @@ import { matchMetricAlias, normalizeMetricHeader } from '@/lib/metric-import-map
 import { isBdoDashboardWorkbook, parseBdoDashboardWorkbook, type BdoImportRecord } from '@/lib/bdo-dashboard-import';
 import { isBpiDashboardWorkbook, parseBpiDashboardWorkbook } from '@/lib/bpi-dashboard-import';
 import { mapWorksheetCampaign } from '@/lib/campaign-import-selection';
-import { parseMbPaMonthlyRows } from '@/lib/mb-pa-import';
+import { isMbPaMonthlyLayout, parseMbPaMonthlyRows } from '@/lib/mb-pa-import';
 
 type ParsedEntry = {
   name: string; count: number; volume: number;
@@ -233,7 +233,7 @@ async function getImportSummary(entryId: string, collectorId: string) {
 //   3. ACQ report:       AGENT CODE | LAST NAME | FIRST NAME | DATE ONBOARD | SEAT CATEGORY |
 //      TOTAL + repeating NTB/SUPPLEMENTARY pairs per date
 function parseExcelRows(rows: any[], metricType: string, campaignName = ''): ParsedEntry[] {
-  const isMbPa = /\bmb pa\b/i.test(campaignName);
+  const isMbPa = /\bmb\s*pa\b/i.test(campaignName);
   let nameCol  = 1;
   let countCol = 3;
   let volumeCol = 4;
@@ -600,22 +600,20 @@ function detectDatesByRow(rows: any[][], fallback: Date, dateCol?: number) {
 // Dashboard workbooks use merged month/metric headers. Build a logical header
 // for every column by carrying the last month and parent metric to child columns.
 function parseMonthlyAgentRows(rows: any[][], sheetName: string, campaignName: string, fallbackDate: Date) {
-  if (/\bmb pa\b/i.test(campaignName)) {
-    const mbPa = parseMbPaMonthlyRows(rows, fallbackDate);
-    if (mbPa?.entries.length) {
-      return {
-        format: 'MB PA Monthly Dashboard',
-        entries: mbPa.entries.map((entry) => ({
-          ...entry,
-          sourceSheet: sheetName,
-          campaignName,
-          metricType: 'all_metrics',
-        })),
-        invalidRows: mbPa.invalidRows,
-        warnings: mbPa.warnings,
-        errors: [] as string[],
-      };
-    }
+  const mbPa = parseMbPaMonthlyRows(rows, fallbackDate);
+  if (mbPa?.entries.length) {
+    return {
+      format: 'MB PA Monthly Dashboard',
+      entries: mbPa.entries.map((entry) => ({
+        ...entry,
+        sourceSheet: sheetName,
+        campaignName,
+        metricType: 'all_metrics',
+      })),
+      invalidRows: mbPa.invalidRows,
+      warnings: mbPa.warnings,
+      errors: [] as string[],
+    };
   }
 
   const monthHits: Array<{ row: number; col: number; month: number; year?: number }> = [];
@@ -1025,6 +1023,9 @@ function classifyEntries(entries: ParsedEntry[], agentsByCampaign: Map<string, {
       baseData.booked = entry.booked;
       baseData.activations = entry.activations;
     }
+    for (const key of MB_PA_DETAIL_KEYS) {
+      if (entry[key] !== undefined) baseData[key] = entry[key];
+    }
     if (entry.ntb !== undefined || entry.seatCategory !== undefined) {
       baseData.ntb = entry.ntb ?? 0;
       baseData.supplementary = entry.supplementary ?? 0;
@@ -1117,13 +1118,19 @@ async function buildWorkbookPreview({
   const sheets: SheetPreview[] = workbook.SheetNames.map((sheetName, index) => {
     const sheet = workbook.Sheets[sheetName];
     const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null } as any);
-    const mapping = mapWorksheetCampaign(sheetName, selectedCampaigns);
+    const defaultMapping = mapWorksheetCampaign(sheetName, selectedCampaigns);
+    const mbPaCampaigns = selectedCampaigns.filter((campaign) => /\bmb\s*pa\b/i.test(campaign.campaignName));
+    const detectedMbPaLayout = isMbPaMonthlyLayout(rows);
+    const mapping = detectedMbPaLayout && mbPaCampaigns.length === 1
+      ? { campaign: mbPaCampaigns[0], source: 'sheet' as const }
+      : defaultMapping;
     const reportDate = parseReportDateFromRows(rows, selectedReportDate, sheetName);
     const detectedMetric = detectMetricFromText(`${sheetName} ${rows.slice(0, 5).flat().join(' ')}`, metricType);
     const parsed = parseDetectedRows(rows, detectedMetric, mapping.campaign.campaignName, sheetName, reportDate);
     const entries: ParsedEntry[] = [];
     let duplicateRows = 0;
     const warnings = [...parsed.warnings];
+    if (detectedMbPaLayout) warnings.unshift('MB PA layout automatically detected from the TRANS and BILLINGS month blocks.');
     const sheetSeen = new Set<string>();
 
     for (const entry of parsed.entries) {
@@ -1224,6 +1231,10 @@ async function buildWorkbookPreview({
       goal: metric.goal ?? null,
       actual: metric.actual ?? null,
       achievement: metric.achievement ?? null,
+      ...(entry.c2gTxn !== undefined && metric.metricType === 'transmittals' ? {
+        c2gTxn: entry.c2gTxn, btTxn: entry.btTxn, balconTxn: entry.balconTxn, grandTotalTxn: entry.grandTotalTxn,
+        c2gVol: entry.c2gVol, btVol: entry.btVol, balconVol: entry.balconVol, grandTotalVol: entry.grandTotalVol,
+      } : {}),
       status: agent && existingKeys.has(key) ? 'Existing' : 'New',
       validationMessage: agent ? '' : 'Agent not found; approve creation before import.',
       row: entry.rowIdx,

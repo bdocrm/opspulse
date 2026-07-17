@@ -37,6 +37,14 @@ interface NormalizedPreviewRecord {
   goal?: number | null;
   actual?: number | null;
   achievement?: number | null;
+  c2gTxn?: number;
+  btTxn?: number;
+  balconTxn?: number;
+  grandTotalTxn?: number;
+  c2gVol?: number;
+  btVol?: number;
+  balconVol?: number;
+  grandTotalVol?: number;
   status: string;
   validationMessage?: string;
   row: number;
@@ -63,6 +71,14 @@ interface MatchedAgent {
   goal?: number;
   actual?: number;
   achievement?: number;
+  c2gTxn?: number;
+  btTxn?: number;
+  balconTxn?: number;
+  grandTotalTxn?: number;
+  c2gVol?: number;
+  btVol?: number;
+  balconVol?: number;
+  grandTotalVol?: number;
 }
 
 interface NewAgent {
@@ -85,6 +101,14 @@ interface NewAgent {
   goal?: number;
   actual?: number;
   achievement?: number;
+  c2gTxn?: number;
+  btTxn?: number;
+  balconTxn?: number;
+  grandTotalTxn?: number;
+  c2gVol?: number;
+  btVol?: number;
+  balconVol?: number;
+  grandTotalVol?: number;
 }
 
 interface ImportFileSummary {
@@ -223,6 +247,15 @@ const formatDate = (value?: string | null) =>
     : '-';
 
 const metricLabel = (value: string) => METRIC_LABELS[value] || value.replace(/_/g, ' ');
+
+const mbPaBreakdown = (row: NormalizedPreviewRecord, type: 'trans' | 'billings') => {
+  const values = type === 'trans'
+    ? [row.c2gTxn, row.btTxn, row.balconTxn, row.grandTotalTxn]
+    : [row.c2gVol, row.btVol, row.balconVol, row.grandTotalVol];
+  return values.every((value) => value == null)
+    ? '-'
+    : values.map((value) => Number(value || 0).toLocaleString()).join(' / ');
+};
 
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const MONTH_ABBR = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
@@ -595,6 +628,18 @@ export default function BulkImportPage() {
         </>
       );
     }
+    if (a.c2gTxn !== undefined) {
+      return (
+        <>
+          <p className="text-sm font-semibold text-slate-700">
+            TRANS: C2G {(a.c2gTxn ?? 0).toLocaleString()} | BT {(a.btTxn ?? 0).toLocaleString()} | BalCon {(a.balconTxn ?? 0).toLocaleString()} | Total {(a.grandTotalTxn ?? 0).toLocaleString()}
+          </p>
+          <p className="text-xs text-slate-500">
+            BILLINGS: C2G ₱{(a.c2gVol ?? 0).toLocaleString()} | BT ₱{(a.btVol ?? 0).toLocaleString()} | BalCon ₱{(a.balconVol ?? 0).toLocaleString()} | Total ₱{(a.grandTotalVol ?? 0).toLocaleString()}
+          </p>
+        </>
+      );
+    }
     return (
       <>
         {importMode !== 'single' ? (
@@ -804,6 +849,7 @@ export default function BulkImportPage() {
             <p><span className="font-medium text-slate-800">ACQ (.xlsx) or CSV:</span> AGENT CODE | LAST NAME | FIRST NAME | DATE ONBOARD | SEAT CATEGORY | TOTAL + per-date NTB/SUPPLEMENTARY pairs — reads name from Last + First and the highest NTB &amp; Supplementary per agent</p>
             <p><span className="font-medium text-slate-800">BDO Dashboard (.xlsx/.xls):</span> Automatically scans YTD Performance, Manpower Monitoring, CI/Cross Sell agent and HOH monitoring, and TLs Scorecard worksheets. Merged monthly groups and populated months are detected dynamically.</p>
             <p><span className="font-medium text-slate-800">BPI Dashboard (.xlsx/.xls):</span> Automatically scans YTD Performance, Manpower Monitoring, PA agent/HOH monitoring, PL productivity, and PL HOH monitoring. Campaign sections, month groups, Count, and Volume metrics are mapped independently.</p>
+            <p><span className="font-medium text-slate-800">MB PA Monthly Dashboard (.xlsx/.xls):</span> Automatically recognizes month blocks with C2G, BT, and BalCon under TRANS and BILLINGS, including totals, Tier, Target, and Achievement—even when the worksheet is named MOM PROD.</p>
             <p className="text-xs text-slate-400">For single metric mode, the COUNT column is stored as the selected type. For all metrics mode, each column is stored separately. Use the Report Month picker to set the period.</p>
             <Button onClick={downloadTemplate} variant="outline" size="sm" className="gap-2 mt-1">
               <Download className="h-4 w-4" /> Download CSV Template
@@ -1398,12 +1444,12 @@ export default function BulkImportPage() {
               ))}
             </div>
             <div className="max-h-96 overflow-auto rounded-lg border">
-              <table className="w-full min-w-[1200px] text-xs">
-                <thead className="sticky top-0 bg-slate-100 text-left"><tr>{['File', 'Worksheet', 'Campaign', 'Agent', 'Detected Month', 'Report Period', 'Report Date', 'Metric', 'Count', 'Volume', 'Goal', 'Actual', 'Achievement', 'Status', 'Validation Message'].map((label) => <th key={label} className="p-2 font-medium">{label}</th>)}</tr></thead>
+              <table className="w-full min-w-[1600px] text-xs">
+                <thead className="sticky top-0 bg-slate-100 text-left"><tr>{['File', 'Worksheet', 'Campaign', 'Agent', 'Detected Month', 'Report Period', 'Report Date', 'Metric', 'Count', 'Volume', 'TRANS (C2G / BT / BalCon / Total)', 'BILLINGS (C2G / BT / BalCon / Total)', 'Goal', 'Actual', 'Achievement', 'Status', 'Validation Message'].map((label) => <th key={label} className="p-2 font-medium">{label}</th>)}</tr></thead>
                 <tbody>{filteredPreviewRows.slice(0, 500).map((row, index) => (
                   <tr key={`${row.fileName}-${row.sheet}-${row.row}-${index}`} className="border-t">
                     <td className="max-w-40 truncate p-2">{row.fileName}</td><td className="p-2">{row.sheet}</td><td className="p-2">{row.campaignName}</td><td className="p-2 font-medium">{'agentName' in row ? row.agentName : row.name}</td><td className="p-2">{monthSummaries.find((month) => month.month === row.reportDate?.slice(0, 7))?.label || row.reportDate?.slice(0, 7) || '-'}</td>
-                    <td className="p-2 capitalize">{row.reportPeriodType || reportPeriodType}</td><td className="p-2">{row.reportDate || '-'}</td><td className="p-2">{metricLabel(row.metricType || metricType)}</td><td className="p-2 text-right">{row.count == null ? '-' : row.count.toLocaleString()}</td><td className="p-2 text-right">{row.volume == null ? '-' : row.volume.toLocaleString()}</td><td className="p-2 text-right">{row.goal == null ? '-' : row.goal.toLocaleString()}</td><td className="p-2 text-right">{row.actual == null ? '-' : row.actual.toLocaleString()}</td><td className="p-2 text-right">{row.achievement == null ? '-' : `${(row.achievement * (row.achievement <= 2 ? 100 : 1)).toFixed(1)}%`}</td>
+                    <td className="p-2 capitalize">{row.reportPeriodType || reportPeriodType}</td><td className="p-2">{row.reportDate || '-'}</td><td className="p-2">{metricLabel(row.metricType || metricType)}</td><td className="p-2 text-right">{row.count == null ? '-' : row.count.toLocaleString()}</td><td className="p-2 text-right">{row.volume == null ? '-' : row.volume.toLocaleString()}</td><td className="whitespace-nowrap p-2 text-right">{mbPaBreakdown(row, 'trans')}</td><td className="whitespace-nowrap p-2 text-right">{mbPaBreakdown(row, 'billings')}</td><td className="p-2 text-right">{row.goal == null ? '-' : row.goal.toLocaleString()}</td><td className="p-2 text-right">{row.actual == null ? '-' : row.actual.toLocaleString()}</td><td className="p-2 text-right">{row.achievement == null ? '-' : `${(row.achievement * (row.achievement <= 2 ? 100 : 1)).toFixed(1)}%`}</td>
                     <td className={`p-2 font-medium ${row.previewStatus === 'Existing' ? 'text-blue-700' : row.previewStatus === 'Unmapped' ? 'text-orange-700' : 'text-green-700'}`}>{row.previewStatus}</td><td className="p-2 text-slate-500">{row.validationMessage || '-'}</td>
                   </tr>
                 ))}</tbody>

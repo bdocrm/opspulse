@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { parseMbPaMonthlyRows } from '../lib/mb-pa-import';
+import { isMbPaMonthlyLayout, parseMbPaMonthlyRows } from '../lib/mb-pa-import';
 
 const rows = [
   [null, null, 'JANUARY', null, null, null, null, null, null, null, null, null, 'JAN ACHIEVEMENT', 'FEBRUARY', null, null, null, null, null, null, null, null, null, 'FEB ACHIEVEMENT'],
@@ -10,6 +10,8 @@ const rows = [
 ];
 
 const parsed = parseMbPaMonthlyRows(rows, new Date(2026, 6, 1));
+assert.equal(isMbPaMonthlyLayout(rows), true);
+assert.equal(isMbPaMonthlyLayout([['NAME', 'TRANSMITTED', 'VOLUME']]), false);
 assert.ok(parsed);
 assert.equal(parsed.entries.length, 4);
 

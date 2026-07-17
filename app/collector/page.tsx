@@ -132,7 +132,7 @@ const isBdoCampaign = (name?: string | null) => /^bdo\b/i.test((name || '').trim
 const isMbPlCampaign = (name?: string | null) => /\bmb pl\b/i.test(name || '');
 
 // MB PA reports TOTAL (C2G / BT / BalCon PA) + GRAND TOTAL transaction + volume.
-const isMbPaCampaign = (name?: string | null) => /\bmb pa\b/i.test(name || '');
+const isMbPaCampaign = (name?: string | null) => /\bmb\s*pa\b/i.test(name || '');
 
 // MB PL "Goal per Agent" — standard Disbursed + Monthly Gross Turn Ins targets by level.
 const MB_PL_LEVELS = ['PAYROLL SU2', 'PAYROLL HYBRID-ROOKIE', 'DEPO HYBRID', 'PAYROLL HYBRID'];

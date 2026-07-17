@@ -84,6 +84,18 @@ function isFooter(value: unknown) {
   return !name || ['total', 'grand total', 'subtotal', 'summary', 'overall'].some((label) => name === label || name.startsWith(`${label} `));
 }
 
+export function isMbPaMonthlyLayout(rows: unknown[][]) {
+  const labels = rows.slice(0, 20).flatMap((row) => (row || []).map(normalize)).filter(Boolean);
+  const has = (pattern: RegExp) => labels.some((label) => pattern.test(label));
+  return has(/^(?:trans|transaction|transactions)$/)
+    && has(/^billings?$/)
+    && has(/^c2g$/)
+    && has(/^bt$/)
+    && has(/^bal\s*con(?:\s*pa)?$|^balcon(?:\s*pa)?$/)
+    && has(/^total\s+(?:trans|transaction|transactions)$/)
+    && has(/^total\s+billings?$/);
+}
+
 /**
  * Parses the MB PA annual dashboard layout:
  *
@@ -94,6 +106,8 @@ function isFooter(value: unknown) {
  * month and parent group to reconstruct the logical header for every column.
  */
 export function parseMbPaMonthlyRows(rows: unknown[][], fallbackDate: Date): MbPaMonthlyParseResult | null {
+  if (!isMbPaMonthlyLayout(rows)) return null;
+
   let nameHeaderRow = -1;
   let nameCol = -1;
   for (let r = 0; r < Math.min(rows.length, 30) && nameCol < 0; r++) {
