@@ -500,7 +500,7 @@ export async function GET(req: NextRequest) {
     );
     const campaignsWithBpiCurrencyTargets = new Set(
       usableDashboardAgentRecords
-        .filter((record) => record.recordKind === "ytd" && Number(record.target || 0) >= 1_000_000 && /^BPI\b/i.test(campaignNameById.get(record.campaignId) || ""))
+        .filter((record) => Number(record.target || 0) >= 1_000_000 && /^BPI\b/i.test(campaignNameById.get(record.campaignId) || ""))
         .map((record) => record.campaignId)
     );
     const campaignKpiById = new Map(campaigns.map((campaign) => [
@@ -509,6 +509,7 @@ export async function GET(req: NextRequest) {
     ]));
     const importedEntryCountByCampaign = new Map<string, number>();
     const importedGoalByCampaign = new Map<string, number>();
+    const importedAgentGoalByCampaign = new Map<string, number>();
     const importedActualByCampaign = new Map<string, number>();
     const importedTargetByAgent = new Map<string, number>();
     const importedBdoPerformanceByCampaign = new Map<
@@ -540,7 +541,12 @@ export async function GET(req: NextRequest) {
       const normalizedName = normalizeImportedAgentName(entityName);
       const agentId = actualAgentIdByCampaignAndName.get(`${record.campaignId}|${normalizedName}`) || importedAgentId(record.campaignId, entityName);
       const target = Number(record.target || 0);
-      if (target) importedTargetByAgent.set(agentId, (importedTargetByAgent.get(agentId) ?? 0) + target);
+      if (target) {
+        importedTargetByAgent.set(agentId, (importedTargetByAgent.get(agentId) ?? 0) + target);
+        if (record.recordKind === "agent_monitoring") {
+          importedAgentGoalByCampaign.set(record.campaignId, (importedAgentGoalByCampaign.get(record.campaignId) ?? 0) + target);
+        }
+      }
       const effectiveActual = importedActual(record);
       if (effectiveActual == null) continue;
       if (record.recordKind !== "ytd" && /^BDO\b/i.test(campaignNameById.get(record.campaignId) || "")) {
@@ -662,7 +668,7 @@ export async function GET(req: NextRequest) {
           ? (hasBdoAgentImport ? importedTargetTotal : importedGoalByCampaign.get(c.id) || ceoGoal)
           : isMbPaCampaign
             ? mbPaGoalByCampaign.get(c.id) || ceoGoal
-            : importedGoalByCampaign.get(c.id) || ceoGoal,
+            : importedGoalByCampaign.get(c.id) || importedAgentGoalByCampaign.get(c.id) || ceoGoal,
         actual: isBdoCampaign
           ? (hasBdoAgentImport ? bdoActualFromAgents : importedActualByCampaign.get(c.id) ?? null)
           : isMbPaCampaign

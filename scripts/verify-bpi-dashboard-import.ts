@@ -87,6 +87,59 @@ const manpower = parsed.records.filter((record) => record.recordKind === 'manpow
 assert.equal(manpower.length, 4);
 assert.equal(mapWorksheetCampaign(`${manpower[0].category} ${manpower[0].worksheetSource}`, campaigns).source, 'unresolved');
 
+const inboundWorkbook = XLSX.utils.book_new();
+const inboundSheet = XLSX.utils.aoa_to_sheet([
+  [null, 'YTD', null, 'JANUARY', null, 'FEBRUARY', null],
+  ['AGENT', 'TRANSMITTAL', 'BOOKED VOLUME', 'TRANSMITTAL', 'BOOKED VOLUME', 'TRANSMITTAL', 'BOOKED VOLUME'],
+  ['Inbound Agent', 30, 4_000_000, 10, 1_500_000, 20, 2_500_000],
+  ['TOTAL', 30, 4_000_000, 10, 1_500_000, 20, 2_500_000],
+  [],
+  ['MONTH', 'GOAL'],
+  ['JANUARY', 15_000_000],
+  ['FEBRUARY', 20_000_000],
+]);
+inboundSheet['!merges'] = [
+  XLSX.utils.decode_range('B1:C1'),
+  XLSX.utils.decode_range('D1:E1'),
+  XLSX.utils.decode_range('F1:G1'),
+];
+XLSX.utils.book_append_sheet(inboundWorkbook, inboundSheet, 'YTD');
+assert.equal(isBpiDashboardWorkbook(inboundWorkbook, 'INBOUND YTD REPORT.xlsx'), true);
+assert.equal(isBpiDashboardWorkbook(inboundWorkbook), false);
+const inboundParsed = parseBpiDashboardWorkbook(inboundWorkbook, new Date(2026, 0, 1), 'INBOUND YTD REPORT.xlsx');
+assert.equal(inboundParsed.records.length, 4);
+assert.deepEqual(new Set(inboundParsed.records.map((record) => record.metric)), new Set(['Transmitted Count', 'Booked Volume']));
+assert.deepEqual(inboundParsed.records.filter((record) => record.metric === 'Booked Volume').map((record) => record.target), [15_000_000, 20_000_000]);
+assert.equal(inboundParsed.records.every((record) => mapWorksheetCampaign(`${record.category} ${record.metric}`, campaigns).campaign.campaignName === 'BPI PA INBOUND'), true);
+
+const plWorkbook = XLSX.utils.book_new();
+const plJanuary = XLSX.utils.aoa_to_sheet([
+  [null, 2026, null, null, 'JANUARY', null, null, null, null, null],
+  [null, null, null, null, 'TRANSMITTED', null, 'APPROVALS', null, 'BOOKED', null],
+  ['NUMBER', 'NAME', 'DATE HIRED', 'TYPE', 'COUNT', 'VOLUME', 'COUNT', 'VOLUME', 'COUNT', 'VOLUME'],
+  [1, 'PL Agent', '2025-01-01', 'OLD', 5, 500_000, 4, 400_000, 3, 300_000],
+]);
+plJanuary['!merges'] = [
+  XLSX.utils.decode_range('E1:J1'),
+  XLSX.utils.decode_range('E2:F2'),
+  XLSX.utils.decode_range('G2:H2'),
+  XLSX.utils.decode_range('I2:J2'),
+];
+XLSX.utils.book_append_sheet(plWorkbook, plJanuary, 'JANUARY');
+XLSX.utils.book_append_sheet(plWorkbook, XLSX.utils.aoa_to_sheet([
+  ['SUMMARY'],
+  [],
+  ['TYPE', 'PLAN VOLUME PER AGENT'],
+  ['OLD', 5_400_000],
+  ['SEMI OLD', 4_000_000],
+  ['NEW', 2_000_000],
+]), 'SUMMARY');
+assert.equal(isBpiDashboardWorkbook(plWorkbook, 'PERSONAL LOANS_YTD PRODUCTIVITY 2026.xlsx'), true);
+const plParsed = parseBpiDashboardWorkbook(plWorkbook, new Date(2026, 0, 1), 'PERSONAL LOANS_YTD PRODUCTIVITY 2026.xlsx');
+assert.equal(plParsed.records.length, 6);
+assert.equal(plParsed.records.find((record) => record.metric === 'Booked Volume')?.target, 5_400_000);
+assert.equal(plParsed.records.find((record) => record.metric === 'Booked Volume')?.achievement, 300_000 / 5_400_000);
+
 console.log(JSON.stringify({
   supportedWorksheets: parsed.sheets.length,
   records: parsed.records.length,

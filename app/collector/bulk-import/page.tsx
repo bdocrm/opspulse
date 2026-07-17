@@ -1196,6 +1196,16 @@ export default function BulkImportPage() {
       (!previewFilter.metric || row.metricType === previewFilter.metric) &&
       (!previewFilter.status || row.previewStatus === previewFilter.status)
     );
+    const showMbPaBreakdown = filteredPreviewRows.some((row) =>
+      /\bMB\s*PA\b/i.test(row.campaignName || '') ||
+      [row.c2gTxn, row.btTxn, row.balconTxn, row.grandTotalTxn, row.c2gVol, row.btVol, row.balconVol, row.grandTotalVol].some((value) => value != null)
+    );
+    const previewHeaders = [
+      'File', 'Worksheet', 'Campaign', 'Agent', 'Detected Month', 'Report Period', 'Report Date',
+      'Metric', 'Count', 'Volume',
+      ...(showMbPaBreakdown ? ['TRANS (C2G / BT / BalCon / Total)', 'BILLINGS (C2G / BT / BalCon / Total)'] : []),
+      'Goal', 'Actual', 'Achievement', 'Status', 'Validation Message',
+    ];
     return (
       <div className="space-y-6 p-6">
         <PageTitle title="Review Before Import" subtitle="Confirm the agents and data before saving" />
@@ -1444,12 +1454,12 @@ export default function BulkImportPage() {
               ))}
             </div>
             <div className="max-h-96 overflow-auto rounded-lg border">
-              <table className="w-full min-w-[1600px] text-xs">
-                <thead className="sticky top-0 bg-slate-100 text-left"><tr>{['File', 'Worksheet', 'Campaign', 'Agent', 'Detected Month', 'Report Period', 'Report Date', 'Metric', 'Count', 'Volume', 'TRANS (C2G / BT / BalCon / Total)', 'BILLINGS (C2G / BT / BalCon / Total)', 'Goal', 'Actual', 'Achievement', 'Status', 'Validation Message'].map((label) => <th key={label} className="p-2 font-medium">{label}</th>)}</tr></thead>
+              <table className={`w-full ${showMbPaBreakdown ? 'min-w-[1600px]' : 'min-w-[1350px]'} text-xs`}>
+                <thead className="sticky top-0 bg-slate-100 text-left"><tr>{previewHeaders.map((label) => <th key={label} className="p-2 font-medium">{label}</th>)}</tr></thead>
                 <tbody>{filteredPreviewRows.slice(0, 500).map((row, index) => (
                   <tr key={`${row.fileName}-${row.sheet}-${row.row}-${index}`} className="border-t">
                     <td className="max-w-40 truncate p-2">{row.fileName}</td><td className="p-2">{row.sheet}</td><td className="p-2">{row.campaignName}</td><td className="p-2 font-medium">{'agentName' in row ? row.agentName : row.name}</td><td className="p-2">{monthSummaries.find((month) => month.month === row.reportDate?.slice(0, 7))?.label || row.reportDate?.slice(0, 7) || '-'}</td>
-                    <td className="p-2 capitalize">{row.reportPeriodType || reportPeriodType}</td><td className="p-2">{row.reportDate || '-'}</td><td className="p-2">{metricLabel(row.metricType || metricType)}</td><td className="p-2 text-right">{row.count == null ? '-' : row.count.toLocaleString()}</td><td className="p-2 text-right">{row.volume == null ? '-' : row.volume.toLocaleString()}</td><td className="whitespace-nowrap p-2 text-right">{mbPaBreakdown(row, 'trans')}</td><td className="whitespace-nowrap p-2 text-right">{mbPaBreakdown(row, 'billings')}</td><td className="p-2 text-right">{row.goal == null ? '-' : row.goal.toLocaleString()}</td><td className="p-2 text-right">{row.actual == null ? '-' : row.actual.toLocaleString()}</td><td className="p-2 text-right">{row.achievement == null ? '-' : `${(row.achievement * (row.achievement <= 2 ? 100 : 1)).toFixed(1)}%`}</td>
+                    <td className="p-2 capitalize">{row.reportPeriodType || reportPeriodType}</td><td className="p-2">{row.reportDate || '-'}</td><td className="p-2">{metricLabel(row.metricType || metricType)}</td><td className="p-2 text-right">{row.count == null ? '-' : row.count.toLocaleString()}</td><td className="p-2 text-right">{row.volume == null ? '-' : row.volume.toLocaleString()}</td>{showMbPaBreakdown && <><td className="whitespace-nowrap p-2 text-right">{mbPaBreakdown(row, 'trans')}</td><td className="whitespace-nowrap p-2 text-right">{mbPaBreakdown(row, 'billings')}</td></>}<td className="p-2 text-right">{row.goal == null ? '-' : row.goal.toLocaleString()}</td><td className="p-2 text-right">{row.actual == null ? '-' : row.actual.toLocaleString()}</td><td className="p-2 text-right">{row.achievement == null ? '-' : `${(row.achievement * (row.achievement <= 2 ? 100 : 1)).toFixed(1)}%`}</td>
                     <td className={`p-2 font-medium ${row.previewStatus === 'Existing' ? 'text-blue-700' : row.previewStatus === 'Unmapped' ? 'text-orange-700' : 'text-green-700'}`}>{row.previewStatus}</td><td className="p-2 text-slate-500">{row.validationMessage || '-'}</td>
                   </tr>
                 ))}</tbody>

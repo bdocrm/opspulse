@@ -12,11 +12,12 @@ export const BPI_WORKSHEETS = {
 } as const;
 
 export type BpiWorksheetType = typeof BPI_WORKSHEETS[keyof typeof BPI_WORKSHEETS];
+export type BpiStandaloneWorksheetType = 'PA Inbound YTD Productivity' | 'PL Monthly Productivity';
 export type BpiImportRecord = BdoImportRecord;
 
 type SheetResult = {
   sheetName: string;
-  detectedType: BpiWorksheetType | 'Unsupported';
+  detectedType: BpiWorksheetType | BpiStandaloneWorksheetType | 'Unsupported';
   records: BpiImportRecord[];
   months: string[];
   warnings: BdoImportIssue[];
@@ -27,7 +28,7 @@ const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 
 // BPI productivity workbooks use OLD / SEMI OLD / NEW as tenure buckets and
 // place their aggregate totals in the agent-name column. They are headings,
 // not collectors, so never normalize them into agent monitoring records.
-const SUMMARY_NAME = /^(?:total|grand total|average|avg|summary|ranking|rank|team total|overall|notes?|remarks?|old|semi[\s-]*old|new|(?:old|semi[\s-]*old|new|total)[\s-]*average[\s-]*per[\s-]*agent)$/i;
+const SUMMARY_NAME = /^(?:total|grand total|average|avg|summary|summary[\s-]*average[\s-]*per[\s-]*agent|ranking|rank|team total|overall|notes?|remarks?|old|semi[\s-]*old|new|(?:old|semi[\s-]*old|new|total)[\s-]*average[\s-]*per[\s-]*agent)$/i;
 const INVALID_NUMBER = /^#(?:div\/0!|value!|n\/a|ref!|num!|name\?|null!)$/i;
 
 export function normalizeBpiText(value: unknown) {
@@ -42,21 +43,56 @@ export function detectBpiWorksheet(name: string): BpiWorksheetType | null {
   return BPI_WORKSHEETS[key(name) as keyof typeof BPI_WORKSHEETS] || null;
 }
 
-export function isBpiDashboardWorkbook(workbook: XLSX.WorkBook) {
-  return workbook.SheetNames.some((name) => {
+type BpiStandaloneKind = 'pa_inbound' | 'pl' | null;
+
+function standaloneKindFromFileName(sourceFileName = ''): BpiStandaloneKind {
+  const canonical = canonicalCampaignName(sourceFileName);
+  if (canonical === 'BPI PA INBOUND' || /\binbound\b/i.test(sourceFileName)) return 'pa_inbound';
+  if (canonical === 'BPI PL' || /\bpersonal[\s_-]*loans?\b/i.test(sourceFileName)) return 'pl';
+  return null;
+}
+
+function isPaInboundProductivityRows(rows: unknown[][]) {
+  const headerText = rows.slice(0, 12).flat().map(normalizeBpiText).join(' ');
+  return /\bagent\b/i.test(headerText) && /\btransmittal\b/i.test(headerText) && /\bbooked volume\b/i.test(headerText);
+}
+
+function isPlProductivityRows(rows: unknown[][]) {
+  const headerText = rows.slice(0, 12).flat().map(normalizeBpiText).join(' ');
+  return /\bname\b/i.test(headerText) && /\btransmitted\b/i.test(headerText) &&
+    /\bapprovals\b/i.test(headerText) && /\bbooked\b/i.test(headerText) &&
+    /\bcount\b/i.test(headerText) && /\bvolume\b/i.test(headerText);
+}
+
+export function isBpiDashboardWorkbook(workbook: XLSX.WorkBook, sourceFileName = '') {
+  const hasDashboardWorksheet = workbook.SheetNames.some((name) => {
     const detected = detectBpiWorksheet(name);
     return detected && !['YTD Performance', 'Manpower Monitoring'].includes(detected);
+  });
+  if (hasDashboardWorksheet) return true;
+
+  const standaloneKind = standaloneKindFromFileName(sourceFileName);
+  if (!standaloneKind) return false;
+  return workbook.SheetNames.some((name) => {
+    const rows = rowsWithMergedCells(workbook.Sheets[name]);
+    return standaloneKind === 'pa_inbound' ? isPaInboundProductivityRows(rows) : isPlProductivityRows(rows);
   });
 }
 
 function rowsWithMergedCells(sheet: XLSX.WorkSheet): unknown[][] {
   const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true, defval: null });
+  const origin = sheet['!ref'] ? XLSX.utils.decode_range(sheet['!ref']).s : { r: 0, c: 0 };
   for (const range of sheet['!merges'] || []) {
-    const value = rows[range.s.r]?.[range.s.c];
+    const startRow = range.s.r - origin.r;
+    const endRow = range.e.r - origin.r;
+    const startCol = range.s.c - origin.c;
+    const endCol = range.e.c - origin.c;
+    if (startRow < 0 || startCol < 0) continue;
+    const value = rows[startRow]?.[startCol];
     if (value == null || value === '') continue;
-    for (let row = range.s.r; row <= range.e.r; row++) {
+    for (let row = startRow; row <= endRow; row++) {
       rows[row] ||= [];
-      for (let col = range.s.c; col <= range.e.c; col++) {
+      for (let col = startCol; col <= endCol; col++) {
         if (rows[row][col] == null || rows[row][col] === '') rows[row][col] = value;
       }
     }
@@ -206,7 +242,43 @@ function productivityMetric(labels: unknown[]) {
   return `${base} ${/volume|\bvol\b/.test(text) ? 'Volume' : 'Count'}`;
 }
 
-function parseProductivity(rows: unknown[][], sheetName: string, detectedType: BpiWorksheetType, fallbackYear: number): SheetResult {
+function normalizeAgentType(value: unknown) {
+  const normalized = key(value);
+  if (/^semi old$/.test(normalized)) return 'SEMI OLD';
+  if (/^old$/.test(normalized)) return 'OLD';
+  if (/^new$/.test(normalized)) return 'NEW';
+  return normalizeBpiText(value).toUpperCase();
+}
+
+function productivityTargetsByType(rows: unknown[][]) {
+  const targets = new Map<string, number>();
+  let targetColumn = -1;
+  let targetHeaderRow = -1;
+  for (let row = 0; row < rows.length; row++) {
+    const col = (rows[row] || []).findIndex((cell) => /^plan volume per agent$/i.test(normalizeBpiText(cell)));
+    if (col >= 0) {
+      targetColumn = col;
+      targetHeaderRow = row;
+      break;
+    }
+  }
+  if (targetColumn < 0) return targets;
+  for (let row = targetHeaderRow + 1; row < rows.length; row++) {
+    const type = (rows[row] || []).map(normalizeAgentType).find((value) => /^(?:OLD|SEMI OLD|NEW)$/.test(value));
+    if (!type) continue;
+    const parsed = parseNumeric(rows[row]?.[targetColumn]);
+    if (parsed.value != null && parsed.value > 0) targets.set(type, parsed.value);
+  }
+  return targets;
+}
+
+function parseProductivity(
+  rows: unknown[][],
+  sheetName: string,
+  detectedType: BpiWorksheetType | BpiStandaloneWorksheetType,
+  fallbackYear: number,
+  targetsByType = new Map<string, number>(),
+): SheetResult {
   const year = workbookYear(rows, fallbackYear);
   const nameHit = findColumn(rows, [/^(?:agent|agent name|full name|employee name|name)$/]);
   const dateHit = findColumn(rows, [/^(?:date hired|hire date|date onboard|date on board)$/]);
@@ -227,15 +299,118 @@ function parseProductivity(rows: unknown[][], sheetName: string, detectedType: B
     const row = rows[rowIndex] || [];
     const name = normalizeBpiText(row[nameHit.col]);
     if (!name || SUMMARY_NAME.test(name) || /^(?:agent|agent name|full name|name)$/i.test(name)) continue;
+    const agentType = normalizeAgentType(typeHit ? row[typeHit.col] : '');
     for (const column of columns) {
       const parsed = parseNumeric(row[column.col]);
       addIssue(warnings, sheetName, rowIndex + 1, parsed, row[column.col]);
       if (parsed.value == null) continue;
       const metadata = [dateHit && `Date Hired: ${normalizeBpiText(row[dateHit.col])}`, typeHit && `Employee Type: ${normalizeBpiText(row[typeHit.col])}`, `Source Column: ${XLSX.utils.encode_col(column.col)}`].filter(Boolean).join('; ');
-      records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'agent_monitoring', monitoringType: 'PL_PRODUCTIVITY', entityName: name, category: 'Personal Loans', product: column.metric.endsWith('Volume') ? 'Volume' : 'Count', metric: column.metric, month: column.month, year: column.year, reportDate: new Date(column.year, column.month - 1, 1), actual: parsed.value, remark: metadata });
+      const target = column.metric === 'Booked Volume' ? targetsByType.get(agentType) : undefined;
+      records.push({
+        worksheetSource: sheetName,
+        sourceRow: rowIndex + 1,
+        recordKind: 'agent_monitoring',
+        monitoringType: 'PL_PRODUCTIVITY',
+        entityName: name,
+        level: agentType || undefined,
+        category: 'Personal Loans',
+        product: column.metric.endsWith('Volume') ? 'Volume' : 'Count',
+        metric: column.metric,
+        month: column.month,
+        year: column.year,
+        reportDate: new Date(column.year, column.month - 1, 1),
+        target,
+        actual: parsed.value,
+        achievement: target ? parsed.value / target : undefined,
+        remark: metadata,
+      });
     }
   }
   return { sheetName, detectedType, records, months: [...new Set(records.map((record) => monthLabel(record.year, record.month!)))], warnings, status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped' };
+}
+
+function inboundGoalsByMonth(rows: unknown[][]) {
+  const goals = new Map<number, number>();
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex] || [];
+    const monthColumn = row.findIndex((cell) => /^month$/i.test(normalizeBpiText(cell)));
+    const goalColumn = row.findIndex((cell) => /^(?:goal|target)$/i.test(normalizeBpiText(cell)));
+    if (monthColumn < 0 || goalColumn < 0) continue;
+    for (let row = rowIndex + 1; row < rows.length; row++) {
+      const period = monthFrom(rows[row]?.[monthColumn]);
+      if (!period) continue;
+      const parsed = parseNumeric(rows[row]?.[goalColumn]);
+      if (parsed.value != null && parsed.value > 0) goals.set(period.month, parsed.value);
+    }
+    break;
+  }
+  return goals;
+}
+
+function parsePaInboundProductivity(
+  rows: unknown[][],
+  sheetName: string,
+  fallbackYear: number,
+): SheetResult {
+  const detectedType: BpiStandaloneWorksheetType = 'PA Inbound YTD Productivity';
+  const year = workbookYear(rows, fallbackYear);
+  const warnings: BdoImportIssue[] = [];
+  const records: BpiImportRecord[] = [];
+  const nameHit = findColumn(rows, [/^(?:agent|agent name|full name|employee name|name)$/]);
+  if (!nameHit) {
+    return { sheetName, detectedType, records, months: [], warnings: [{ worksheet: sheetName, message: 'An agent-name column was not found in the BPI PA Inbound worksheet.' }], status: 'Skipped' };
+  }
+
+  const headerRows = rows.slice(0, Math.min(rows.length, nameHit.row + 1));
+  const maxColumns = Math.max(0, ...headerRows.map((row) => row.length));
+  const columns = Array.from({ length: maxColumns }, (_, col) => {
+    const period = headerRows.map((row) => monthFrom(row[col])).find(Boolean);
+    const metric = productivityMetric(headerRows.map((row) => row[col]));
+    return period && metric ? { col, month: period.month, year: period.year || year, metric } : null;
+  }).filter(Boolean) as Array<{ col: number; month: number; year: number; metric: string }>;
+  const goals = inboundGoalsByMonth(rows);
+
+  if (!columns.length) {
+    return { sheetName, detectedType, records, months: [], warnings: [{ worksheet: sheetName, message: 'Monthly Transmittal and Booked Volume columns were not found.' }], status: 'Skipped' };
+  }
+
+  for (let rowIndex = nameHit.row + 1; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex] || [];
+    const name = normalizeBpiText(row[nameHit.col]);
+    if (!name || SUMMARY_NAME.test(name) || /^(?:agent|agent name|full name|name)$/i.test(name)) continue;
+    for (const column of columns) {
+      const parsed = parseNumeric(row[column.col]);
+      addIssue(warnings, sheetName, rowIndex + 1, parsed, row[column.col]);
+      if (parsed.value == null) continue;
+      const target = column.metric === 'Booked Volume' ? goals.get(column.month) : undefined;
+      records.push({
+        worksheetSource: sheetName,
+        sourceRow: rowIndex + 1,
+        recordKind: 'agent_monitoring',
+        monitoringType: 'PA_INBOUND_PRODUCTIVITY',
+        entityName: name,
+        category: 'PA SIP Loans Inbound',
+        product: column.metric.endsWith('Volume') ? 'Volume' : 'Count',
+        metric: column.metric,
+        month: column.month,
+        year: column.year,
+        reportDate: new Date(column.year, column.month - 1, 1),
+        target,
+        actual: parsed.value,
+        achievement: target ? parsed.value / target : undefined,
+        remark: `Source Column: ${XLSX.utils.encode_col(column.col)}`,
+      });
+    }
+  }
+  if (!goals.size) warnings.push({ worksheet: sheetName, message: 'No MONTH / GOAL table was found; productivity was imported without agent targets.' });
+  return {
+    sheetName,
+    detectedType,
+    records,
+    months: [...new Set(records.map((record) => monthLabel(record.year, record.month!)))],
+    warnings,
+    status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped',
+  };
 }
 
 function parseYtd(rows: unknown[][], sheetName: string, detectedType: BpiWorksheetType, fallbackYear: number): SheetResult {
@@ -330,11 +505,33 @@ function parseManpower(rows: unknown[][], sheetName: string, detectedType: BpiWo
   return { sheetName, detectedType, records, months: [...new Set(records.map((record) => monthLabel(record.year, record.month!)))], warnings, status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped' };
 }
 
-export function parseBpiDashboardWorkbook(workbook: XLSX.WorkBook, fallbackDate: Date) {
+export function parseBpiDashboardWorkbook(workbook: XLSX.WorkBook, fallbackDate: Date, sourceFileName = '') {
+  const standaloneKind = standaloneKindFromFileName(sourceFileName);
+  const rowsBySheet = new Map(workbook.SheetNames.map((sheetName) => [sheetName, rowsWithMergedCells(workbook.Sheets[sheetName])]));
+  const standalonePlSheets = standaloneKind === 'pl'
+    ? workbook.SheetNames.filter((sheetName) => isPlProductivityRows(rowsBySheet.get(sheetName) || []))
+    : [];
+  const standalonePlMonthlySheets = standalonePlSheets.filter((sheetName) => Boolean(monthFrom(sheetName)));
+  const plTargets = standaloneKind === 'pl'
+    ? workbook.SheetNames.reduce((targets, sheetName) => {
+        for (const [type, goal] of productivityTargetsByType(rowsBySheet.get(sheetName) || [])) targets.set(type, goal);
+        return targets;
+      }, new Map<string, number>())
+    : new Map<string, number>();
+
   const sheets: SheetResult[] = workbook.SheetNames.map((sheetName) => {
     const detectedType = detectBpiWorksheet(sheetName);
+    const rows = rowsBySheet.get(sheetName) || [];
+    if (!detectedType && standaloneKind === 'pa_inbound' && isPaInboundProductivityRows(rows)) {
+      return parsePaInboundProductivity(rows, sheetName, fallbackDate.getFullYear());
+    }
+    if (!detectedType && standaloneKind === 'pl' && isPlProductivityRows(rows)) {
+      if (standalonePlMonthlySheets.length && !monthFrom(sheetName)) {
+        return { sheetName, detectedType: 'PL Monthly Productivity', records: [], months: [], warnings: [{ worksheet: sheetName, message: 'Aggregate productivity sheet skipped because monthly worksheets are available.' }], status: 'Skipped' };
+      }
+      return parseProductivity(rows, sheetName, 'PL Monthly Productivity', fallbackDate.getFullYear(), plTargets);
+    }
     if (!detectedType) return { sheetName, detectedType: 'Unsupported', records: [], months: [], warnings: [{ worksheet: sheetName, message: 'Unsupported worksheet skipped.' }], status: 'Skipped' };
-    const rows = rowsWithMergedCells(workbook.Sheets[sheetName]);
     if (detectedType === 'YTD Performance') return parseYtd(rows, sheetName, detectedType, fallbackDate.getFullYear());
     if (detectedType === 'Manpower Monitoring') return parseManpower(rows, sheetName, detectedType, fallbackDate.getFullYear());
     if (detectedType === 'PL YTD Productivity') return parseProductivity(rows, sheetName, detectedType, fallbackDate.getFullYear());

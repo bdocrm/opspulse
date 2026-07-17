@@ -1381,8 +1381,8 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
   };
 }
 
-function buildBpiPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCampaigns: AssignedCampaign[], reportPeriodType: ReportPeriodType) {
-  const parsed = parseBpiDashboardWorkbook(workbook, reportDate);
+function buildBpiPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCampaigns: AssignedCampaign[], reportPeriodType: ReportPeriodType, sourceFileName = '') {
+  const parsed = parseBpiDashboardWorkbook(workbook, reportDate, sourceFileName);
   const recordMappings = new Map(parsed.records.map((record) => [record, mapWorksheetCampaign(`${record.category || ''} ${record.product || ''} ${record.metric} ${record.worksheetSource}`, selectedCampaigns)]));
   const sheetMappings = new Map<string, { campaign: AssignedCampaign; source: 'sheet' | 'record' | 'selected' | 'unresolved' }>(parsed.sheets.map((sheet) => {
     const mappings = sheet.records.map((record) => recordMappings.get(record)!);
@@ -1939,11 +1939,11 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'No worksheets found in Excel file' }, { status: 400 });
       }
 
-      if (isBpiDashboardWorkbook(workbook)) {
+      if (isBpiDashboardWorkbook(workbook, file.name)) {
         if (importMode === 'single') {
           return NextResponse.json({ error: 'BPI dashboard workbooks require Import All Data or Import Selected Worksheets.' }, { status: 400 });
         }
-        const bpiPreview = buildBpiPreview(workbook, reportDate, selectedCampaigns, reportPeriodType);
+        const bpiPreview = buildBpiPreview(workbook, reportDate, selectedCampaigns, reportPeriodType, file.name);
         await markExistingBdoRecords(bpiPreview as ReturnType<typeof buildBdoPreview>, selectedCampaigns.map((campaign) => campaign.id), reportPeriodType);
         if (bpiPreview.workbookSummary.worksheetsAccepted === 0 || bpiPreview.workbookSummary.totalValidRecords === 0) {
           return NextResponse.json({
