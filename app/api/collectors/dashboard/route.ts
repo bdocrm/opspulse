@@ -5,6 +5,39 @@ import { prisma } from "@/lib/prisma";
 import { getAssignedCampaignIds } from "@/lib/user-campaigns";
 import { ensureCampaignGoalTable } from "@/lib/campaign-goals";
 
+const BUSINESS_TIME_ZONE = "Asia/Manila";
+const BUSINESS_TIME_ZONE_OFFSET = "+08:00";
+
+function businessDayRange(from: string, to: string) {
+  return {
+    start: new Date(`${from}T00:00:00.000${BUSINESS_TIME_ZONE_OFFSET}`),
+    end: new Date(`${to}T23:59:59.999${BUSINESS_TIME_ZONE_OFFSET}`),
+  };
+}
+
+function businessMonthRange(from: string, to: string) {
+  const [fromYear, fromMonth] = from.split("-").map(Number);
+  const [toYear, toMonth] = to.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(toYear, toMonth, 0)).getUTCDate();
+  return {
+    start: new Date(
+      `${fromYear}-${String(fromMonth).padStart(2, "0")}-01T00:00:00.000${BUSINESS_TIME_ZONE_OFFSET}`
+    ),
+    end: new Date(
+      `${toYear}-${String(toMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}T23:59:59.999${BUSINESS_TIME_ZONE_OFFSET}`
+    ),
+  };
+}
+
+function businessMonthKey(value: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(value);
+  return `${parts.find((part) => part.type === "year")?.value}-${parts.find((part) => part.type === "month")?.value}`;
+}
+
 function monthYearFromYmd(value: string) {
   const [yearRaw, monthRaw] = value.split("-");
   const year = Number(yearRaw);
@@ -75,10 +108,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Date range required" }, { status: 400 });
     }
 
-    const startDate = new Date(dateFrom);
-    startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(dateTo);
-    endDate.setHours(23, 59, 59, 999);
+    const { start: startDate, end: endDate } = businessDayRange(dateFrom, dateTo);
+    const { start: importedMonthStart, end: importedMonthEnd } = businessMonthRange(dateFrom, dateTo);
     const selectedStartPeriod = monthYearFromYmd(dateFrom);
     const selectedEndPeriod = monthYearFromYmd(dateTo);
     const selectedStartPeriodIndex = selectedStartPeriod.year * 12 + selectedStartPeriod.month;
@@ -101,7 +132,7 @@ export async function GET(req: NextRequest) {
     await ensureCampaignGoalTable();
 
     // Pull everything in a few batched queries scoped to the assigned set.
-    const [campaigns, agents, details, entries, monthlyGoalRows, dashboardAgentRecords] = await Promise.all([
+    const [campaigns, agents, rawDetails, rawEntries, monthlyGoalRows, dashboardAgentRecords] = await Promise.all([
       prisma.campaign.findMany({
         where: { id: { in: assignedIds } },
         select: {
@@ -134,7 +165,16 @@ export async function GET(req: NextRequest) {
       prisma.productionDetail.findMany({
         where: {
           campaignId: { in: assignedIds },
-          productionEntry: { date: { gte: startDate, lte: endDate } },
+          productionEntry: {
+            OR: [
+              { date: { gte: startDate, lte: endDate } },
+              {
+                importFileName: { not: null },
+                reportPeriodType: "monthly",
+                date: { gte: importedMonthStart, lte: importedMonthEnd },
+              },
+            ],
+          },
         },
         select: {
           agentId: true,
@@ -168,12 +208,35 @@ export async function GET(req: NextRequest) {
           monthlyGoal: true,
           monthlyActual: true,
           monthlyAchievement: true,
-          productionEntry: { select: { date: true } },
+          productionEntry: {
+            select: {
+              id: true,
+              date: true,
+              importFileName: true,
+              reportPeriodType: true,
+            },
+          },
         },
       }),
       prisma.productionEntry.findMany({
-        where: { campaignId: { in: assignedIds }, date: { gte: startDate, lte: endDate } },
-        select: { id: true, campaignId: true },
+        where: {
+          campaignId: { in: assignedIds },
+          OR: [
+            { date: { gte: startDate, lte: endDate } },
+            {
+              importFileName: { not: null },
+              reportPeriodType: "monthly",
+              date: { gte: importedMonthStart, lte: importedMonthEnd },
+            },
+          ],
+        },
+        select: {
+          id: true,
+          campaignId: true,
+          date: true,
+          importFileName: true,
+          reportPeriodType: true,
+        },
       }),
       prisma.$queryRaw<any[]>`
         SELECT "campaignId", "month", "year", "monthlyGoal", "supplementaryGoal", "kpiMetric"
@@ -209,6 +272,23 @@ export async function GET(req: NextRequest) {
     const usableDashboardAgentRecords = dashboardAgentRecords.filter(
       (record) => !isImportedClassificationRow(record)
     );
+    const monthlyImportKeys = new Set(
+      rawDetails
+        .filter((detail) => detail.productionEntry.importFileName
+          && detail.productionEntry.reportPeriodType === "monthly")
+        .map((detail) => `${detail.campaignId}|${businessMonthKey(detail.productionEntry.date)}`)
+    );
+    const details = rawDetails.filter((detail) => {
+      const isMonthlyImport = Boolean(detail.productionEntry.importFileName)
+        && detail.productionEntry.reportPeriodType === "monthly";
+      const key = `${detail.campaignId}|${businessMonthKey(detail.productionEntry.date)}`;
+      return isMonthlyImport || !monthlyImportKeys.has(key);
+    });
+    const entries = rawEntries.filter((entry) => {
+      const isMonthlyImport = Boolean(entry.importFileName) && entry.reportPeriodType === "monthly";
+      const key = `${entry.campaignId}|${businessMonthKey(entry.date)}`;
+      return isMonthlyImport || !monthlyImportKeys.has(key);
+    });
     const monthlyGoalsByCampaignId = new Map(
       monthlyGoalRows
         .filter((row) => Number(row.month) === goalMonth && Number(row.year) === goalYear)
@@ -221,10 +301,7 @@ export async function GET(req: NextRequest) {
     // Attendance is optional (table may not exist on older DBs).
     let attendanceRows: any[] = [];
     if (attendanceDate) {
-      const attStart = new Date(attendanceDate);
-      attStart.setHours(0, 0, 0, 0);
-      const attEnd = new Date(attendanceDate);
-      attEnd.setHours(23, 59, 59, 999);
+      const { start: attStart, end: attEnd } = businessDayRange(attendanceDate, attendanceDate);
       try {
         attendanceRows = await prisma.attendance.findMany({
           where: {
@@ -304,11 +381,10 @@ export async function GET(req: NextRequest) {
       usableDashboardAgentRecords.filter((record) => record.recordKind === "agent_monitoring" && importedActual(record) != null).map((record) => record.campaignId)
     );
     const campaignsWithStandardProduction = new Set(details.map((detail) => detail.campaignId));
-    const campaignsWithRegisteredAgents = new Set(agents.map((agent) => agent.campaignId).filter((id): id is string => Boolean(id)));
     const campaignNameById = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
     const mbPaCampaignIds = new Set(campaigns.filter((campaign) => /\bMB\s*PA\b/i.test(campaign.campaignName)).map((campaign) => campaign.id));
     for (const record of usableDashboardAgentRecords) {
-      if (record.recordKind !== "ytd" || campaignsWithImportedAgentMonitoring.has(record.campaignId) || campaignsWithRegisteredAgents.has(record.campaignId)) continue;
+      if (record.recordKind !== "ytd" || campaignsWithImportedAgentMonitoring.has(record.campaignId)) continue;
       const summaryName = `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
       const identity = `${record.campaignId}|${normalizeImportedAgentName(summaryName)}`;
       if (importedRosterSeen.has(identity)) continue;
@@ -532,10 +608,10 @@ export async function GET(req: NextRequest) {
 
     for (const record of preferredAgentDetailRecords.values()) {
       if (record.recordKind === "ytd") {
-        // Keep a synthetic total only when no agent-level or regular production
-        // exists. Otherwise the YTD value is exposed as the campaign summary
-        // while the real agents remain the leaderboard source.
-        if (campaignsWithImportedAgentMonitoring.has(record.campaignId) || campaignsWithRegisteredAgents.has(record.campaignId)) continue;
+        // Keep one synthetic campaign-total row when the workbook has no
+        // agent-level monitoring. Registered agents remain visible, but the
+        // imported YTD total must not disappear from Production Entry.
+        if (campaignsWithImportedAgentMonitoring.has(record.campaignId)) continue;
       }
       const entityName = record.entityName || `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
       const normalizedName = normalizeImportedAgentName(entityName);
@@ -691,7 +767,13 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    return NextResponse.json({ campaigns: result });
+    return NextResponse.json({ campaigns: result }, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+      },
+    });
   } catch (error: any) {
     console.error("Collector dashboard API error:", error);
     return NextResponse.json(

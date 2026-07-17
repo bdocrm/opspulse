@@ -20,6 +20,20 @@ function dayRange(value: string) {
   };
 }
 
+function monthRange(from: string, to: string) {
+  const [fromYear, fromMonth] = from.split("-").map(Number);
+  const [toYear, toMonth] = to.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(toYear, toMonth, 0)).getUTCDate();
+  return {
+    start: new Date(
+      `${fromYear}-${String(fromMonth).padStart(2, "0")}-01T00:00:00.000${BUSINESS_TIME_ZONE_OFFSET}`
+    ),
+    end: new Date(
+      `${toYear}-${String(toMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}T23:59:59.999${BUSINESS_TIME_ZONE_OFFSET}`
+    ),
+  };
+}
+
 function toYmd(value: Date) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: BUSINESS_TIME_ZONE,
@@ -33,6 +47,10 @@ function toYmd(value: Date) {
   const day = parts.find((part) => part.type === "day")?.value ?? "01";
 
   return `${year}-${month}-${day}`;
+}
+
+function monthKey(value: Date) {
+  return toYmd(value).slice(0, 7);
 }
 
 export async function POST(req: Request) {
@@ -150,6 +168,8 @@ export async function GET(req: Request) {
 
     let startDate: Date;
     let endDate: Date;
+    let requestedFrom: string;
+    let requestedTo: string;
 
     if (dateFrom && dateTo) {
       // Date range filter
@@ -157,14 +177,19 @@ export async function GET(req: Request) {
       const endRange = dayRange(dateTo);
       startDate = startRange.start;
       endDate = endRange.end;
+      requestedFrom = dateFrom;
+      requestedTo = dateTo;
     } else if (date) {
       // Single date filter (backward compatibility)
       const range = dayRange(date);
       startDate = range.start;
       endDate = range.end;
+      requestedFrom = date;
+      requestedTo = date;
     } else {
       return NextResponse.json({ error: "Date or date range required" }, { status: 400 });
     }
+    const importedMonthRange = monthRange(requestedFrom, requestedTo);
 
     const assignedCampaignIds = await getAssignedCampaignIds(user.id);
     const campaignIds = requestedCampaignId
@@ -189,13 +214,17 @@ export async function GET(req: Request) {
 
     const where = {
       campaignId: { in: campaignIds },
-      date: {
-        gte: startDate,
-        lte: endDate,
-      },
+      OR: [
+        { date: { gte: startDate, lte: endDate } },
+        {
+          importFileName: { not: null },
+          reportPeriodType: "monthly",
+          date: { gte: importedMonthRange.start, lte: importedMonthRange.end },
+        },
+      ],
     };
 
-    const [entries, availableEntryDates] = await Promise.all([
+    const [rawEntries, availableEntryDates, latestDashboardImport] = await Promise.all([
       prisma.productionEntry.findMany({
         where: {
           ...where,
@@ -207,6 +236,8 @@ export async function GET(req: Request) {
           date: true,
           time: true,
           createdAt: true,
+          importFileName: true,
+          reportPeriodType: true,
           details: {
             select: {
               id: true,
@@ -234,9 +265,38 @@ export async function GET(req: Request) {
         orderBy: { date: "desc" },
         take: 24,
       }),
+      prisma.dashboardImportRecord.findFirst({
+        where: {
+          campaignId: { in: campaignIds },
+          month: { not: null },
+          recordKind: { in: ["agent_monitoring", "ytd"] },
+          OR: [{ actual: { not: null } }, { target: { not: null } }],
+        },
+        select: { year: true, month: true },
+        orderBy: [{ year: "desc" }, { month: "desc" }],
+      }).catch(() => null),
     ]);
 
-    const availableDates = availableEntryDates.map((entry) => toYmd(entry.date));
+    const monthlyImportKeys = new Set(
+      rawEntries
+        .filter((entry) => entry.importFileName && entry.reportPeriodType === "monthly")
+        .map((entry) => `${entry.campaignId}|${monthKey(entry.date)}`)
+    );
+    const entries = rawEntries.filter((entry) => {
+      const isMonthlyImport = Boolean(entry.importFileName) && entry.reportPeriodType === "monthly";
+      const key = `${entry.campaignId}|${monthKey(entry.date)}`;
+      return isMonthlyImport || !monthlyImportKeys.has(key);
+    });
+
+    const dashboardLatestDate = latestDashboardImport?.month
+      ? `${latestDashboardImport.year}-${String(latestDashboardImport.month).padStart(2, "0")}-01`
+      : null;
+    const availableDates = [
+      ...new Set([
+        ...availableEntryDates.map((entry) => toYmd(entry.date)),
+        ...(dashboardLatestDate ? [dashboardLatestDate] : []),
+      ]),
+    ].sort((a, b) => b.localeCompare(a));
     const latestDate = availableDates[0] ?? null;
 
     const agentTotals: Record<
@@ -309,6 +369,12 @@ export async function GET(req: Request) {
       detailCount: serializedEntries.reduce((sum, entry) => sum + entry.details.length, 0),
       availableDates,
       latestDate,
+    }, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+      },
     });
   } catch (error) {
     console.error("Error fetching entries:", error);

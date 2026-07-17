@@ -51,6 +51,9 @@ interface CampaignBlock {
   id: string;
   campaignName: string;
   agents: any[];
+  production?: Record<string, Partial<AgentTotals>>;
+  dataPeriod?: { source: string; year?: number; month?: number };
+  agentDataPeriod?: { source: string; year?: number; month?: number };
 }
 
 const AGENTS_PER_PAGE = 12;
@@ -77,7 +80,15 @@ const getConversionRate = (metrics: Pick<AgentTotals, 'transmittals' | 'booked'>
   metrics.transmittals > 0 ? (metrics.booked / metrics.transmittals) * 100 : 0
 );
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const response = await fetch(url, {
+    credentials: 'include',
+    cache: 'no-store',
+    headers: { 'Cache-Control': 'no-cache' },
+  });
+  if (!response.ok) throw new Error(`Production data request failed (${response.status})`);
+  return response.json();
+};
 
 export default function DataEntryPage() {
   const { data: session } = useSession();
@@ -95,11 +106,12 @@ export default function DataEntryPage() {
   const [selectedCampaignId, setSelectedCampaignId] = useState('');
 
   // Fetch assigned campaigns, agents, and selected-date production in one place.
-  const { data: collectorData, isLoading: loadingCampaigns } = useSWR(
+  const { data: collectorData, isLoading: loadingCampaigns, mutate: mutateCollectorData } = useSWR(
     session?.user && date
-      ? `/api/collectors/dashboard?dateFrom=${date}&dateTo=${date}&attendanceDate=${date}`
+      ? `/api/collectors/dashboard?dateFrom=${date}&dateTo=${date}&attendanceDate=${date}&dataVersion=2`
       : null,
-    fetcher
+    fetcher,
+    { revalidateOnMount: true, revalidateOnFocus: true, dedupingInterval: 0 }
   );
 
   const campaignBlocks: CampaignBlock[] = useMemo(
@@ -126,10 +138,10 @@ export default function DataEntryPage() {
   // Fetch saved production data for selected date
   const { data: savedData, mutate: mutateSaved, isLoading: loadingSaved } = useSWR(
     session?.user && date && selectedCampaignId
-      ? `/api/collectors/production?date=${date}&campaignId=${selectedCampaignId}`
+      ? `/api/collectors/production?date=${date}&campaignId=${selectedCampaignId}&dataVersion=2`
       : null,
     fetcher,
-    { refreshInterval: 0 }
+    { refreshInterval: 0, revalidateOnMount: true, revalidateOnFocus: true, dedupingInterval: 0 }
   );
 
   // Fetch attendance for selected date
@@ -144,15 +156,45 @@ export default function DataEntryPage() {
   const agents = useMemo(() => selectedCampaign?.agents || [], [selectedCampaign]);
   const savedEntries: SavedEntry[] = useMemo(() => savedData?.entries || [], [savedData]);
   const importedAgentTotals = useMemo<Record<string, AgentTotals>>(
-    () => savedData?.agentTotals || {},
-    [savedData]
+    () => Object.fromEntries(
+      Object.entries(selectedCampaign?.production || savedData?.agentTotals || {}).map(([agentId, raw]) => {
+        const totals = raw as Partial<AgentTotals>;
+        return [agentId, {
+          agentId,
+          transmittals: Number(totals.transmittals || 0),
+          activations: Number(totals.activations || 0),
+          approvals: Number(totals.approvals || 0),
+          booked: Number(totals.booked || 0),
+          volume: Number(totals.volume || 0),
+          transaction: Number(totals.transaction || 0),
+        }];
+      })
+    ),
+    [savedData?.agentTotals, selectedCampaign?.production]
   );
   const importedSummaryTotals = useMemo(
-    () => savedData?.summaryTotals || EMPTY_TOTALS,
-    [savedData]
+    () => Object.values(importedAgentTotals).reduce(
+      (totals, agent) => ({
+        transmittals: totals.transmittals + agent.transmittals,
+        activations: totals.activations + agent.activations,
+        approvals: totals.approvals + agent.approvals,
+        booked: totals.booked + agent.booked,
+        volume: totals.volume + agent.volume,
+      }),
+      { ...EMPTY_TOTALS }
+    ),
+    [importedAgentTotals]
   );
-  const importedDetailCount = savedData?.detailCount || 0;
-  const latestImportedDate: string | null = savedData?.latestDate || null;
+  const importedDetailCount = Object.keys(importedAgentTotals).length;
+  const fallbackImportPeriod = selectedCampaign?.agentDataPeriod?.source === 'latest_import'
+    ? selectedCampaign.agentDataPeriod
+    : selectedCampaign?.dataPeriod?.source === 'latest_import'
+      ? selectedCampaign.dataPeriod
+      : null;
+  const collectorLatestImportedDate = fallbackImportPeriod?.year && fallbackImportPeriod?.month
+    ? `${fallbackImportPeriod.year}-${String(fallbackImportPeriod.month).padStart(2, '0')}-01`
+    : null;
+  const latestImportedDate: string | null = collectorLatestImportedDate || savedData?.latestDate || null;
 
   useEffect(() => {
     setAutoDateAdjustedForCampaign('');
@@ -375,7 +417,7 @@ export default function DataEntryPage() {
 
       setMessage({ type: 'success', text: 'Entry saved!' });
       resetForm();
-      mutateSaved();
+      await Promise.all([mutateSaved(), mutateCollectorData()]);
     } catch (error: any) {
       setMessage({ type: 'error', text: `Error: ${error.message}` });
     } finally {
