@@ -34,6 +34,10 @@ function isImportedClassificationRow(row: {
     /^(?:OLD|SEMI OLD|NEW|(?:OLD|SEMI OLD|NEW|TOTAL) AVERAGE PER AGENT)$/.test(normalizedName);
 }
 
+function normalizeAgentName(value: string) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -93,7 +97,8 @@ export async function GET(req: NextRequest) {
         campaignId: true,
         volume: true,
         ntb: true,
-        agent: { select: { id: true, name: true } },
+        monthlyGoal: true,
+        agent: { select: { id: true, name: true, monthlyTarget: true } },
         productionEntry: { select: { date: true } },
       },
     });
@@ -119,17 +124,23 @@ export async function GET(req: NextRequest) {
         ? Math.round(Number(row.target) * Number(row.achievement))
         : null;
     const bpiCurrencyCampaigns = new Set(
-      usableDashboardRows.filter((row) => row.recordKind === "ytd" && Number(row.target || 0) >= 1_000_000 && /^BPI\b/i.test(campaignById.get(row.campaignId)?.campaignName || "")).map((row) => row.campaignId)
+      usableDashboardRows.filter((row) => Number(row.target || 0) >= 1_000_000 && /^BPI\b/i.test(campaignById.get(row.campaignId)?.campaignName || "")).map((row) => row.campaignId)
     );
     const campaignsWithAgentRows = new Set(usableDashboardRows.filter((row) => row.recordKind === "agent_monitoring").map((row) => row.campaignId));
     const preferredDashboardRows = new Map<string, (typeof dashboardRows)[number]>();
     for (const row of usableDashboardRows) {
-      const normalizedName = (row.entityName || "Campaign Total").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+      const normalizedName = normalizeAgentName(row.entityName || "Campaign Total");
       const rowKey = `${row.campaignId}|${normalizedName}|${row.year}|${row.month || 0}|${row.metric}`;
       const existing = preferredDashboardRows.get(rowKey);
       const priority = row.monitoringType?.endsWith("_AGENT") ? 2 : 1;
       const existingPriority = existing?.monitoringType?.endsWith("_AGENT") ? 2 : existing ? 1 : 0;
       if (priority > existingPriority) preferredDashboardRows.set(rowKey, row);
+    }
+    const importedTargetByAgent = new Map<string, number>();
+    for (const row of preferredDashboardRows.values()) {
+      if (row.recordKind !== "agent_monitoring" || Number(row.target || 0) <= 0) continue;
+      const key = `${row.campaignId}|${normalizeAgentName(row.entityName)}`;
+      importedTargetByAgent.set(key, (importedTargetByAgent.get(key) || 0) + Number(row.target));
     }
     const importedRows = [...preferredDashboardRows.values()].flatMap((row) => {
       const campaign = campaignById.get(row.campaignId);
@@ -189,6 +200,7 @@ export async function GET(req: NextRequest) {
       return {
         id: c.id,
         campaignName: c.campaignName,
+        hasData: details.length > 0 || imported.length > 0,
         // Show the metric that actually drives MTD (NTB for acquisition campaigns).
         kpiMetric: isAcqCampaign(c.campaignName) ? "ntb" : bpiCurrencyCampaigns.has(c.id) ? "volume" : c.kpiMetric,
         goal,
@@ -201,17 +213,19 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    // Only surface campaigns that actually have production for the selected period.
-    // Empty/zero campaigns are hidden everywhere (chart, table, distribution) and
-    // excluded from the KPI averages so the numbers reflect real activity only.
-    const campaignTable = allCampaignRows.filter((c) => c.mtd > 0);
+    // Keep every selected campaign visible on the CEO dashboard. Campaigns without
+    // production for the period are marked with hasData=false so the UI can show
+    // them as "No data" instead of silently removing them.
+    const campaignTable = allCampaignRows;
+    const campaignsWithData = allCampaignRows.filter((c) => c.hasData);
 
     // 6. Aggregated KPI cards
-    const n = campaignTable.length || 1;
-    const totalMTD         = campaignTable.reduce((a, c) => a + c.mtd, 0);
-    const avgAchievement   = campaignTable.reduce((a, c) => a + c.achievement, 0)   / n;
-    const avgRunRate       = campaignTable.reduce((a, c) => a + c.runRate, 0)       / n;
-    const avgRRAchievement = campaignTable.reduce((a, c) => a + c.rrAchievement, 0) / n;
+    // No-data campaigns remain visible but do not dilute the performance averages.
+    const n = campaignsWithData.length || 1;
+    const totalMTD         = campaignsWithData.reduce((a, c) => a + c.mtd, 0);
+    const avgAchievement   = campaignsWithData.reduce((a, c) => a + c.achievement, 0)   / n;
+    const avgRunRate       = campaignsWithData.reduce((a, c) => a + c.runRate, 0)       / n;
+    const avgRRAchievement = campaignsWithData.reduce((a, c) => a + c.rrAchievement, 0) / n;
 
     // 7. Campaign achievement chart
     const campaignsChart = campaignTable.map((c) => ({
@@ -234,28 +248,47 @@ export async function GET(req: NextRequest) {
       .map(([date, value]) => ({ date, value }));
 
     // 9. Distribution (each campaign's share of total MTD)
-    const distribution = campaignTable
+    const distribution = campaignsWithData
       .filter((c) => c.mtd > 0)
       .map((c) => ({ name: c.campaignName, value: c.mtd }));
 
     // 10. Agent leaderboard (top 10 by the per-campaign metric)
-    const agentMap = new Map<string, { name: string; value: number }>();
+    const agentMap = new Map<string, { name: string; value: number; goal: number }>();
+    const registeredAgentKeyByCampaignName = new Map<string, string>();
     for (const d of allDetails) {
       const val = metricValue(campaignNameById.get(d.campaignId), d);
       const aid = d.agent.id;
-      if (!agentMap.has(aid)) agentMap.set(aid, { name: d.agent.name, value: 0 });
+      registeredAgentKeyByCampaignName.set(`${d.campaignId}|${normalizeAgentName(d.agent.name)}`, aid);
+      if (!agentMap.has(aid)) {
+        agentMap.set(aid, {
+          name: d.agent.name,
+          value: 0,
+          goal: Number(d.monthlyGoal || d.agent.monthlyTarget || 0),
+        });
+      } else {
+        const current = agentMap.get(aid)!;
+        current.goal = Math.max(current.goal, Number(d.monthlyGoal || d.agent.monthlyTarget || 0));
+      }
       agentMap.get(aid)!.value += val;
     }
     for (const row of importedRows.filter((record) => record.recordKind !== "ytd")) {
-      const key = `imported:${row.campaignId}:${row.agentName.toUpperCase()}`;
-      if (!agentMap.has(key)) agentMap.set(key, { name: row.agentName, value: 0 });
+      const targetKey = `${row.campaignId}|${normalizeAgentName(row.agentName)}`;
+      const key = registeredAgentKeyByCampaignName.get(targetKey) || `imported:${targetKey}`;
+      const goal = importedTargetByAgent.get(targetKey) || 0;
+      if (!agentMap.has(key)) agentMap.set(key, { name: row.agentName, value: 0, goal });
+      else agentMap.get(key)!.goal = Math.max(agentMap.get(key)!.goal, goal);
       agentMap.get(key)!.value += row.value;
     }
     const leaderboard = Array.from(agentMap.values())
       .filter((a) => a.value > 0)
       .sort((a, b) => b.value - a.value)
       .slice(0, 10)
-      .map((a) => ({ name: a.name, value: Math.round(a.value) }));
+      .map((a) => ({
+        name: a.name,
+        value: Math.round(a.value),
+        goal: a.goal > 0 ? a.goal : null,
+        achievement: a.goal > 0 ? calcAchievement(a.value, a.goal) : null,
+      }));
 
     return NextResponse.json({
       kpis: {

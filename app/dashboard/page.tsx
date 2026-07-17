@@ -50,6 +50,7 @@ interface Period {
 interface CampaignRow {
   id: string;
   campaignName: string;
+  hasData: boolean;
   kpiMetric: string;
   goal: number;
   mtd: number;
@@ -70,6 +71,11 @@ interface SimpleValueRow {
   value: number;
 }
 
+interface LeaderboardRow extends SimpleValueRow {
+  goal: number | null;
+  achievement: number | null;
+}
+
 interface DashboardData {
   kpis: {
     totalMTD: number;
@@ -81,7 +87,7 @@ interface DashboardData {
   campaignTable: CampaignRow[];
   dailyTrend: DailyTrendRow[];
   distribution: SimpleValueRow[];
-  leaderboard: SimpleValueRow[];
+  leaderboard: LeaderboardRow[];
   availablePeriods: Period[];
   error?: string;
 }
@@ -90,6 +96,7 @@ type StatusTone = "good" | "attention" | "critical" | "info";
 
 interface ExecutiveRow {
   name: string;
+  hasData?: boolean;
   value?: number;
   actual?: number;
   goal?: number | null;
@@ -99,7 +106,7 @@ interface ExecutiveRow {
   status: string;
   statusTone: StatusTone;
   recommendation: string;
-  [key: string]: string | number | null | undefined;
+  [key: string]: string | number | boolean | null | undefined;
 }
 
 const MONTH_NAMES = [
@@ -141,14 +148,15 @@ function average(values: number[]) {
 }
 
 function buildStats(rows: ExecutiveRow[]) {
-  const values = rows.map((row) => Number(row.actual ?? row.value ?? 0));
+  const includedRows = rows.filter((row) => row.hasData !== false);
+  const values = includedRows.map((row) => Number(row.actual ?? row.value ?? 0));
   const total = values.reduce((sum, value) => sum + value, 0);
-  const highest = rows.reduce<ExecutiveRow | null>((best, row) => {
+  const highest = includedRows.reduce<ExecutiveRow | null>((best, row) => {
     const value = Number(row.actual ?? row.value ?? 0);
     const bestValue = Number(best?.actual ?? best?.value ?? -Infinity);
     return !best || value > bestValue ? row : best;
   }, null);
-  const lowest = rows.reduce<ExecutiveRow | null>((worst, row) => {
+  const lowest = includedRows.reduce<ExecutiveRow | null>((worst, row) => {
     const value = Number(row.actual ?? row.value ?? 0);
     const worstValue = Number(worst?.actual ?? worst?.value ?? Infinity);
     return !worst || value < worstValue ? row : worst;
@@ -158,10 +166,11 @@ function buildStats(rows: ExecutiveRow[]) {
 }
 
 function insightText(rows: ExecutiveRow[], emptyText = "No data available") {
-  if (rows.length === 0) return emptyText;
-  const best = [...rows].sort((a, b) => Number(b.achievement ?? b.actual ?? b.value ?? 0) - Number(a.achievement ?? a.actual ?? a.value ?? 0))[0];
-  const lowest = [...rows].sort((a, b) => Number(a.achievement ?? a.actual ?? a.value ?? 0) - Number(b.achievement ?? b.actual ?? b.value ?? 0))[0];
-  const concern = rows.find((row) => row.statusTone === "critical") ?? rows.find((row) => row.statusTone === "attention");
+  const includedRows = rows.filter((row) => row.hasData !== false);
+  if (includedRows.length === 0) return emptyText;
+  const best = [...includedRows].sort((a, b) => Number(b.achievement ?? b.actual ?? b.value ?? 0) - Number(a.achievement ?? a.actual ?? a.value ?? 0))[0];
+  const lowest = [...includedRows].sort((a, b) => Number(a.achievement ?? a.actual ?? a.value ?? 0) - Number(b.achievement ?? b.actual ?? b.value ?? 0))[0];
+  const concern = includedRows.find((row) => row.statusTone === "critical") ?? includedRows.find((row) => row.statusTone === "attention");
   return [
     `Best: ${best.name}`,
     `Lowest: ${lowest.name}`,
@@ -212,7 +221,14 @@ function ExecutiveSnapshot({ rows, overallStatus }: { rows: ExecutiveRow[]; over
 
 function TableToggle({ open, onClick }: { open: boolean; onClick: () => void }) {
   return (
-    <Button type="button" size="sm" variant="outline" className="h-9 gap-1.5" onClick={onClick}>
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="h-9 gap-1.5"
+      aria-expanded={open}
+      onClick={onClick}
+    >
       <Table2 className="h-4 w-4" />
       {open ? "Hide Table" : "View Table"}
       <ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} />
@@ -252,9 +268,19 @@ function ChartTable({
               <TableCell>{row.rank}</TableCell>
               <TableCell className="font-medium">{row.name}</TableCell>
               <TableCell className="text-right">{row.goal == null ? "N/A" : formatNumber(row.goal)}</TableCell>
-              <TableCell className="text-right">{formatNumber(row.actual ?? row.value)}</TableCell>
-              <TableCell className="text-right">{row.achievement == null ? "N/A" : formatPct(row.achievement)}</TableCell>
-              <TableCell className="text-right">{row.contribution == null ? "N/A" : formatPct(row.contribution)}</TableCell>
+              <TableCell className="text-right">
+                {row.hasData === false ? "No data" : formatNumber(row.actual ?? row.value)}
+              </TableCell>
+              <TableCell className="text-right">
+                {row.achievement == null ? "N/A" : (
+                  <span className={cn("inline-flex rounded-full px-2 py-0.5 text-xs font-semibold", statusBadgeClass(row.statusTone))}>
+                    {formatPct(row.achievement)}
+                  </span>
+                )}
+              </TableCell>
+              <TableCell className="text-right">
+                {row.hasData === false || row.contribution == null ? "N/A" : formatPct(row.contribution)}
+              </TableCell>
               <TableCell>
                 <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", statusBadgeClass(row.statusTone))}>
                   {row.status}
@@ -278,6 +304,8 @@ function ExecutiveChartCard({
   onTableToggle,
   children,
   valueLabel,
+  tableTitle,
+  tableDescription,
   overallStatus,
   noDataMessage = "No data available",
 }: {
@@ -289,6 +317,8 @@ function ExecutiveChartCard({
   onTableToggle: () => void;
   children: ReactNode;
   valueLabel?: string;
+  tableTitle?: string;
+  tableDescription?: string;
   overallStatus?: { label: string; tone: StatusTone };
   noDataMessage?: string;
 }) {
@@ -308,7 +338,17 @@ function ExecutiveChartCard({
         {rows.length > 0 ? (
           <>
             {children}
-            {tableOpen && <ChartTable rows={rows} valueLabel={valueLabel} noDataMessage={noDataMessage} />}
+            {tableOpen && (
+              <section className="space-y-3" aria-label={tableTitle || `${title} table`}>
+                {tableTitle && (
+                  <div>
+                    <p className="text-sm font-semibold text-foreground">{tableTitle}</p>
+                    {tableDescription && <p className="mt-1 text-xs text-muted-foreground">{tableDescription}</p>}
+                  </div>
+                )}
+                <ChartTable rows={rows} valueLabel={valueLabel} noDataMessage={noDataMessage} />
+              </section>
+            )}
           </>
         ) : (
           <NoData message={noDataMessage} />
@@ -377,26 +417,37 @@ export default function DashboardPage() {
   const distribution = hasUsableData ? data.distribution ?? [] : [];
   const leaderboard = hasUsableData ? data.leaderboard ?? [] : [];
 
+  const campaignTotal = campaignTable.reduce((sum, campaign) => sum + Number(campaign.mtd || 0), 0);
   const campaignRows: ExecutiveRow[] = [...campaignTable]
-    .sort((a, b) => b.achievement - a.achievement)
+    .sort((a, b) => {
+      if (a.hasData !== b.hasData) return a.hasData ? -1 : 1;
+      return a.hasData
+        ? b.achievement - a.achievement
+        : a.campaignName.localeCompare(b.campaignName);
+    })
     .map((campaign, index) => {
-      const statusInfo = getStatus(campaign.achievement);
+      const statusInfo = campaign.hasData
+        ? getStatus(campaign.achievement)
+        : { label: "No production data", tone: "info" as const };
       return {
         name: campaign.campaignName,
-        achievement: campaign.achievement,
+        hasData: campaign.hasData,
+        achievement: campaign.hasData ? campaign.achievement : null,
         value: campaign.achievement,
-        actual: campaign.mtd,
+        actual: campaign.hasData ? campaign.mtd : undefined,
         goal: campaign.goal,
+        contribution: campaignTotal > 0 ? (Number(campaign.mtd || 0) / campaignTotal) * 100 : 0,
         rank: index + 1,
         status: statusInfo.label,
         statusTone: statusInfo.tone,
-        recommendation: statusInfo.tone === "good"
+        recommendation: !campaign.hasData
+          ? "Import or verify production data for the selected period."
+          : statusInfo.tone === "good"
           ? "Maintain momentum and protect current output."
           : "Review blockers and focus management attention here.",
       };
     });
 
-  const campaignTotal = campaignTable.reduce((sum, campaign) => sum + campaign.mtd, 0);
   const distributionRows: ExecutiveRow[] = distribution
     .map((item) => {
       const match = campaignTable.find((campaign) => campaign.campaignName === item.name);
@@ -442,30 +493,45 @@ export default function DashboardPage() {
     .sort((a, b) => b.value - a.value)
     .slice(0, 10);
   const leaderboardTotal = topLeaderboard.reduce((sum, item) => sum + item.value, 0);
-  const leaderboardRows: ExecutiveRow[] = topLeaderboard.map((agent, index) => ({
-    name: agent.name,
-    displayName: `#${index + 1} ${agent.name}`,
-    value: agent.value,
-    actual: agent.value,
-    goal: null,
-    achievement: null,
-    contribution: leaderboardTotal > 0 ? (agent.value / leaderboardTotal) * 100 : 0,
-    rank: index + 1,
-    status: index < 3 ? "Good / Top performer" : "Information",
-    statusTone: index < 3 ? "good" : "info",
-    recommendation: index < 3
-      ? "Maintain performance and share effective practices."
-      : "Review activity level and support consistent output.",
-  }));
+  const leaderboardRows: ExecutiveRow[] = topLeaderboard.map((agent, index) => {
+    const statusInfo = agent.achievement == null
+      ? { label: index < 3 ? "Good / Top performer" : "Information", tone: index < 3 ? "good" as const : "info" as const }
+      : getStatus(agent.achievement);
+    return {
+      name: agent.name,
+      displayName: `#${index + 1} ${agent.name}`,
+      value: agent.value,
+      actual: agent.value,
+      goal: agent.goal,
+      achievement: agent.achievement,
+      contribution: leaderboardTotal > 0 ? (agent.value / leaderboardTotal) * 100 : 0,
+      rank: index + 1,
+      status: statusInfo.label,
+      statusTone: statusInfo.tone,
+      recommendation: agent.achievement == null
+        ? index < 3
+          ? "Maintain performance and share effective practices."
+          : "Review activity level and support consistent output."
+        : statusInfo.tone === "good"
+          ? "Maintain performance and share effective practices."
+          : "Review the agent target, activity level, and production blockers.",
+    };
+  });
 
-  const bestCampaign = campaignRows[0];
-  const lowestCampaign = [...campaignRows].sort((a, b) => Number(a.achievement ?? 0) - Number(b.achievement ?? 0))[0];
-  const weakestCampaign = campaignRows.find((row) => row.statusTone === "critical") ?? campaignRows.find((row) => row.statusTone === "attention");
-  const overallStatusInfo = getStatus(kpis.avgAchievement);
-  const overallStatus = kpis.avgAchievement >= 100 ? "above target" : kpis.avgAchievement >= 80 ? "near target" : "below target";
+  const performanceCampaignRows = campaignRows.filter((row) => row.hasData !== false);
+  const campaignsWithoutData = campaignRows.length - performanceCampaignRows.length;
+  const bestCampaign = performanceCampaignRows[0];
+  const lowestCampaign = [...performanceCampaignRows].sort((a, b) => Number(a.achievement ?? 0) - Number(b.achievement ?? 0))[0];
+  const weakestCampaign = performanceCampaignRows.find((row) => row.statusTone === "critical") ?? performanceCampaignRows.find((row) => row.statusTone === "attention");
+  const overallStatusInfo = performanceCampaignRows.length > 0
+    ? getStatus(kpis.avgAchievement)
+    : { label: "No production data", tone: "info" as const };
+  const overallStatus = performanceCampaignRows.length === 0
+    ? "without production data"
+    : kpis.avgAchievement >= 100 ? "above target" : kpis.avgAchievement >= 80 ? "near target" : "below target";
 
-  const ceoSummary = campaignRows.length > 0
-    ? `Total MTD is ${overallStatus} at ${formatPct(kpis.avgAchievement)}. ${bestCampaign?.name ?? "The leading campaign"} is currently the strongest campaign. ${weakestCampaign ? `${weakestCampaign.name} needs attention.` : "No campaign is in the critical range right now."}`
+  const ceoSummary = performanceCampaignRows.length > 0
+    ? `Total MTD is ${overallStatus} at ${formatPct(kpis.avgAchievement)}. ${bestCampaign?.name ?? "The leading campaign"} is currently the strongest campaign. ${weakestCampaign ? `${weakestCampaign.name} needs attention.` : "No campaign is in the critical range right now."}${campaignsWithoutData > 0 ? ` ${campaignsWithoutData} campaign${campaignsWithoutData === 1 ? "" : "s"} have no production data for this period.` : ""}`
     : "No data available";
 
   const recommendedActions = campaignRows.length > 0
@@ -473,6 +539,7 @@ export default function DashboardPage() {
         weakestCampaign ? `Monitor ${weakestCampaign.name} because it is ${weakestCampaign.status.toLowerCase()}.` : null,
         bestCampaign ? `Maintain ${bestCampaign.name} performance because it is the top campaign.` : null,
         lowestCampaign ? `Review ${lowestCampaign.name} for possible coaching, staffing, or volume issues.` : null,
+        campaignsWithoutData > 0 ? `Verify or import production data for ${campaignsWithoutData} campaign${campaignsWithoutData === 1 ? "" : "s"} with no records this period.` : null,
         leaderboardRows.length > 0 ? "Review agents outside the top performers for low achievement patterns." : null,
       ].filter(Boolean) as string[]
     : ["No data available"];
@@ -615,11 +682,13 @@ export default function DashboardPage() {
         <ExecutiveChartCard
           title="Campaign Achievement"
           insight={`${insightText(campaignRows)} | Overall Status: ${overallStatus}`}
-          explanation={campaignRows.length > 0 ? `This chart shows which campaign is closest to or above target this period. ${bestCampaign?.name ?? "The top campaign"} is currently strongest, while ${lowestCampaign?.name ?? "the lowest campaign"} is the lowest performer.` : "No data available"}
+          explanation={performanceCampaignRows.length > 0 ? `This chart shows which campaign is closest to or above target this period. ${bestCampaign?.name ?? "The top campaign"} is currently strongest, while ${lowestCampaign?.name ?? "the lowest campaign"} is the lowest performer.${campaignsWithoutData > 0 ? ` Campaigns without production data remain visible and are labeled accordingly.` : ""}` : "No production data is available for the selected period."}
           rows={campaignRows}
           tableOpen={expandedTables.campaign}
           onTableToggle={() => toggleTable("campaign")}
           valueLabel="Actual"
+          tableTitle="Numerical Achievement by Campaign"
+          tableDescription="Achievement is Actual ÷ Goal × 100. Contribution is the campaign Actual ÷ combined Actual of all displayed campaigns × 100."
           overallStatus={overallStatusInfo}
         >
           <CampaignBarChart data={campaignRows.map((row) => ({ ...row, achievement: Number(row.achievement ?? 0) }))} />
@@ -705,17 +774,21 @@ export default function DashboardPage() {
                       <TableCell className="font-medium">{c.campaignName}</TableCell>
                       <TableCell>{c.kpiMetric}</TableCell>
                       <TableCell className="text-right">{c.goal.toLocaleString()}</TableCell>
-                      <TableCell className="text-right">{c.mtd.toLocaleString()}</TableCell>
+                      <TableCell className="text-right">{c.hasData ? c.mtd.toLocaleString() : "No data"}</TableCell>
                       <TableCell className="text-right">
-                        <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", kpiColorClass(c.achievement))}>
-                          {c.achievement.toFixed(1)}%
-                        </span>
+                        {c.hasData ? (
+                          <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", kpiColorClass(c.achievement))}>
+                            {c.achievement.toFixed(1)}%
+                          </span>
+                        ) : "N/A"}
                       </TableCell>
-                      <TableCell className="text-right">{c.runRate.toLocaleString()}</TableCell>
+                      <TableCell className="text-right">{c.hasData ? c.runRate.toLocaleString() : "N/A"}</TableCell>
                       <TableCell className="text-right">
-                        <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", kpiColorClass(c.rrAchievement))}>
-                          {c.rrAchievement.toFixed(1)}%
-                        </span>
+                        {c.hasData ? (
+                          <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", kpiColorClass(c.rrAchievement))}>
+                            {c.rrAchievement.toFixed(1)}%
+                          </span>
+                        ) : "N/A"}
                       </TableCell>
                     </TableRow>
                   ))
