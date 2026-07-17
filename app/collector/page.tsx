@@ -1383,6 +1383,21 @@ export default function CollectorDashboard() {
                     if (ntbDiff !== 0) return ntbDiff;
                     return (prodFor(b.id).supplementary || 0) - (prodFor(a.id).supplementary || 0);
                   }
+                  if (mbpa) {
+                    const totalTxn = (agentId: string) => {
+                      const prod = prodFor(agentId);
+                      const categoryTotal = Number(prod.c2gTxn || 0) + Number(prod.btTxn || 0) + Number(prod.balconTxn || 0);
+                      return categoryTotal || Number(prod.grandTotalTxn || 0);
+                    };
+                    const txnDiff = totalTxn(b.id) - totalTxn(a.id);
+                    if (txnDiff !== 0) return txnDiff;
+                    const totalBilling = (agentId: string) => {
+                      const prod = prodFor(agentId);
+                      const categoryTotal = Number(prod.c2gVol || 0) + Number(prod.btVol || 0) + Number(prod.balconVol || 0);
+                      return categoryTotal || Number(prod.grandTotalVol || 0);
+                    };
+                    return totalBilling(b.id) - totalBilling(a.id);
+                  }
                   return kpiValueFor(block.kpiMetric, prodFor(b.id)) - kpiValueFor(block.kpiMetric, prodFor(a.id));
                 }
                 if (sortBy === 'name') return a.name.localeCompare(b.name);
@@ -1502,10 +1517,12 @@ export default function CollectorDashboard() {
                             // ACQ tracks its paired metrics; other campaigns track their configured KPI.
                             const acqTarget = (agent.monthlyTarget || 0) + (agent.monthlyTargetSupplementary || 0);
                             const acqActual = (prod.ntb || 0) + (prod.supplementary || 0);
+                            const mbpaCategoryBilling = Number(prod.c2gVol || 0) + Number(prod.btVol || 0) + Number(prod.balconVol || 0);
+                            const mbpaBilling = mbpaCategoryBilling || Number(prod.grandTotalVol || 0);
                             const hasTarget = acq ? acqTarget > 0 : !!agent.monthlyTarget;
                             const progressNum = acq
                               ? (acqTarget > 0 ? (acqActual / acqTarget) * 100 : 0)
-                              : (agent.monthlyTarget ? (value / agent.monthlyTarget) * 100 : 0);
+                              : (agent.monthlyTarget ? ((mbpa ? mbpaBilling : value) / agent.monthlyTarget) * 100 : 0);
                             // Separate NTB / Supplementary progress bars for ACQ.
                             const ntbProgress = (agent.monthlyTarget || 0) > 0 ? ((prod.ntb || 0) / (agent.monthlyTarget as number)) * 100 : 0;
                             const suppProgress = (agent.monthlyTargetSupplementary || 0) > 0 ? ((prod.supplementary || 0) / (agent.monthlyTargetSupplementary as number)) * 100 : 0;

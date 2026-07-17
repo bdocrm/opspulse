@@ -164,6 +164,11 @@ export async function GET(req: NextRequest) {
           balconVol: true,
           grandTotalTxn: true,
           grandTotalVol: true,
+          agentLevel: true,
+          monthlyGoal: true,
+          monthlyActual: true,
+          monthlyAchievement: true,
+          productionEntry: { select: { date: true } },
         },
       }),
       prisma.productionEntry.findMany({
@@ -301,6 +306,7 @@ export async function GET(req: NextRequest) {
     const campaignsWithStandardProduction = new Set(details.map((detail) => detail.campaignId));
     const campaignsWithRegisteredAgents = new Set(agents.map((agent) => agent.campaignId).filter((id): id is string => Boolean(id)));
     const campaignNameById = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
+    const mbPaCampaignIds = new Set(campaigns.filter((campaign) => /\bMB\s*PA\b/i.test(campaign.campaignName)).map((campaign) => campaign.id));
     for (const record of usableDashboardAgentRecords) {
       if (record.recordKind !== "ytd" || campaignsWithImportedAgentMonitoring.has(record.campaignId) || campaignsWithRegisteredAgents.has(record.campaignId)) continue;
       const summaryName = `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
@@ -348,6 +354,46 @@ export async function GET(req: NextRequest) {
       for (const k of CATEGORY_KEYS) cur[k] += Number((d as any)[k] ?? 0);
       byAgent[d.agentId] = cur;
       prodByCampaign.set(d.campaignId, byAgent);
+    }
+
+    // MB PA progress is based on BILLINGS / imported TARGET, while its table
+    // ranking is based on GRAND TOTAL transactions. Older imports may have a
+    // target on only the first populated months, so carry the closest known
+    // per-agent target into target-less rows from the same selected range.
+    const mbPaTargetByAgent = new Map<string, number>();
+    const mbPaGoalByCampaign = new Map<string, number>();
+    const mbPaActualByCampaign = new Map<string, number>();
+    const mbPaRowsByAgent = new Map<string, typeof details>();
+    const storedMonthlyTargetByAgent = new Map(agents.map((agent) => [agent.id, Number(agent.monthlyTarget || 0)]));
+    for (const detail of details) {
+      if (!mbPaCampaignIds.has(detail.campaignId)) continue;
+      const key = `${detail.campaignId}|${detail.agentId}`;
+      const rows = mbPaRowsByAgent.get(key) ?? [];
+      rows.push(detail);
+      mbPaRowsByAgent.set(key, rows);
+    }
+    for (const rows of mbPaRowsByAgent.values()) {
+      rows.sort((a, b) => a.productionEntry.date.getTime() - b.productionEntry.date.getTime());
+      const explicitTargets = rows.map((detail) => {
+        const stored = Number(detail.monthlyGoal || 0);
+        if (stored > 0) return stored;
+        const actual = Number(detail.monthlyActual ?? detail.grandTotalVol ?? 0);
+        const rawAchievement = Number(detail.monthlyAchievement || 0);
+        const achievement = rawAchievement > 2 ? rawAchievement / 100 : rawAchievement;
+        return actual > 0 && achievement > 0 ? actual / achievement : 0;
+      });
+      rows.forEach((detail, index) => {
+        const target = explicitTargets[index]
+          || [...explicitTargets.slice(0, index)].reverse().find((value) => value > 0)
+          || explicitTargets.slice(index + 1).find((value) => value > 0)
+          || storedMonthlyTargetByAgent.get(detail.agentId)
+          || 0;
+        const categoryBilling = Number(detail.c2gVol || 0) + Number(detail.btVol || 0) + Number(detail.balconVol || 0);
+        const actual = categoryBilling || Number(detail.grandTotalVol || 0) || Number(detail.monthlyActual ?? detail.volume ?? 0);
+        mbPaTargetByAgent.set(detail.agentId, (mbPaTargetByAgent.get(detail.agentId) ?? 0) + target);
+        mbPaGoalByCampaign.set(detail.campaignId, (mbPaGoalByCampaign.get(detail.campaignId) ?? 0) + target);
+        mbPaActualByCampaign.set(detail.campaignId, (mbPaActualByCampaign.get(detail.campaignId) ?? 0) + actual);
+      });
     }
 
 
@@ -553,13 +599,14 @@ export async function GET(req: NextRequest) {
     const result = campaigns.map((c) => {
       const savedGoal = monthlyGoalsByCampaignId.get(c.id);
       const isBdoCampaign = /^BDO\b/i.test(c.campaignName);
+      const isMbPaCampaign = /\bMB\s*PA\b/i.test(c.campaignName);
       const campaignAgents = [
         ...(agentsByCampaign.get(c.id) ?? []).map((a) => ({
           id: a.id,
           name: a.name,
           email: a.email,
           seatNumber: a.seatNumber,
-          monthlyTarget: isBdoCampaign ? a.monthlyTarget : importedTargetByAgent.get(a.id) || a.monthlyTarget,
+          monthlyTarget: isBdoCampaign ? a.monthlyTarget : isMbPaCampaign ? mbPaTargetByAgent.get(a.id) || a.monthlyTarget : importedTargetByAgent.get(a.id) || a.monthlyTarget,
           monthlyTargetSupplementary: a.monthlyTargetSupplementary,
           mbLevel: a.mbLevel,
           disbursedTxnTarget: a.disbursedTxnTarget,
@@ -613,10 +660,14 @@ export async function GET(req: NextRequest) {
         kpiMetric: effectiveBdoGoalConfig?.kpiMetric || savedGoal?.kpiMetric || campaignKpiById.get(c.id) || c.kpiMetric || "booked",
         goal: isBdoCampaign
           ? (hasBdoAgentImport ? importedTargetTotal : importedGoalByCampaign.get(c.id) || ceoGoal)
-          : importedGoalByCampaign.get(c.id) || ceoGoal,
+          : isMbPaCampaign
+            ? mbPaGoalByCampaign.get(c.id) || ceoGoal
+            : importedGoalByCampaign.get(c.id) || ceoGoal,
         actual: isBdoCampaign
           ? (hasBdoAgentImport ? bdoActualFromAgents : importedActualByCampaign.get(c.id) ?? null)
-          : importedActualByCampaign.get(c.id) ?? null,
+          : isMbPaCampaign
+            ? mbPaActualByCampaign.get(c.id) ?? null
+            : importedActualByCampaign.get(c.id) ?? null,
         supplementaryGoal: Number(savedGoal?.supplementaryGoal ?? c.supplementaryGoal ?? 0),
         agents: campaignAgents,
         bdoPerformance,

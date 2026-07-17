@@ -2210,6 +2210,7 @@ export async function POST(req: NextRequest) {
             id: true, productionEntryId: true, campaignId: true, agentId: true,
             transmittals: true, approvals: true, booked: true, activations: true, ntb: true, supplementary: true,
             monthlyGoal: true, monthlyActual: true, monthlyAchievement: true,
+            agentLevel: true,
             c2gTxn: true, c2gVol: true, btTxn: true, btVol: true, balconTxn: true, balconVol: true,
             grandTotalTxn: true, grandTotalVol: true,
             productionEntry: { select: { date: true, reportPeriodType: true, importMetricType: true } },
@@ -2302,6 +2303,17 @@ export async function POST(req: NextRequest) {
               const breakdown = Object.fromEntries(MB_PA_DETAIL_KEYS.map((key) => [key, BigInt(row[key] || 0)]));
               await tx.productionDetail.update({ where: { id: existingDetail.id }, data: breakdown });
               Object.assign(existingDetail, breakdown);
+              enrichedRecords++;
+              rowChanged = true;
+            }
+            const metadata: Record<string, any> = {};
+            if ((duplicateMode !== 'skip' || existingDetail.agentLevel == null) && row.agentLevel) metadata.agentLevel = row.agentLevel;
+            if ((duplicateMode !== 'skip' || existingDetail.monthlyGoal == null) && row.monthlyGoal !== undefined) metadata.monthlyGoal = row.monthlyGoal;
+            if ((duplicateMode !== 'skip' || existingDetail.monthlyActual == null) && row.monthlyActual !== undefined) metadata.monthlyActual = row.monthlyActual;
+            if ((duplicateMode !== 'skip' || existingDetail.monthlyAchievement == null) && row.monthlyAchievement !== undefined) metadata.monthlyAchievement = row.monthlyAchievement;
+            if (Object.keys(metadata).length) {
+              await tx.productionDetail.update({ where: { id: existingDetail.id }, data: metadata });
+              Object.assign(existingDetail, metadata);
               enrichedRecords++;
               rowChanged = true;
             }

@@ -22,6 +22,14 @@ export interface Production {
   volume?: number;
   ntb?: number;
   supplementary?: number;
+  c2gTxn?: number;
+  c2gVol?: number;
+  btTxn?: number;
+  btVol?: number;
+  balconTxn?: number;
+  balconVol?: number;
+  grandTotalTxn?: number;
+  grandTotalVol?: number;
 }
 
 export interface CampaignSummaryProps {
@@ -49,6 +57,17 @@ const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, b
 // ACQ campaigns (name contains "ACQ") report NTB + Supplementary instead of booked volume.
 const isAcqCampaign = (name?: string | null) => /\bacq\b/i.test(name || '');
 const isBdoCampaign = (name?: string | null) => /^bdo\b/i.test((name || '').trim());
+const isMbPaCampaign = (name?: string | null) => /\bmb\s*pa\b/i.test(name || '');
+
+function mbPaTransactionTotal(prod: Production) {
+  const categoryTotal = Number(prod.c2gTxn || 0) + Number(prod.btTxn || 0) + Number(prod.balconTxn || 0);
+  return categoryTotal || Number(prod.grandTotalTxn || 0);
+}
+
+function mbPaBillingTotal(prod: Production) {
+  const categoryTotal = Number(prod.c2gVol || 0) + Number(prod.btVol || 0) + Number(prod.balconVol || 0);
+  return categoryTotal || Number(prod.grandTotalVol || 0);
+}
 
 function kpiValueFor(metric: string, prod: Production): number {
   switch (metric) {
@@ -114,6 +133,7 @@ export function CampaignSummaryCard({
   // ACQ campaigns track NTB + Supplementary instead of booked volume.
   const acq = isAcqCampaign(campaignName);
   const bdo = isBdoCampaign(campaignName);
+  const mbpa = isMbPaCampaign(campaignName);
   const totalNtb = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).ntb || 0), 0);
   const totalSupplementary = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).supplementary || 0), 0);
 
@@ -122,7 +142,8 @@ export function CampaignSummaryCard({
     ? (goal > 0 ? ((totalNtb / goal) * 100).toFixed(1) : '0')
     : (goal > 0 ? ((totalProduction / goal) * 100).toFixed(1) : '0');
   const remainingGoal = Math.max(0, goal - (acq ? totalNtb : totalProduction));
-  const metricLabel = kpiLabel(kpiMetric);
+  const metricLabel = mbpa ? 'Billings' : kpiLabel(kpiMetric);
+  const displayMetric = mbpa ? 'volume' : kpiMetric;
   const hasRecordsInRange = entriesCount > 0;
   const fallbackPeriodLabel = dataPeriod?.source === 'latest_import' && dataPeriod.month && dataPeriod.year
     ? new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(dataPeriod.year, dataPeriod.month - 1, 1)))
@@ -137,7 +158,7 @@ export function CampaignSummaryCard({
     if (goal === 0 || entriesCount === 0) return distribution;
     agents.forEach(agent => {
       const prod = production[agent.id] || ZERO_PROD;
-      const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : kpiValueFor(kpiMetric, prod);
+      const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaBillingTotal(prod) : kpiValueFor(kpiMetric, prod);
       // Calculate agent's share of total goal proportionally, or use their monthly target if set
       const agentGoal = bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || (goal / Math.max(agents.length, 1));
       if (agentGoal === 0) return;
@@ -148,7 +169,7 @@ export function CampaignSummaryCard({
       else distribution.needsImprovement++;
     });
     return distribution;
-  }, [agents, production, goal, entriesCount, acq, bdo, bdoPerformance, kpiMetric]);
+  }, [agents, production, goal, entriesCount, acq, bdo, mbpa, bdoPerformance, kpiMetric]);
 
   // Top and bottom performers. ACQ ranks by NTB (Supplementary as tiebreaker),
   // matching the collector-details table; others use their configured KPI.
@@ -159,10 +180,11 @@ export function CampaignSummaryCard({
     const performers = agents
       .map(agent => {
         const prod = production[agent.id] || ZERO_PROD;
-        const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : kpiValueFor(kpiMetric, prod);
-        const secondary = acq ? (prod.supplementary || 0) : 0;
+        const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaTransactionTotal(prod) : kpiValueFor(kpiMetric, prod);
+        const secondary = acq ? (prod.supplementary || 0) : mbpa ? mbPaBillingTotal(prod) : 0;
         const agentGoal = bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || (goal / Math.max(agents.length, 1));
-        return { agent, value, secondary, target: agentGoal, progress: agentGoal > 0 ? (value / agentGoal) * 100 : 0 };
+        const progressValue = mbpa ? mbPaBillingTotal(prod) : value;
+        return { agent, value, secondary, target: agentGoal, progress: agentGoal > 0 ? (progressValue / agentGoal) * 100 : 0 };
       })
       .sort((a, b) => (b.value !== a.value ? b.value - a.value : b.secondary - a.secondary));
 
@@ -174,7 +196,7 @@ export function CampaignSummaryCard({
       withProduction: performers.filter(p => p.value > 0).length,
       zeroProduction: performers.filter(p => p.value === 0).length,
     };
-  }, [agents, production, goal, acq, bdo, bdoPerformance, kpiMetric, entriesCount]);
+  }, [agents, production, goal, acq, bdo, mbpa, bdoPerformance, kpiMetric, entriesCount]);
 
   const filteredAgents = useMemo(() => {
     if (!searchQuery.trim()) return agents;
@@ -249,15 +271,15 @@ export function CampaignSummaryCard({
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
                 <p className="text-xs text-muted-foreground mb-1">Goal ({metricLabel})</p>
-                <p className="text-xl font-bold text-blue-600">{formatKpiValue(kpiMetric, goal)}</p>
+                <p className="text-xl font-bold text-blue-600">{formatKpiValue(displayMetric, goal)}</p>
               </div>
               <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
                 <p className="text-xs text-muted-foreground mb-1">Current {metricLabel}</p>
-                <p className="text-xl font-bold text-purple-600">{formatKpiValue(kpiMetric, totalProduction)}</p>
+                <p className="text-xl font-bold text-purple-600">{formatKpiValue(displayMetric, totalProduction)}</p>
               </div>
               <div className="bg-gradient-to-br from-orange-50 to-orange-100/50 rounded-lg p-3">
                 <p className="text-xs text-muted-foreground mb-1">Remaining to Goal</p>
-                <p className="text-xl font-bold text-orange-600">{formatKpiValue(kpiMetric, remainingGoal)}</p>
+                <p className="text-xl font-bold text-orange-600">{formatKpiValue(displayMetric, remainingGoal)}</p>
               </div>
               <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
                 <p className="text-xs text-muted-foreground mb-1">{fallbackPeriodLabel ? `Records (${fallbackPeriodLabel})` : 'Records in Range'}</p>
