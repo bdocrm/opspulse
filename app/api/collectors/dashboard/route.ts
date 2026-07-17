@@ -381,6 +381,12 @@ export async function GET(req: NextRequest) {
       usableDashboardAgentRecords.filter((record) => record.recordKind === "agent_monitoring" && importedActual(record) != null).map((record) => record.campaignId)
     );
     const campaignsWithStandardProduction = new Set(details.map((detail) => detail.campaignId));
+    const campaignsWithMonthlyProductionImport = new Set(
+      details
+        .filter((detail) => detail.productionEntry.importFileName
+          && detail.productionEntry.reportPeriodType === "monthly")
+        .map((detail) => detail.campaignId)
+    );
     const campaignNameById = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
     const mbPaCampaignIds = new Set(campaigns.filter((campaign) => /\bMB\s*PA\b/i.test(campaign.campaignName)).map((campaign) => campaign.id));
     for (const record of usableDashboardAgentRecords) {
@@ -682,7 +688,8 @@ export async function GET(req: NextRequest) {
       const savedGoal = monthlyGoalsByCampaignId.get(c.id);
       const isBdoCampaign = /^BDO\b/i.test(c.campaignName);
       const isMbPaCampaign = /\bMB\s*PA\b/i.test(c.campaignName);
-      const campaignAgents = [
+      const production = prodByCampaign.get(c.id) ?? {};
+      const campaignAgentCandidates = [
         ...(agentsByCampaign.get(c.id) ?? []).map((a) => ({
           id: a.id,
           name: a.name,
@@ -702,6 +709,26 @@ export async function GET(req: NextRequest) {
           monthlyTarget: isBdoCampaign ? null : importedTargetByAgent.get(agent.id) || null,
         })),
       ];
+      const campaignAgentByName = new Map<string, (typeof campaignAgentCandidates)[number]>();
+      for (const agent of campaignAgentCandidates) {
+        const normalizedName = normalizeImportedAgentName(agent.name);
+        if (!normalizedName) continue;
+        const existing = campaignAgentByName.get(normalizedName);
+        // Duplicate user accounts must not create duplicate cards. Prefer the
+        // account that owns the selected import-period production, if present.
+        if (!existing || (production[agent.id] && !production[existing.id])) {
+          campaignAgentByName.set(normalizedName, agent);
+        }
+      }
+      const campaignAgents = [...campaignAgentByName.values()];
+      const hasDashboardAgentImport = [...preferredAgentDetailRecords.values()].some((record) =>
+        record.campaignId === c.id &&
+        (record.recordKind === "agent_monitoring" || !campaignsWithImportedAgentMonitoring.has(c.id)) &&
+        (importedActual(record) != null || record.target != null)
+      );
+      const dataEntryAgentIds = campaignsWithMonthlyProductionImport.has(c.id) || hasDashboardAgentImport
+        ? Object.keys(production)
+        : campaignAgents.map((agent) => agent.id);
       const importedPeriods = [...new Map(
         [...preferredDashboardRecords.values()]
           .filter((record) => record.campaignId === c.id && record.month != null)
@@ -752,8 +779,9 @@ export async function GET(req: NextRequest) {
             : importedActualByCampaign.get(c.id) ?? null,
         supplementaryGoal: Number(savedGoal?.supplementaryGoal ?? c.supplementaryGoal ?? 0),
         agents: campaignAgents,
+        dataEntryAgentIds,
         bdoPerformance,
-        production: prodByCampaign.get(c.id) ?? {},
+        production,
         attendance: attByCampaign.get(c.id) ?? {},
         entriesCount: (entryCountByCampaign.get(c.id) ?? 0) + (importedEntryCountByCampaign.get(c.id) ?? 0),
         dataPeriod: isBdoCampaign && importedAgentFallbackPeriodByCampaign.has(c.id)

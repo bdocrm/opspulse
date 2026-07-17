@@ -285,10 +285,39 @@ function parseProductivity(
   const typeHit = findColumn(rows, [/^(?:employee type|agent type|type)$/]);
   const headerRows = rows.slice(0, 35);
   const maxColumns = Math.max(0, ...headerRows.map((row) => row.length));
-  const columns = Array.from({ length: maxColumns }, (_, col) => {
+  const columnCandidates = Array.from({ length: maxColumns }, (_, col) => {
     const period = headerRows.map((row) => monthFrom(row[col])).find(Boolean);
-    const metric = productivityMetric(headerRows.map((row) => row[col]));
-    return period && metric ? { col, month: period.month, year: period.year || year, metric } : null;
+    const labels = headerRows.map((row) => row[col]);
+    return period ? {
+      col,
+      month: period.month,
+      year: period.year || year,
+      labels,
+      metric: productivityMetric(labels),
+    } : null;
+  }).filter(Boolean) as Array<{
+    col: number;
+    month: number;
+    year: number;
+    labels: unknown[];
+    metric: string;
+  }>;
+  const columns = columnCandidates.map((candidate, index) => {
+    if (candidate.metric) return candidate;
+
+    // Some BPI PL workbooks merge TRANSMITTED / APPROVALS / BOOKED over only
+    // the Count cell. The paired cell is labelled just VOLUME, so infer its
+    // metric from the immediately preceding Count column in the same month.
+    const isVolumeColumn = candidate.labels.some((label) => /\b(?:volume|vol)\b/i.test(normalizeBpiText(label)));
+    if (!isVolumeColumn) return null;
+    const pairedCount = [...columnCandidates.slice(0, index)].reverse().find((previous) =>
+      previous.year === candidate.year &&
+      previous.month === candidate.month &&
+      previous.col === candidate.col - 1 &&
+      previous.metric.endsWith(' Count')
+    );
+    if (!pairedCount) return null;
+    return { ...candidate, metric: pairedCount.metric.replace(/ Count$/, ' Volume') };
   }).filter(Boolean) as Array<{ col: number; month: number; year: number; metric: string }>;
   const records: BpiImportRecord[] = [];
   const warnings: BdoImportIssue[] = [];

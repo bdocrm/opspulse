@@ -51,6 +51,7 @@ interface CampaignBlock {
   id: string;
   campaignName: string;
   agents: any[];
+  dataEntryAgentIds?: string[];
   production?: Record<string, Partial<AgentTotals>>;
   dataPeriod?: { source: string; year?: number; month?: number };
   agentDataPeriod?: { source: string; year?: number; month?: number };
@@ -153,7 +154,13 @@ export default function DataEntryPage() {
     { refreshInterval: 0 }
   );
 
-  const agents = useMemo(() => selectedCampaign?.agents || [], [selectedCampaign]);
+  const agents = useMemo(() => {
+    const roster = selectedCampaign?.agents || [];
+    const importedIds = selectedCampaign?.dataEntryAgentIds || [];
+    if (importedIds.length === 0) return roster;
+    const visibleIds = new Set(importedIds);
+    return roster.filter((agent: any) => visibleIds.has(agent.id));
+  }, [selectedCampaign]);
   const savedEntries: SavedEntry[] = useMemo(() => savedData?.entries || [], [savedData]);
   const importedAgentTotals = useMemo<Record<string, AgentTotals>>(
     () => Object.fromEntries(
