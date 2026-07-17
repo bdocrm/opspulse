@@ -112,7 +112,10 @@ function monthFrom(value: unknown): { month: number; year?: number } | null {
 }
 
 function workbookYear(rows: unknown[][], fallback: number) {
-  for (const value of rows.slice(0, 30).flat()) {
+  // Only inspect the worksheet header. Agent-monitoring sheets contain dates
+  // hired in their data rows; treating one of those as the workbook year can
+  // silently move an entire report into the employee's hiring year.
+  for (const value of rows.slice(0, 4).flat()) {
     if (value instanceof Date && value.getFullYear() >= 2000) return value.getFullYear();
     const found = normalizeBpiText(value).match(/\b(20\d{2})\b/);
     if (found) return Number(found[1]);
@@ -205,7 +208,12 @@ function parseMonitoring(rows: unknown[][], sheetName: string, detectedType: Bpi
     return { sheetName, detectedType, records, months: [], warnings: [{ worksheet: sheetName, message: 'No valid agent-name and monthly Goal/Actual columns were found.' }], status: 'Skipped' };
   }
   const headerEnd = Math.max(nameHit.row, ...columns.map((column) => rows.slice(0, 35).findIndex((row) => monitoringField(row[column.col]) === column.field)));
-  const evidence = campaignEvidence(rows.slice(0, Math.max(headerEnd + 1, 12)).flat(), /^pl/i.test(detectedType) ? 'PL' : 'PA');
+  // In the standard BPI dashboard, PA Agents/HOH Monitoring is the outbound
+  // roster. PA inbound has its own YTD productivity worksheet. Use explicit
+  // campaign evidence so these agent rows are not left as ambiguous "PA".
+  const evidence = detectedType === 'PA Agents Monitoring' || detectedType === 'PA HOH Monitoring'
+    ? 'PA SIP LOANS OUTBOUND'
+    : campaignEvidence(rows.slice(0, Math.max(headerEnd + 1, 12)).flat(), /^pl/i.test(detectedType) ? 'PL' : 'PA');
   const monitoringType = detectedType === 'PA Agents Monitoring' ? 'PA_AGENT' : detectedType === 'PA HOH Monitoring' ? 'PA_HOH' : 'PL_HOH';
   const periods = [...new Map(columns.map((column) => [`${column.year}-${column.month}`, { year: column.year, month: column.month }])).values()];
   for (let rowIndex = headerEnd + 1; rowIndex < rows.length; rowIndex++) {
