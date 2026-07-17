@@ -80,6 +80,25 @@ function reportStatus(achievement: number): 'on-track' | 'at-risk' | 'exceeding'
   return 'at-risk';
 }
 
+function normalizeAgentName(value: string | null | undefined) {
+  return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+}
+
+function normalizeImportedMetric(value: string | null | undefined) {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function isImportedClassificationRow(row: {
+  worksheetSource: string;
+  monitoringType: string | null;
+  entityName: string;
+}) {
+  const normalizedName = normalizeAgentName(row.entityName);
+  return row.worksheetSource === 'PL YTD Productivity'
+    && row.monitoringType === 'PL_PRODUCTIVITY'
+    && /^(?:OLD|SEMI OLD|NEW|(?:OLD|SEMI OLD|NEW|TOTAL) AVERAGE PER AGENT)$/.test(normalizedName);
+}
+
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -98,9 +117,25 @@ export async function GET(req: NextRequest) {
 
     const { start: startDate, end: endDate } = monthRange(year, month);
 
+    const campaignCatalog = await prisma.campaign.findMany({
+      where: user.role === 'CEO'
+        ? undefined
+        : user.campaignId
+          ? { id: user.campaignId }
+          : { id: { in: [] } },
+      select: {
+        id: true,
+        campaignName: true,
+        kpiMetric: true,
+        monthlyGoal: true,
+      },
+    });
+    const scopedCampaignIds = campaignCatalog.map((campaign) => campaign.id);
+    const campaignById = new Map(campaignCatalog.map((campaign) => [campaign.id, campaign]));
+
     const details = await prisma.productionDetail.findMany({
       where: {
-        ...(user.role === 'CEO' ? {} : user.campaignId ? { campaignId: user.campaignId } : {}),
+        campaignId: { in: scopedCampaignIds },
         productionEntry: {
           OR: [
             { date: { gte: startDate, lte: endDate } },
@@ -132,7 +167,36 @@ export async function GET(req: NextRequest) {
       },
     });
 
-    const campaignIds = Array.from(new Set(details.map((detail) => detail.campaignId)));
+    const dashboardImportRows = scopedCampaignIds.length > 0
+      ? await prisma.dashboardImportRecord.findMany({
+          where: {
+            campaignId: { in: scopedCampaignIds },
+            year,
+            month,
+          },
+          select: {
+            campaignId: true,
+            recordKind: true,
+            worksheetSource: true,
+            entityName: true,
+            monitoringType: true,
+            metric: true,
+            year: true,
+            month: true,
+            reportDate: true,
+            target: true,
+            actual: true,
+            achievement: true,
+            numericValue: true,
+          },
+          orderBy: [{ reportDate: 'asc' }, { sourceRow: 'asc' }],
+        }).catch(() => [])
+      : [];
+
+    const campaignIds = Array.from(new Set([
+      ...details.map((detail) => detail.campaignId),
+      ...dashboardImportRows.map((row) => row.campaignId),
+    ]));
     const monthlyGoalRows = campaignIds.length > 0
       ? await prisma.campaignGoal.findMany({
           where: { campaignId: { in: campaignIds }, month, year },
@@ -162,30 +226,38 @@ export async function GET(req: NextRequest) {
       workedDates: Set<string>;
     }>();
 
+    const ensureCampaign = (campaignId: string) => {
+      if (campaignMap.has(campaignId)) return campaignMap.get(campaignId)!;
+      const campaign = campaignById.get(campaignId);
+      if (!campaign) return null;
+      const monthlyGoal = monthlyByCampaignId.get(campaign.id);
+      const report = {
+        id: campaign.id,
+        name: campaign.campaignName,
+        kpiMetric: monthlyGoal?.kpiMetric ?? campaign.kpiMetric,
+        monthlyGoal: Number(monthlyGoal?.monthlyGoal ?? campaign.monthlyGoal ?? 0),
+        workingDays: Number(monthlyGoal?.workingDays ?? WORKING_DAYS_DEFAULT),
+        transmittals: 0,
+        activations: 0,
+        approvals: 0,
+        booked: 0,
+        volume: 0,
+        transaction: 0,
+        agentIds: new Set<string>(),
+        workedDates: new Set<string>(),
+      };
+      campaignMap.set(campaign.id, report);
+      return report;
+    };
+
+    campaignIds.forEach(ensureCampaign);
+
     details.forEach((detail) => {
       const campaign = detail.campaign;
       if (!campaign?.id) return;
 
-      if (!campaignMap.has(campaign.id)) {
-        const monthlyGoal = monthlyByCampaignId.get(campaign.id);
-        campaignMap.set(campaign.id, {
-          id: campaign.id,
-          name: campaign.campaignName,
-          kpiMetric: monthlyGoal?.kpiMetric ?? campaign.kpiMetric,
-          monthlyGoal: Number(monthlyGoal?.monthlyGoal ?? campaign.monthlyGoal ?? 0),
-          workingDays: Number(monthlyGoal?.workingDays ?? WORKING_DAYS_DEFAULT),
-          transmittals: 0,
-          activations: 0,
-          approvals: 0,
-          booked: 0,
-          volume: 0,
-          transaction: 0,
-          agentIds: new Set<string>(),
-          workedDates: new Set<string>(),
-        });
-      }
-
-      const report = campaignMap.get(campaign.id)!;
+      const report = ensureCampaign(campaign.id);
+      if (!report) return;
       report.transmittals += Number(detail.transmittals || 0);
       report.activations += Number(detail.activations || 0);
       report.approvals += Number(detail.approvals || 0);
@@ -196,16 +268,154 @@ export async function GET(req: NextRequest) {
       report.workedDates.add(toBusinessYmd(detail.productionEntry.periodEnd ?? detail.productionEntry.date));
     });
 
+    const usableDashboardRows = dashboardImportRows.filter((row) => !isImportedClassificationRow(row));
+    const importedActual = (row: (typeof dashboardImportRows)[number]) => row.actual != null
+      ? Number(row.actual)
+      : row.target != null && row.achievement != null
+        ? Number(row.target) * Number(row.achievement)
+        : null;
+
+    const bpiCurrencyCampaigns = new Set(
+      usableDashboardRows
+        .filter((row) => Number(row.target || 0) >= 1_000_000
+          && /^BPI\b/i.test(campaignById.get(row.campaignId)?.campaignName || ''))
+        .map((row) => row.campaignId)
+    );
+    const campaignsWithAgentRows = new Set(
+      usableDashboardRows
+        .filter((row) => row.recordKind === 'agent_monitoring')
+        .map((row) => row.campaignId)
+    );
+
+    // Some workbooks expose the same agent/metric in both a campaign summary
+    // sheet and a dedicated agent sheet. Keep the most specific agent row.
+    const preferredDashboardRows = new Map<string, (typeof dashboardImportRows)[number]>();
+    for (const row of usableDashboardRows) {
+      if (!['agent_monitoring', 'ytd'].includes(row.recordKind)) continue;
+      const key = [
+        row.campaignId,
+        normalizeAgentName(row.entityName || 'Campaign Total'),
+        row.year,
+        row.month || 0,
+        normalizeImportedMetric(row.metric),
+      ].join('|');
+      const existing = preferredDashboardRows.get(key);
+      const priority = row.monitoringType?.endsWith('_AGENT') ? 2 : 1;
+      const existingPriority = existing?.monitoringType?.endsWith('_AGENT') ? 2 : existing ? 1 : 0;
+      if (!existing || priority > existingPriority) preferredDashboardRows.set(key, row);
+    }
+
+    const importedHeadCountByCampaign = new Map<string, number>();
+    for (const row of usableDashboardRows) {
+      const report = ensureCampaign(row.campaignId);
+      if (!report) continue;
+      report.workedDates.add(toBusinessYmd(row.reportDate));
+
+      if (row.recordKind === 'agent_monitoring' && normalizeAgentName(row.entityName)) {
+        report.agentIds.add(`imported:${normalizeAgentName(row.entityName)}`);
+      }
+
+      if (normalizeImportedMetric(row.metric) === 'actual head count' && row.numericValue != null) {
+        importedHeadCountByCampaign.set(
+          row.campaignId,
+          Math.max(importedHeadCountByCampaign.get(row.campaignId) || 0, Number(row.numericValue))
+        );
+      }
+    }
+
+    const importedQualityByCampaign = new Map<string, {
+      transmittals: number;
+      approvals: number;
+      booked: number;
+    }>();
+    for (const row of preferredDashboardRows.values()) {
+      if (row.recordKind !== 'agent_monitoring') continue;
+      const actual = importedActual(row);
+      if (actual == null) continue;
+      const metric = normalizeImportedMetric(row.metric);
+      const totals = importedQualityByCampaign.get(row.campaignId) || {
+        transmittals: 0,
+        approvals: 0,
+        booked: 0,
+      };
+      if (metric === 'transmitted count') totals.transmittals += actual;
+      if (metric === 'approvals count') totals.approvals += actual;
+      if (metric === 'booked count') totals.booked += actual;
+      importedQualityByCampaign.set(row.campaignId, totals);
+    }
+
+    const importedKpiRows = [...preferredDashboardRows.values()].flatMap((row) => {
+      const campaign = campaignById.get(row.campaignId);
+      if (!campaign) return [];
+      const metric = normalizeImportedMetric(row.metric);
+      const configuredMetric = normalizeMetric(campaign.kpiMetric);
+      const effectiveMetric: MetricKey = bpiCurrencyCampaigns.has(row.campaignId)
+        ? 'volume'
+        : configuredMetric;
+      const actual = importedActual(row);
+      if (actual == null) return [];
+
+      const matchesKpi =
+        (effectiveMetric === 'transmittals' && (metric === 'transmitted count'
+          || !/\b(?:volume|approvals|booked)\b/.test(metric)))
+        || (effectiveMetric === 'approvals' && (metric === 'approvals count'
+          || !/\b(?:volume|transmitted|booked)\b/.test(metric)))
+        || (effectiveMetric === 'booked' && (metric === 'booked count'
+          || !/\b(?:volume|transmitted|approvals)\b/.test(metric)))
+        || (effectiveMetric === 'activations'
+          && !/\b(?:volume|transmitted|approvals|booked)\b/.test(metric))
+        || (effectiveMetric === 'volume' && (
+          row.recordKind === 'ytd'
+          || metric.includes('booked volume')
+          || metric.includes('cash installment')
+          || (!campaignsWithAgentRows.has(row.campaignId) && metric.includes('volume'))
+        ));
+
+      return matchesKpi ? [{ ...row, value: actual, effectiveMetric }] : [];
+    });
+
+    const importedKpiByCampaign = new Map<string, {
+      metric: MetricKey;
+      mtd: number;
+      goal: number;
+    }>();
+    for (const campaignId of campaignIds) {
+      const rows = importedKpiRows.filter((row) => row.campaignId === campaignId);
+      if (rows.length === 0) continue;
+      const ytdRows = rows.filter((row) => row.recordKind === 'ytd');
+      const selectedRows = ytdRows.length > 0 ? ytdRows : rows.filter((row) => row.recordKind !== 'ytd');
+      if (selectedRows.length === 0) continue;
+      importedKpiByCampaign.set(campaignId, {
+        metric: selectedRows[0].effectiveMetric,
+        mtd: selectedRows.reduce((sum, row) => sum + row.value, 0),
+        goal: selectedRows.reduce((sum, row) => sum + Number(row.target || 0), 0),
+      });
+    }
+
     const campaignReports = Array.from(campaignMap.values()).map((campaign) => {
       const configuredMetric = normalizeMetric(campaign.kpiMetric);
-      const effectiveMetric = resolveEffectiveMetric(configuredMetric, campaign.monthlyGoal, campaign);
-      const mtd = metricValue(effectiveMetric, campaign);
+      const importedKpi = importedKpiByCampaign.get(campaign.id);
+      const monthlyGoal = importedKpi?.goal || campaign.monthlyGoal;
+      const effectiveMetric = importedKpi?.metric
+        ?? resolveEffectiveMetric(configuredMetric, monthlyGoal, campaign);
+      // Normalized workbook KPI rows are authoritative for imported BPI/BDO
+      // campaigns. This prevents counting the workbook again if a legacy
+      // ProductionDetail mirror also exists.
+      const mtd = importedKpi?.mtd ?? metricValue(effectiveMetric, campaign);
       const elapsed = campaign.workedDates.size;
       const rr = runRate(mtd, elapsed, campaign.workingDays);
-      const ach = achievementPct(mtd, campaign.monthlyGoal);
-      const rrAch = rrAchievementPct(rr, campaign.monthlyGoal);
-      const avgQuality = percent(campaign.approvals, campaign.transmittals);
-      const avgConversion = percent(campaign.booked, campaign.transmittals);
+      const ach = achievementPct(mtd, monthlyGoal);
+      const rrAch = rrAchievementPct(rr, monthlyGoal);
+      const importedQuality = importedQualityByCampaign.get(campaign.id);
+      const qualityTransmittals = importedQuality?.transmittals || campaign.transmittals;
+      const qualityApprovals = importedQuality?.transmittals
+        ? importedQuality.approvals
+        : campaign.approvals;
+      const qualityBooked = importedQuality?.transmittals
+        ? importedQuality.booked
+        : campaign.booked;
+      const avgQuality = percent(qualityApprovals, qualityTransmittals);
+      const avgConversion = percent(qualityBooked, qualityTransmittals);
 
       const status = reportStatus(ach);
 
@@ -213,12 +423,15 @@ export async function GET(req: NextRequest) {
         id: campaign.id,
         name: campaign.name,
         kpiMetric: effectiveMetric,
-        monthlyGoal: campaign.monthlyGoal,
+        monthlyGoal,
         mtd: Math.round(mtd),
         achievement: ach,
         runRate: Math.round(rr),
         rrAchievement: rrAch,
-        agentCount: campaign.agentIds.size,
+        agentCount: Math.max(
+          campaign.agentIds.size,
+          importedHeadCountByCampaign.get(campaign.id) || 0
+        ),
         avgQuality,
         avgConversion,
         status,
@@ -240,6 +453,12 @@ export async function GET(req: NextRequest) {
         atRisk,
         exceeding,
         avgAchievement,
+      },
+    }, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0',
       },
     });
   } catch (error) {

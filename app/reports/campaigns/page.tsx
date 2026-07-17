@@ -43,6 +43,16 @@ interface CampaignOption {
   campaignName: string;
 }
 
+const fetchFreshJson = async (url: string) => {
+  const response = await fetch(url, {
+    credentials: "include",
+    cache: "no-store",
+    headers: { "Cache-Control": "no-cache" },
+  });
+  if (!response.ok) throw new Error(`Campaign report request failed (${response.status})`);
+  return response.json();
+};
+
 export default function CampaignReportsPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
@@ -66,12 +76,17 @@ export default function CampaignReportsPage() {
   }, [session, status, router]);
 
   const { data, isLoading } = useSWR(
-    session?.user ? `/api/reports/campaigns?year=${year}&month=${month}` : null,
-    (url: string) => fetch(url).then(res => res.json())
+    session?.user ? `/api/reports/campaigns?year=${year}&month=${month}&dataVersion=2` : null,
+    fetchFreshJson,
+    {
+      revalidateOnMount: true,
+      revalidateOnFocus: true,
+      dedupingInterval: 0,
+    }
   );
   const { data: campaignOptions = [] } = useSWR<CampaignOption[]>(
     session?.user ? `/api/goals?month=${month}&year=${year}` : null,
-    (url: string) => fetch(url).then(res => res.json())
+    fetchFreshJson
   );
 
   const campaigns: CampaignReport[] = data?.campaigns || [];
