@@ -114,8 +114,17 @@ const MONTH_NAMES = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-const fetcher = (url: string) =>
-  fetch(url, { credentials: "include" }).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const response = await fetch(url, {
+    credentials: "include",
+    cache: "no-store",
+    headers: { "Cache-Control": "no-cache" },
+  });
+  if (!response.ok) {
+    throw new Error(`Dashboard request failed (${response.status})`);
+  }
+  return response.json();
+};
 
 const numberFmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 const pctFmt = new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -384,8 +393,13 @@ export default function DashboardPage() {
     if ((session.user as any).role === "AGENT") { router.push("/collector"); return; }
   }, [session, status, router]);
 
-  const apiUrl = `/api/dashboard?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}`;
-  const { data, isLoading, mutate } = useSWR<DashboardData>(apiUrl, fetcher, { refreshInterval: 30000 });
+  const apiUrl = `/api/dashboard?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}&dataVersion=3`;
+  const { data, isLoading, mutate } = useSWR<DashboardData>(apiUrl, fetcher, {
+    refreshInterval: 30000,
+    revalidateOnMount: true,
+    revalidateOnFocus: true,
+    dedupingInterval: 0,
+  });
 
   const hasUsableData = data && !data.error;
   const availablePeriods: Period[] = hasUsableData ? data.availablePeriods ?? [] : [];
@@ -494,21 +508,25 @@ export default function DashboardPage() {
     .slice(0, 10);
   const leaderboardTotal = topLeaderboard.reduce((sum, item) => sum + item.value, 0);
   const leaderboardRows: ExecutiveRow[] = topLeaderboard.map((agent, index) => {
-    const statusInfo = agent.achievement == null
+    const agentGoal = Number(agent.goal ?? 0);
+    const agentAchievement = agent.achievement == null && agentGoal > 0
+      ? (agent.value / agentGoal) * 100
+      : agent.achievement;
+    const statusInfo = agentAchievement == null
       ? { label: index < 3 ? "Good / Top performer" : "Information", tone: index < 3 ? "good" as const : "info" as const }
-      : getStatus(agent.achievement);
+      : getStatus(agentAchievement);
     return {
       name: agent.name,
       displayName: `#${index + 1} ${agent.name}`,
       value: agent.value,
       actual: agent.value,
-      goal: agent.goal,
-      achievement: agent.achievement,
+      goal: agentGoal > 0 ? agentGoal : null,
+      achievement: agentAchievement,
       contribution: leaderboardTotal > 0 ? (agent.value / leaderboardTotal) * 100 : 0,
       rank: index + 1,
       status: statusInfo.label,
       statusTone: statusInfo.tone,
-      recommendation: agent.achievement == null
+      recommendation: agentAchievement == null
         ? index < 3
           ? "Maintain performance and share effective practices."
           : "Review activity level and support consistent output."

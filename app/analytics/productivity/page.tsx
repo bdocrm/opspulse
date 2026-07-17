@@ -24,13 +24,16 @@ import { Activity, Search, Download } from "lucide-react";
 interface ProductivityMetric {
   agentId: string;
   agentName: string;
+  campaignId: string;
+  campaignName: string;
   seatNumber: number | null;
-  tasksCompleted: number;
-  avgTaskTime: number;
-  efficiencyScore: number;
-  qualityScore: number;
-  daysWorked: number;
-  overtimeHours: number;
+  tasksCompleted: number | null;
+  avgTaskTime: number | null;
+  efficiencyScore: number | null;
+  qualityScore: number | null;
+  daysWorked: number | null;
+  overtimeHours: number | null;
+  dataSource: string;
 }
 
 export default function ProductivityAnalyticsPage() {
@@ -67,24 +70,36 @@ export default function ProductivityAnalyticsPage() {
   const metrics: ProductivityMetric[] = data?.metrics || [];
   const campaigns = Array.isArray(campaignsData) ? campaignsData : [];
   const summary = data?.summary || {
-    avgEfficiency: 0,
-    avgQuality: 0,
-    avgTasksPerAgent: 0,
+    avgEfficiency: null,
+    avgQuality: null,
+    avgTasksPerAgent: null,
     topPerformer: null,
+    totalAgents: 0,
   };
 
   const filteredMetrics = metrics
     .filter(m => m.agentName.toLowerCase().includes(searchTerm.toLowerCase()))
     .sort((a, b) => {
-      if (sortBy === 'efficiency') return b.efficiencyScore - a.efficiencyScore;
-      if (sortBy === 'quality') return b.qualityScore - a.qualityScore;
-      return b.tasksCompleted - a.tasksCompleted;
+      if (sortBy === 'efficiency') return (b.efficiencyScore ?? -Infinity) - (a.efficiencyScore ?? -Infinity);
+      if (sortBy === 'quality') return (b.qualityScore ?? -Infinity) - (a.qualityScore ?? -Infinity);
+      return (b.tasksCompleted ?? -Infinity) - (a.tasksCompleted ?? -Infinity);
     });
 
   const topPerformers = [...metrics]
-    .sort((a, b) => (b.efficiencyScore + b.qualityScore) / 2 - (a.efficiencyScore + a.qualityScore) / 2)
+    .map(metric => {
+      const availableScores = [metric.efficiencyScore, metric.qualityScore]
+        .filter((score): score is number => score != null);
+      return {
+        metric,
+        score: availableScores.length > 0
+          ? availableScores.reduce((sum, score) => sum + score, 0) / availableScores.length
+          : null,
+      };
+    })
+    .filter((entry): entry is { metric: ProductivityMetric; score: number } => entry.score != null)
+    .sort((a, b) => b.score - a.score)
     .slice(0, 10)
-    .map(m => ({ name: m.agentName, value: Math.round((m.efficiencyScore + m.qualityScore) / 2) }));
+    .map(({ metric, score }) => ({ name: metric.agentName, value: Math.round(score) }));
 
   return (
     <div className="space-y-6">
@@ -134,21 +149,21 @@ export default function ProductivityAnalyticsPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
           title="Avg Efficiency"
-          value={`${summary.avgEfficiency.toFixed(1)}%`}
-          pct={summary.avgEfficiency}
+          value={summary.avgEfficiency == null ? "N/A" : `${summary.avgEfficiency.toFixed(1)}%`}
+          pct={summary.avgEfficiency ?? undefined}
         />
         <KpiCard
           title="Avg Quality"
-          value={`${summary.avgQuality.toFixed(1)}%`}
-          pct={summary.avgQuality}
+          value={summary.avgQuality == null ? "N/A" : `${summary.avgQuality.toFixed(1)}%`}
+          pct={summary.avgQuality ?? undefined}
         />
         <KpiCard
           title="Avg Tasks/Agent"
-          value={Math.round(summary.avgTasksPerAgent)}
+          value={summary.avgTasksPerAgent == null ? "N/A" : Math.round(summary.avgTasksPerAgent)}
         />
         <KpiCard
           title="Total Agents"
-          value={metrics.length}
+          value={summary.totalAgents ?? metrics.length}
         />
       </div>
 
@@ -189,6 +204,7 @@ export default function ProductivityAnalyticsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Agent</TableHead>
+                  <TableHead>Campaign</TableHead>
                   <TableHead>Seat</TableHead>
                   <TableHead>Tasks</TableHead>
                   <TableHead>Efficiency %</TableHead>
@@ -196,27 +212,46 @@ export default function ProductivityAnalyticsPage() {
                   <TableHead>Avg Task Time</TableHead>
                   <TableHead>Days Worked</TableHead>
                   <TableHead>Overtime Hrs</TableHead>
+                  <TableHead>Source</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredMetrics.map((metric) => (
-                  <TableRow key={metric.agentId}>
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
+                      Loading productivity data...
+                    </TableCell>
+                  </TableRow>
+                ) : filteredMetrics.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
+                      No productivity data is available for the selected period.
+                    </TableCell>
+                  </TableRow>
+                ) : filteredMetrics.map((metric) => (
+                  <TableRow key={`${metric.campaignId}-${metric.agentId}`}>
                     <TableCell className="font-medium">{metric.agentName}</TableCell>
+                    <TableCell>{metric.campaignName}</TableCell>
                     <TableCell>{metric.seatNumber || '-'}</TableCell>
-                    <TableCell>{metric.tasksCompleted}</TableCell>
+                    <TableCell>{metric.tasksCompleted == null ? 'N/A' : metric.tasksCompleted.toLocaleString()}</TableCell>
                     <TableCell>
-                      <span className={metric.efficiencyScore >= 80 ? 'text-green-600 font-semibold' : 'text-orange-600'}>
-                        {metric.efficiencyScore.toFixed(1)}%
-                      </span>
+                      {metric.efficiencyScore == null ? 'N/A' : (
+                        <span className={metric.efficiencyScore >= 80 ? 'text-green-600 font-semibold' : 'text-orange-600'}>
+                          {metric.efficiencyScore.toFixed(1)}%
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell>
-                      <span className={metric.qualityScore >= 85 ? 'text-green-600 font-semibold' : 'text-orange-600'}>
-                        {metric.qualityScore.toFixed(1)}%
-                      </span>
+                      {metric.qualityScore == null ? 'N/A' : (
+                        <span className={metric.qualityScore >= 85 ? 'text-green-600 font-semibold' : 'text-orange-600'}>
+                          {metric.qualityScore.toFixed(1)}%
+                        </span>
+                      )}
                     </TableCell>
-                    <TableCell>{metric.avgTaskTime.toFixed(2)} min</TableCell>
-                    <TableCell>{metric.daysWorked}</TableCell>
-                    <TableCell>{metric.overtimeHours.toFixed(1)}</TableCell>
+                    <TableCell>{metric.avgTaskTime == null ? 'N/A' : `${metric.avgTaskTime.toFixed(2)} min`}</TableCell>
+                    <TableCell>{metric.daysWorked == null ? 'N/A' : metric.daysWorked}</TableCell>
+                    <TableCell>{metric.overtimeHours == null ? 'N/A' : metric.overtimeHours.toFixed(1)}</TableCell>
+                    <TableCell>{metric.dataSource}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
