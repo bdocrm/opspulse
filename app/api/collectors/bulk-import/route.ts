@@ -9,6 +9,7 @@ import { matchMetricAlias, normalizeMetricHeader } from '@/lib/metric-import-map
 import { isBdoDashboardWorkbook, parseBdoDashboardWorkbook, type BdoImportRecord } from '@/lib/bdo-dashboard-import';
 import { isBpiDashboardWorkbook, parseBpiDashboardWorkbook } from '@/lib/bpi-dashboard-import';
 import { mapWorksheetCampaign } from '@/lib/campaign-import-selection';
+import { parseMbPaMonthlyRows } from '@/lib/mb-pa-import';
 
 type ParsedEntry = {
   name: string; count: number; volume: number;
@@ -42,6 +43,10 @@ type AssignedCampaign = { id: string; campaignName: string };
 type WorksheetCampaignMappings = Record<string, string[]>;
 type ReportPeriodType = 'daily' | 'monthly' | 'yearly';
 type DuplicateMode = 'skip' | 'update' | 'replace_period';
+
+const MB_PA_DETAIL_KEYS = [
+  'c2gTxn', 'c2gVol', 'btTxn', 'btVol', 'balconTxn', 'balconVol', 'grandTotalTxn', 'grandTotalVol',
+] as const;
 
 function parseWorksheetCampaignMappings(value: FormDataEntryValue | null): WorksheetCampaignMappings {
   if (typeof value !== 'string' || !value.trim()) return {};
@@ -595,6 +600,24 @@ function detectDatesByRow(rows: any[][], fallback: Date, dateCol?: number) {
 // Dashboard workbooks use merged month/metric headers. Build a logical header
 // for every column by carrying the last month and parent metric to child columns.
 function parseMonthlyAgentRows(rows: any[][], sheetName: string, campaignName: string, fallbackDate: Date) {
+  if (/\bmb pa\b/i.test(campaignName)) {
+    const mbPa = parseMbPaMonthlyRows(rows, fallbackDate);
+    if (mbPa?.entries.length) {
+      return {
+        format: 'MB PA Monthly Dashboard',
+        entries: mbPa.entries.map((entry) => ({
+          ...entry,
+          sourceSheet: sheetName,
+          campaignName,
+          metricType: 'all_metrics',
+        })),
+        invalidRows: mbPa.invalidRows,
+        warnings: mbPa.warnings,
+        errors: [] as string[],
+      };
+    }
+  }
+
   const monthHits: Array<{ row: number; col: number; month: number; year?: number }> = [];
   for (let r = 0; r < Math.min(rows.length, 20); r++) {
     for (let c = 0; c < (rows[r] || []).length; c++) {
@@ -2176,6 +2199,8 @@ export async function POST(req: NextRequest) {
             id: true, productionEntryId: true, campaignId: true, agentId: true,
             transmittals: true, approvals: true, booked: true, activations: true, ntb: true, supplementary: true,
             monthlyGoal: true, monthlyActual: true, monthlyAchievement: true,
+            c2gTxn: true, c2gVol: true, btTxn: true, btVol: true, balconTxn: true, balconVol: true,
+            grandTotalTxn: true, grandTotalVol: true,
             productionEntry: { select: { date: true, reportPeriodType: true, importMetricType: true } },
           },
         }),
@@ -2248,13 +2273,27 @@ export async function POST(req: NextRequest) {
             createdEntryIds.add(entry.id);
             entryByCampaignDate.set(entryKey, entry.id);
           }
-          if (missingMetrics.length && !existingDetail && existingForRow.length === 0 && savedEntryId) {
+          const hasMbPaBreakdown = row.c2gTxn !== undefined;
+          if (!existingDetail && savedEntryId && (missingMetrics.length > 0 || hasMbPaBreakdown)) {
             const detail = await tx.productionDetail.create({
               data: { productionEntryId: savedEntryId, agentId: agent.id, campaignId: targetCampaignId, ...buildDetailDataForWrite(row, row.metricType || metricType, false) },
               select: { id: true, productionEntryId: true },
             });
             storedDetailByKey.set(detailKey, detail);
             insertedLegacyDetails++;
+            rowChanged = true;
+          } else if (existingDetail && hasMbPaBreakdown) {
+            // Older MB PA imports may already have normalized totals but no
+            // category breakdown. Backfill those fields even in Skip mode;
+            // Update/Replace explicitly refresh the imported breakdown.
+            const storedHasBreakdown = MB_PA_DETAIL_KEYS.some((key) => Number(existingDetail[key] ?? 0) !== 0);
+            if (duplicateMode !== 'skip' || !storedHasBreakdown) {
+              const breakdown = Object.fromEntries(MB_PA_DETAIL_KEYS.map((key) => [key, BigInt(row[key] || 0)]));
+              await tx.productionDetail.update({ where: { id: existingDetail.id }, data: breakdown });
+              Object.assign(existingDetail, breakdown);
+              enrichedRecords++;
+              rowChanged = true;
+            }
           }
           for (const metric of missingMetrics) {
             const key = normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType);
