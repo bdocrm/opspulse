@@ -117,6 +117,8 @@ function metricFromLabels(labels: string[]) {
   const joined = labels.join(' ');
   if (/\bntb\b|new to bank/.test(joined)) return 'ntb';
   if (/\bsupple(?:mentary|mental)?\b|\bsupp\b/.test(joined)) return 'supplementary';
+  if (labels.some((label) => /^trans(?:actions?)?(?:\s|$)/.test(label))) return 'transactions';
+  if (labels.some((label) => /^vol(?:ume)?(?:\s|$)/.test(label))) return 'volume';
   if (/transmitted|transmittal/.test(joined)) return 'transmittals';
   if (/approval|approved/.test(joined)) return 'approvals';
   if (/booked|booking/.test(joined)) return 'booked';
@@ -165,7 +167,7 @@ export function isMbGoalAchievementLayout(rows: unknown[][]) {
     && has(/^(?:target|goal)$/)
     && has(/^actual$|^performance$/)
     && (has(/^achievement$|^% achievement$|^attainment$/) || labels.some((label) => label.includes('%')))
-    && has(/\bntb\b|\bsupple|\btransmittal|\btransmitted|\bapproval|\bbooked|\bactivation|\bdisbursed|\bgross turn ins?\b/);
+    && has(/^trans(?:actions?)?(?:\s|$)|^vol(?:ume)?(?:\s|$)|\bntb\b|\bsupple|\btransmittal|\btransmitted|\bapproval|\bbooked|\bactivation|\bdisbursed|\bgross turn ins?\b/);
 }
 
 /**
@@ -282,7 +284,7 @@ export function parseMbGoalAchievementRows(rows: unknown[][], fallbackDate: Date
       for (const [metricType, metric] of values) {
         if (!metric.present) continue;
         const actual = metric.actual ?? metric.count;
-        const isVolumeMetric = /_volume$/.test(metricType);
+        const isVolumeMetric = metricType === 'volume' || /_volume$/.test(metricType);
         normalizedMetrics.push({
           metricType,
           count: metricType === 'overall' || isVolumeMetric || actual === undefined ? null : actual,
@@ -300,13 +302,14 @@ export function parseMbGoalAchievementRows(rows: unknown[][], fallbackDate: Date
       const valueFor = (metricType: string) => values.get(metricType)?.actual ?? values.get(metricType)?.count;
       const ntb = valueFor('ntb');
       const supplementary = valueFor('supplementary');
-      const transmittals = valueFor('transmittals');
+      const transactions = valueFor('transactions');
+      const transmittals = valueFor('transmittals') ?? transactions;
       const approvals = valueFor('approvals');
       const booked = valueFor('booked');
       const activations = valueFor('activations');
       const firstCount = [transmittals, approvals, booked, activations, ntb, supplementary].find((value) => value !== undefined) ?? 0;
       const firstVolume = [...values.entries()]
-        .map(([metricType, value]) => value.volume ?? (/_volume$/.test(metricType) ? value.actual ?? value.count : undefined))
+        .map(([metricType, value]) => value.volume ?? (metricType === 'volume' || /_volume$/.test(metricType) ? value.actual ?? value.count : undefined))
         .find((value) => value !== undefined) ?? 0;
       const overall = values.get('overall');
       const ntbGoal = values.get('ntb')?.goal;

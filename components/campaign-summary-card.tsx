@@ -38,10 +38,31 @@ export interface CampaignSummaryProps {
   kpiMetric: string;
   goal: number;
   actual?: number | null;
+  achievement?: number | null;
   supplementaryGoal?: number;
   agents: Agent[];
   production: Record<string, Production>;
   bdoPerformance?: Record<string, { goal: number; actual: number; achievement: number }>;
+  mbPlPerformance?: Record<string, {
+    goal: number;
+    actual: number;
+    transactionGoal: number;
+    transactionActual: number;
+    volumeGoal: number;
+    volumeActual: number;
+    transactionAchievement: number;
+    volumeAchievement: number;
+    transactionScore: number;
+    volumeScore: number;
+    achievement: number;
+  }>;
+  mbPlTotals?: {
+    transactionGoal: number;
+    transactionActual: number;
+    volumeGoal: number;
+    volumeActual: number;
+    achievement: number;
+  };
   attendance: Record<string, { status: string; remarks: string | null }>;
   entriesCount: number;
   dataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
@@ -57,6 +78,7 @@ const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, b
 // ACQ campaigns (name contains "ACQ") report NTB + Supplementary instead of booked volume.
 const isAcqCampaign = (name?: string | null) => /\bacq\b/i.test(name || '');
 const isBdoCampaign = (name?: string | null) => /^bdo\b/i.test((name || '').trim());
+const isMbPlCampaign = (name?: string | null) => /\bmb\s*pl\b/i.test(name || '');
 const isMbPaCampaign = (name?: string | null) => /\bmb\s*pa\b/i.test(name || '');
 
 function mbPaTransactionTotal(prod: Production) {
@@ -101,10 +123,13 @@ export function CampaignSummaryCard({
   kpiMetric,
   goal,
   actual,
+  achievement: importedAchievement,
   supplementaryGoal = 0,
   agents,
   production,
   bdoPerformance,
+  mbPlPerformance,
+  mbPlTotals,
   attendance,
   entriesCount,
   dataPeriod,
@@ -133,16 +158,19 @@ export function CampaignSummaryCard({
   // ACQ campaigns track NTB + Supplementary instead of booked volume.
   const acq = isAcqCampaign(campaignName);
   const bdo = isBdoCampaign(campaignName);
+  const mbpl = isMbPlCampaign(campaignName);
   const mbpa = isMbPaCampaign(campaignName);
   const totalNtb = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).ntb || 0), 0);
   const totalSupplementary = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).supplementary || 0), 0);
 
   // For ACQ the header %/achievement tracks NTB vs the NTB goal (legacy monthly goal).
-  const achievement = acq
+  const achievement = mbpl && importedAchievement != null
+    ? importedAchievement.toFixed(1)
+    : acq
     ? (goal > 0 ? ((totalNtb / goal) * 100).toFixed(1) : '0')
     : (goal > 0 ? ((totalProduction / goal) * 100).toFixed(1) : '0');
   const remainingGoal = Math.max(0, goal - (acq ? totalNtb : totalProduction));
-  const metricLabel = mbpa ? 'Billings' : kpiLabel(kpiMetric);
+  const metricLabel = mbpl ? 'Goal & Actual' : mbpa ? 'Billings' : kpiLabel(kpiMetric);
   const displayMetric = mbpa ? 'volume' : kpiMetric;
   const hasRecordsInRange = entriesCount > 0;
   const fallbackPeriodLabel = dataPeriod?.source === 'latest_import' && dataPeriod.month && dataPeriod.year
@@ -158,18 +186,18 @@ export function CampaignSummaryCard({
     if (goal === 0 || entriesCount === 0) return distribution;
     agents.forEach(agent => {
       const prod = production[agent.id] || ZERO_PROD;
-      const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaBillingTotal(prod) : kpiValueFor(kpiMetric, prod);
+      const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaBillingTotal(prod) : kpiValueFor(kpiMetric, prod);
       // Calculate agent's share of total goal proportionally, or use their monthly target if set
-      const agentGoal = bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || (goal / Math.max(agents.length, 1));
+      const agentGoal = bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || (goal / Math.max(agents.length, 1));
       if (agentGoal === 0) return;
-      const progress = (value / agentGoal) * 100;
+      const progress = mbpl ? (mbPlPerformance?.[agent.id]?.achievement || 0) : (value / agentGoal) * 100;
       if (progress >= 100) distribution.excellent++;
       else if (progress >= 80) distribution.good++;
       else if (progress >= 50) distribution.average++;
       else distribution.needsImprovement++;
     });
     return distribution;
-  }, [agents, production, goal, entriesCount, acq, bdo, mbpa, bdoPerformance, kpiMetric]);
+  }, [agents, production, goal, entriesCount, acq, bdo, mbpl, mbpa, bdoPerformance, mbPlPerformance, kpiMetric]);
 
   // Top and bottom performers. ACQ ranks by NTB (Supplementary as tiebreaker),
   // matching the collector-details table; others use their configured KPI.
@@ -178,15 +206,26 @@ export function CampaignSummaryCard({
       return { topPerformer: undefined, bottomPerformer: undefined, reachedGoal: 0, belowTarget: 0, withProduction: 0, zeroProduction: 0 };
     }
     const performers = agents
+      .filter(agent => !mbpl || Boolean(mbPlPerformance?.[agent.id]))
       .map(agent => {
         const prod = production[agent.id] || ZERO_PROD;
-        const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaTransactionTotal(prod) : kpiValueFor(kpiMetric, prod);
+        const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaTransactionTotal(prod) : kpiValueFor(kpiMetric, prod);
         const secondary = acq ? (prod.supplementary || 0) : mbpa ? mbPaBillingTotal(prod) : 0;
-        const agentGoal = bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || (goal / Math.max(agents.length, 1));
+        const agentGoal = bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || (goal / Math.max(agents.length, 1));
         const progressValue = mbpa ? mbPaBillingTotal(prod) : value;
-        return { agent, value, secondary, target: agentGoal, progress: agentGoal > 0 ? (progressValue / agentGoal) * 100 : 0 };
+        return {
+          agent,
+          value,
+          secondary,
+          target: agentGoal,
+          progress: mbpl
+            ? (mbPlPerformance?.[agent.id]?.achievement || 0)
+            : agentGoal > 0 ? (progressValue / agentGoal) * 100 : 0,
+        };
       })
-      .sort((a, b) => (b.value !== a.value ? b.value - a.value : b.secondary - a.secondary));
+      .sort((a, b) => mbpl
+        ? b.progress - a.progress
+        : (b.value !== a.value ? b.value - a.value : b.secondary - a.secondary));
 
     return {
       topPerformer: performers[0],
@@ -196,7 +235,7 @@ export function CampaignSummaryCard({
       withProduction: performers.filter(p => p.value > 0).length,
       zeroProduction: performers.filter(p => p.value === 0).length,
     };
-  }, [agents, production, goal, acq, bdo, mbpa, bdoPerformance, kpiMetric, entriesCount]);
+  }, [agents, production, goal, acq, bdo, mbpl, mbpa, bdoPerformance, mbPlPerformance, kpiMetric, entriesCount]);
 
   const filteredAgents = useMemo(() => {
     if (!searchQuery.trim()) return agents;
@@ -221,7 +260,7 @@ export function CampaignSummaryCard({
             />
             <div className="min-w-0 flex-1">
               <h3 className="font-bold text-lg text-foreground truncate">{campaignName}</h3>
-              <p className="text-xs text-muted-foreground mt-1">{acq ? 'NTB & Supplementary' : metricLabel}</p>
+              <p className="text-xs text-muted-foreground mt-1">{acq ? 'NTB & Supplementary' : mbpl ? 'Bulk Import: Transactions & Volume' : metricLabel}</p>
             </div>
           </div>
           <div className="text-right flex-shrink-0 ml-4">
@@ -267,14 +306,33 @@ export function CampaignSummaryCard({
                 <p className="text-xl font-bold text-green-600">{Number(totalSupplementary).toLocaleString()}</p>
               </div>
             </div>
+          ) : mbpl && mbPlTotals ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Target Transactions</p>
+                <p className="text-xl font-bold text-blue-600">{mbPlTotals.transactionGoal.toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Actual Transactions</p>
+                <p className="text-xl font-bold text-purple-600">{mbPlTotals.transactionActual.toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Target Volume</p>
+                <p className="text-xl font-bold text-blue-600">₱{mbPlTotals.volumeGoal.toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Actual Volume</p>
+                <p className="text-xl font-bold text-green-600">₱{mbPlTotals.volumeActual.toLocaleString()}</p>
+              </div>
+            </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
-                <p className="text-xs text-muted-foreground mb-1">Goal ({metricLabel})</p>
+                <p className="text-xs text-muted-foreground mb-1">{mbpl ? 'Imported Goal' : `Goal (${metricLabel})`}</p>
                 <p className="text-xl font-bold text-blue-600">{formatKpiValue(displayMetric, goal)}</p>
               </div>
               <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
-                <p className="text-xs text-muted-foreground mb-1">Current {metricLabel}</p>
+                <p className="text-xs text-muted-foreground mb-1">{mbpl ? 'Imported Actual' : `Current ${metricLabel}`}</p>
                 <p className="text-xl font-bold text-purple-600">{formatKpiValue(displayMetric, totalProduction)}</p>
               </div>
               <div className="bg-gradient-to-br from-orange-50 to-orange-100/50 rounded-lg p-3">

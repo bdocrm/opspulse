@@ -74,4 +74,21 @@ assert.deepEqual(
 );
 assert.equal(plEntry.normalizedMetrics.find((metric) => metric.metricType === 'gross_turn_ins_transactions')?.count, 42);
 
+const exactPlRows = [
+  [null, null, null, null, null, null, 'JANUARY'],
+  [null, null, null, null, null, null, 'TARGET', null, 'ACTUAL', null, '%', null, 'SCORE'],
+  [null, 'AGENT_FULLNAME', 'AGENT_CODE', 'STATUS', 'DATE ON BOARD', 'TENURE', 'TRANS', 'VOL', 'TRANS', 'VOL', 'TRANS', 'VOL', 'TRANS .20%', 'VOL .80%', 'ACHIEVEMENT'],
+  [null, 'PEREZ, JUSTINE', 'TBCQ', 'ACTIVE', '2025-07-02', 'CORE_DEPO', 6, 900_000, 5, 1_379_000, 0.83, 1.53, 0.17, 1.23, 1.39],
+];
+const exactPlParsed = parseMbGoalAchievementRows(exactPlRows, new Date(2026, 0, 1));
+assert.ok(exactPlParsed);
+assert.equal(exactPlParsed.entries.length, 1);
+assert.deepEqual(exactPlParsed.entries[0].normalizedMetrics, [
+  { metricType: 'transactions', count: 5, volume: null, goal: 6, actual: 5, achievement: 0.83 },
+  { metricType: 'transactions_score', actual: 0.17 },
+  { metricType: 'volume', count: null, volume: 1_379_000, goal: 900_000, actual: 1_379_000, achievement: 1.53 },
+  { metricType: 'volume_score', actual: 1.23 },
+  { metricType: 'overall', count: null, volume: null, goal: null, actual: null, achievement: 1.39 },
+]);
+
 console.log('MB goal/achievement import parser tests passed.');
