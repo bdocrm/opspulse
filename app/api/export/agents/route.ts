@@ -129,7 +129,14 @@ export async function GET(req: NextRequest) {
         "Avg Conversion %": percent(agent.booked, agent.transmittals).toFixed(1),
         Campaigns: Array.from(agent.campaigns).join(", "),
       }))
-      .sort((a, b) => a.Agent.localeCompare(b.Agent));
+      .sort((a, b) =>
+        b.Booked - a.Booked
+        || b.Approvals - a.Approvals
+        || b.Transmittals - a.Transmittals
+        || b.Volume - a.Volume
+        || a.Agent.localeCompare(b.Agent)
+      )
+      .map((row, index) => ({ Rank: index + 1, ...row }));
 
     const csv = Papa.unparse(rows);
     return new NextResponse(csv, {

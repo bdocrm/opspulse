@@ -176,7 +176,6 @@ function kpiValueFor(metric: string, prod: Production): number {
     case 'activations': return prod.activations;
     case 'approvals': return prod.approvals;
     case 'volume': return prod.volume || 0;
-    case 'actual': return prod.importedActual || 0;
     default: return prod.booked;
   }
 }
@@ -196,6 +195,47 @@ function kpiLabel(metric: string): string {
 function formatKpiValue(metric: string, value: number): string {
   const formatted = Number(value).toLocaleString();
   return metric === 'volume' ? `₱${formatted}` : formatted;
+}
+
+function mbPaTransactionTotal(prod: Production) {
+  const categoryTotal = Number(prod.c2gTxn || 0) + Number(prod.btTxn || 0) + Number(prod.balconTxn || 0);
+  return categoryTotal || Number(prod.grandTotalTxn || 0);
+}
+
+function mbPaVolumeTotal(prod: Production) {
+  const categoryTotal = Number(prod.c2gVol || 0) + Number(prod.btVol || 0) + Number(prod.balconVol || 0);
+  return categoryTotal || Number(prod.grandTotalVol || 0);
+}
+
+/**
+ * Keeps every performance report and export in the same highest-to-lowest
+ * order. Each campaign uses the KPI represented by its own report.
+ */
+function compareCampaignAgents(campaign: CampaignBlock, a: Agent, b: Agent) {
+  const aProd = campaign.production[a.id] || ZERO_PROD;
+  const bProd = campaign.production[b.id] || ZERO_PROD;
+  let primaryDifference = 0;
+  let secondaryDifference = 0;
+
+  if (isAcqCampaign(campaign.campaignName)) {
+    primaryDifference = Number(bProd.ntb || 0) - Number(aProd.ntb || 0);
+    secondaryDifference = Number(bProd.supplementary || 0) - Number(aProd.supplementary || 0);
+  } else if (isMbPaCampaign(campaign.campaignName)) {
+    primaryDifference = mbPaTransactionTotal(bProd) - mbPaTransactionTotal(aProd);
+    secondaryDifference = mbPaVolumeTotal(bProd) - mbPaVolumeTotal(aProd);
+  } else if (isMbPlCampaign(campaign.campaignName) && campaign.mbPlPerformance) {
+    const aPerformance = campaign.mbPlPerformance[a.id];
+    const bPerformance = campaign.mbPlPerformance[b.id];
+    primaryDifference = Number(bPerformance?.achievement || 0) - Number(aPerformance?.achievement || 0);
+    secondaryDifference = Number(bPerformance?.transactionActual || 0) - Number(aPerformance?.transactionActual || 0);
+  } else if (isBdoCampaign(campaign.campaignName) && campaign.bdoPerformance) {
+    primaryDifference = Number(campaign.bdoPerformance[b.id]?.actual || 0) - Number(campaign.bdoPerformance[a.id]?.actual || 0);
+    secondaryDifference = Number(campaign.bdoPerformance[b.id]?.achievement || 0) - Number(campaign.bdoPerformance[a.id]?.achievement || 0);
+  } else {
+    primaryDifference = kpiValueFor(campaign.kpiMetric, bProd) - kpiValueFor(campaign.kpiMetric, aProd);
+  }
+
+  return primaryDifference || secondaryDifference || a.name.localeCompare(b.name);
 }
 
 const getProgressColor = (progress: number) => {
@@ -770,9 +810,7 @@ export default function CollectorDashboard() {
   };
 
   const campaignExportRows = (campaign: CampaignBlock): Record<string, string | number>[] => {
-    const sorted = [...campaign.agents].sort(
-      (a, b) => (campaign.production[b.id]?.volume || 0) - (campaign.production[a.id]?.volume || 0)
-    );
+    const sorted = [...campaign.agents].sort((a, b) => compareCampaignAgents(campaign, a, b));
     return sorted.map((agent, index): Record<string, string | number> => {
       const prod = campaign.production[agent.id] || ZERO_PROD;
       const record = campaign.attendance[agent.id];
@@ -1430,31 +1468,7 @@ export default function CollectorDashboard() {
               let filtered = block.agents.filter((a) => a.name.toLowerCase().includes(q));
               filtered = [...filtered].sort((a, b) => {
                 if (sortBy === 'booked') {
-                  // ACQ ranks by highest NTB, then Supplementary as the tiebreaker.
-                  if (acq) {
-                    const ntbDiff = (prodFor(b.id).ntb || 0) - (prodFor(a.id).ntb || 0);
-                    if (ntbDiff !== 0) return ntbDiff;
-                    return (prodFor(b.id).supplementary || 0) - (prodFor(a.id).supplementary || 0);
-                  }
-                  if (mbpa) {
-                    const totalTxn = (agentId: string) => {
-                      const prod = prodFor(agentId);
-                      const categoryTotal = Number(prod.c2gTxn || 0) + Number(prod.btTxn || 0) + Number(prod.balconTxn || 0);
-                      return categoryTotal || Number(prod.grandTotalTxn || 0);
-                    };
-                    const txnDiff = totalTxn(b.id) - totalTxn(a.id);
-                    if (txnDiff !== 0) return txnDiff;
-                    const totalBilling = (agentId: string) => {
-                      const prod = prodFor(agentId);
-                      const categoryTotal = Number(prod.c2gVol || 0) + Number(prod.btVol || 0) + Number(prod.balconVol || 0);
-                      return categoryTotal || Number(prod.grandTotalVol || 0);
-                    };
-                    return totalBilling(b.id) - totalBilling(a.id);
-                  }
-                  if (hasImportedMbPlPerformance) {
-                    return (block.mbPlPerformance?.[b.id]?.achievement || 0) - (block.mbPlPerformance?.[a.id]?.achievement || 0);
-                  }
-                  return kpiValueFor(block.kpiMetric, prodFor(b.id)) - kpiValueFor(block.kpiMetric, prodFor(a.id));
+                  return compareCampaignAgents(block, a, b);
                 }
                 if (sortBy === 'name') return a.name.localeCompare(b.name);
                 return (a.seatNumber || 0) - (b.seatNumber || 0);

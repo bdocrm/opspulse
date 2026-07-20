@@ -251,7 +251,16 @@ export async function GET(request: NextRequest) {
         avgConversionRate: avgConversion,
         daysWorked: agent.workedDates.size,
       };
-    }).sort((a: any, b: any) => a.name.localeCompare(b.name));
+    }).sort((a: any, b: any) => {
+      const averageAchievement = (agent: any) => agent.campaigns.length > 0
+        ? agent.campaigns.reduce((sum: number, campaign: any) => sum + Number(campaign.achievement || 0), 0) / agent.campaigns.length
+        : 0;
+      const productionTotal = (agent: any) =>
+        agent.campaigns.reduce((sum: number, campaign: any) => sum + Number(campaign.mtd || 0), 0);
+      return averageAchievement(b) - averageAchievement(a)
+        || productionTotal(b) - productionTotal(a)
+        || a.name.localeCompare(b.name);
+    });
 
     return NextResponse.json({ agents });
   } catch (error) {
