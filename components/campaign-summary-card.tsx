@@ -43,6 +43,7 @@ export interface CampaignSummaryProps {
   agents: Agent[];
   production: Record<string, Production>;
   bdoPerformance?: Record<string, { goal: number; actual: number; achievement: number }>;
+  importedPerformance?: Record<string, { goal: number; actual: number; achievement: number }>;
   mbPlPerformance?: Record<string, {
     goal: number;
     actual: number;
@@ -128,6 +129,7 @@ export function CampaignSummaryCard({
   agents,
   production,
   bdoPerformance,
+  importedPerformance,
   mbPlPerformance,
   mbPlTotals,
   attendance,
@@ -160,6 +162,7 @@ export function CampaignSummaryCard({
   const bdo = isBdoCampaign(campaignName);
   const mbpl = isMbPlCampaign(campaignName);
   const mbpa = isMbPaCampaign(campaignName);
+  const dashboardImported = Boolean(importedPerformance && Object.keys(importedPerformance).length);
   const totalNtb = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).ntb || 0), 0);
   const totalSupplementary = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).supplementary || 0), 0);
 
@@ -186,9 +189,9 @@ export function CampaignSummaryCard({
     if (goal === 0 || entriesCount === 0) return distribution;
     agents.forEach(agent => {
       const prod = production[agent.id] || ZERO_PROD;
-      const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaBillingTotal(prod) : kpiValueFor(kpiMetric, prod);
+      const value = acq ? (prod.ntb || 0) : dashboardImported ? (importedPerformance?.[agent.id]?.actual || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaBillingTotal(prod) : kpiValueFor(kpiMetric, prod);
       // Calculate agent's share of total goal proportionally, or use their monthly target if set
-      const agentGoal = bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || (goal / Math.max(agents.length, 1));
+      const agentGoal = dashboardImported ? (importedPerformance?.[agent.id]?.goal || 0) : bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || 0;
       if (agentGoal === 0) return;
       const progress = mbpl ? (mbPlPerformance?.[agent.id]?.achievement || 0) : (value / agentGoal) * 100;
       if (progress >= 100) distribution.excellent++;
@@ -197,7 +200,7 @@ export function CampaignSummaryCard({
       else distribution.needsImprovement++;
     });
     return distribution;
-  }, [agents, production, goal, entriesCount, acq, bdo, mbpl, mbpa, bdoPerformance, mbPlPerformance, kpiMetric]);
+  }, [agents, production, goal, entriesCount, acq, bdo, mbpl, mbpa, dashboardImported, importedPerformance, bdoPerformance, mbPlPerformance, kpiMetric]);
 
   // Top and bottom performers. ACQ ranks by NTB (Supplementary as tiebreaker),
   // matching the collector-details table; others use their configured KPI.
@@ -209,9 +212,9 @@ export function CampaignSummaryCard({
       .filter(agent => !mbpl || Boolean(mbPlPerformance?.[agent.id]))
       .map(agent => {
         const prod = production[agent.id] || ZERO_PROD;
-        const value = acq ? (prod.ntb || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaTransactionTotal(prod) : kpiValueFor(kpiMetric, prod);
+        const value = acq ? (prod.ntb || 0) : dashboardImported ? (importedPerformance?.[agent.id]?.actual || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaTransactionTotal(prod) : kpiValueFor(kpiMetric, prod);
         const secondary = acq ? (prod.supplementary || 0) : mbpa ? mbPaBillingTotal(prod) : 0;
-        const agentGoal = bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || (goal / Math.max(agents.length, 1));
+        const agentGoal = dashboardImported ? (importedPerformance?.[agent.id]?.goal || 0) : bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || 0;
         const progressValue = mbpa ? mbPaBillingTotal(prod) : value;
         return {
           agent,
@@ -235,7 +238,7 @@ export function CampaignSummaryCard({
       withProduction: performers.filter(p => p.value > 0).length,
       zeroProduction: performers.filter(p => p.value === 0).length,
     };
-  }, [agents, production, goal, acq, bdo, mbpl, mbpa, bdoPerformance, mbPlPerformance, kpiMetric, entriesCount]);
+  }, [agents, production, goal, acq, bdo, mbpl, mbpa, dashboardImported, importedPerformance, bdoPerformance, mbPlPerformance, kpiMetric, entriesCount]);
 
   const filteredAgents = useMemo(() => {
     if (!searchQuery.trim()) return agents;

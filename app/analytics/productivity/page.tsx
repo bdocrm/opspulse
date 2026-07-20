@@ -108,17 +108,18 @@ export default function ProductivityAnalyticsPage() {
         subtitle="Analyze agent efficiency and productivity metrics"
       />
 
-      <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-        <div className="flex flex-col sm:flex-row gap-4">
+      <div className="flex flex-col items-stretch gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex flex-col items-stretch gap-4 sm:flex-row sm:items-end">
           <input
             type="month"
+            aria-label="Reporting month"
             value={`${year}-${String(month).padStart(2, '0')}`}
             onChange={(e) => {
               const [y, m] = e.target.value.split('-');
               setYear(parseInt(y));
               setMonth(parseInt(m));
             }}
-            className="px-3 py-2 border rounded-md"
+            className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm sm:w-[170px]"
           />
           {session?.user && (session.user as any).role === 'CEO' && (
             <CampaignSelector
@@ -126,16 +127,17 @@ export default function ProductivityAnalyticsPage() {
               selectedCampaignId={selectedCampaignId}
               onCampaignChange={setSelectedCampaignId}
               includeAllOption
-              className="min-w-[220px]"
+              className="w-full sm:w-[220px]"
             />
           )}
-          <div className="relative">
+          <div className="relative w-full sm:w-64">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
             <Input
+              aria-label="Search agents"
               placeholder="Search agents..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10 w-64"
+              className="pl-10"
             />
           </div>
         </div>

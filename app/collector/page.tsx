@@ -32,6 +32,8 @@ interface Agent {
   disbursedVolTarget?: number | null;
   grossTurnInsTxnTarget?: number | null;
   grossTurnInsVolTarget?: number | null;
+  importedGoals?: Record<string, number>;
+  goalSource?: 'bulk_import' | 'configured';
   importedOnly?: boolean;
 }
 
@@ -91,6 +93,7 @@ interface CampaignBlock {
   agents: Agent[];
   production: Record<string, Production>;
   bdoPerformance?: Record<string, { goal: number; actual: number; achievement: number }>;
+  importedPerformance?: Record<string, { goal: number; actual: number; achievement: number }>;
   mbPlPerformance?: Record<string, MbPlPerformance>;
   mbPlTotals?: {
     transactionGoal: number;
@@ -228,9 +231,9 @@ function compareCampaignAgents(campaign: CampaignBlock, a: Agent, b: Agent) {
     const bPerformance = campaign.mbPlPerformance[b.id];
     primaryDifference = Number(bPerformance?.achievement || 0) - Number(aPerformance?.achievement || 0);
     secondaryDifference = Number(bPerformance?.transactionActual || 0) - Number(aPerformance?.transactionActual || 0);
-  } else if (isBdoCampaign(campaign.campaignName) && campaign.bdoPerformance) {
-    primaryDifference = Number(campaign.bdoPerformance[b.id]?.actual || 0) - Number(campaign.bdoPerformance[a.id]?.actual || 0);
-    secondaryDifference = Number(campaign.bdoPerformance[b.id]?.achievement || 0) - Number(campaign.bdoPerformance[a.id]?.achievement || 0);
+  } else if (campaign.importedPerformance) {
+    primaryDifference = Number(campaign.importedPerformance[b.id]?.actual || 0) - Number(campaign.importedPerformance[a.id]?.actual || 0);
+    secondaryDifference = Number(campaign.importedPerformance[b.id]?.achievement || 0) - Number(campaign.importedPerformance[a.id]?.achievement || 0);
   } else {
     primaryDifference = kpiValueFor(campaign.kpiMetric, bProd) - kpiValueFor(campaign.kpiMetric, aProd);
   }
@@ -815,8 +818,10 @@ export default function CollectorDashboard() {
       const prod = campaign.production[agent.id] || ZERO_PROD;
       const record = campaign.attendance[agent.id];
       const target = agent.monthlyTarget || 0;
-      if (isBdoCampaign(campaign.campaignName)) {
-        const performance = campaign.bdoPerformance?.[agent.id] || { goal: 0, actual: 0, achievement: 0 };
+      if (campaign.importedPerformance?.[agent.id] || isBdoCampaign(campaign.campaignName)) {
+        const performance = campaign.importedPerformance?.[agent.id]
+          || campaign.bdoPerformance?.[agent.id]
+          || { goal: 0, actual: 0, achievement: 0 };
         return {
           Campaign: campaign.campaignName,
           Rank: index + 1,
@@ -830,6 +835,54 @@ export default function CollectorDashboard() {
           'Progress %': performance.achievement.toFixed(1),
         };
       }
+      if (isMbPlCampaign(campaign.campaignName) && campaign.mbPlPerformance?.[agent.id]) {
+        const performance = campaign.mbPlPerformance[agent.id];
+        return {
+          Campaign: campaign.campaignName,
+          Rank: index + 1,
+          Seat: agent.seatNumber ?? '',
+          'Agent Name': agent.name,
+          'Transaction Goal': performance.transactionGoal,
+          'Transaction Actual': performance.transactionActual,
+          'Volume Goal (₱)': performance.volumeGoal,
+          'Volume Actual (₱)': performance.volumeActual,
+          'Transaction %': performance.transactionAchievement.toFixed(1),
+          'Volume %': performance.volumeAchievement.toFixed(1),
+          'Achievement %': performance.achievement.toFixed(1),
+        };
+      }
+      if (isMbPaCampaign(campaign.campaignName)) {
+        const actual = mbPaVolumeTotal(prod);
+        return {
+          Campaign: campaign.campaignName,
+          Rank: index + 1,
+          Seat: agent.seatNumber ?? '',
+          'Agent Name': agent.name,
+          'Billing Goal (₱)': target,
+          'Actual Billings (₱)': actual,
+          'Grand Total Transactions': mbPaTransactionTotal(prod),
+          'Progress %': target > 0 ? ((actual / target) * 100).toFixed(1) : '0',
+        };
+      }
+      if (isAcqCampaign(campaign.campaignName)) {
+        const ntbGoal = target;
+        const supplementaryGoal = agent.monthlyTargetSupplementary || 0;
+        return {
+          Campaign: campaign.campaignName,
+          Rank: index + 1,
+          Seat: agent.seatNumber ?? '',
+          'Agent Name': agent.name,
+          'NTB Goal': ntbGoal,
+          'NTB Actual': Number(prod.ntb || 0),
+          'Supplementary Goal': supplementaryGoal,
+          'Supplementary Actual': Number(prod.supplementary || 0),
+          'NTB Progress %': ntbGoal > 0 ? ((Number(prod.ntb || 0) / ntbGoal) * 100).toFixed(1) : '0',
+          'Supplementary Progress %': supplementaryGoal > 0
+            ? ((Number(prod.supplementary || 0) / supplementaryGoal) * 100).toFixed(1)
+            : '0',
+        };
+      }
+      const actual = kpiValueFor(campaign.kpiMetric, prod);
       return {
         Campaign: campaign.campaignName,
         Rank: index + 1,
@@ -841,7 +894,7 @@ export default function CollectorDashboard() {
         Booked: prod.booked,
         'Booked Volume (₱)': Number(prod.volume || 0),
         Target: target,
-        'Progress %': target > 0 ? ((prod.booked / target) * 100).toFixed(1) : '0',
+        'Progress %': target > 0 ? ((actual / target) * 100).toFixed(1) : '0',
       };
     });
   };
@@ -854,8 +907,9 @@ export default function CollectorDashboard() {
       const workbook = XLSX.utils.book_new();
       const usedSheetNames = new Set<string>();
       for (const campaign of groupedCampaigns) {
-        const headers = isBdoCampaign(campaign.campaignName) ? BDO_EXPORT_HEADERS : EXPORT_HEADERS;
-        const worksheet = XLSX.utils.json_to_sheet(campaignExportRows(campaign), { header: [...headers] });
+        const rows = campaignExportRows(campaign);
+        const headers = rows.length > 0 ? Object.keys(rows[0]) : [...EXPORT_HEADERS];
+        const worksheet = XLSX.utils.json_to_sheet(rows, { header: [...headers] });
         worksheet['!cols'] = [
           { wch: 24 }, { wch: 8 }, { wch: 8 }, { wch: 28 }, { wch: 14 },
           { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 20 }, { wch: 14 }, { wch: 12 },
@@ -1464,6 +1518,9 @@ export default function CollectorDashboard() {
               const mbpl = isMbPlCampaign(block.campaignName);
               const mbpa = isMbPaCampaign(block.campaignName);
               const hasImportedMbPlPerformance = mbpl && Boolean(block.mbPlPerformance && Object.keys(block.mbPlPerformance).length);
+              const hasImportedDashboardPerformance = Boolean(
+                block.importedPerformance && Object.keys(block.importedPerformance).length
+              );
               const q = agentSearch.trim().toLowerCase();
               let filtered = block.agents.filter((a) => a.name.toLowerCase().includes(q));
               filtered = [...filtered].sort((a, b) => {
@@ -1487,6 +1544,7 @@ export default function CollectorDashboard() {
                   agents={block.agents}
                   production={block.production}
                   bdoPerformance={block.bdoPerformance}
+                  importedPerformance={block.importedPerformance}
                   mbPlPerformance={block.mbPlPerformance}
                   mbPlTotals={block.mbPlTotals}
                   attendance={block.attendance}
@@ -1555,6 +1613,7 @@ export default function CollectorDashboard() {
                                 <TableHead rowSpan={2} className="align-bottom">Collector</TableHead>
                                 <TableHead colSpan={6} className="text-center border-l">TOTAL</TableHead>
                                 <TableHead colSpan={2} className="text-center border-l">GRAND TOTAL</TableHead>
+                                <TableHead rowSpan={2} className="text-right border-l align-bottom">Agent Goal</TableHead>
                                 <TableHead rowSpan={2} className="w-32 border-l align-bottom">Progress</TableHead>
                                 <TableHead rowSpan={2} className="text-right w-20 align-bottom">Actions</TableHead>
                               </TableRow>
@@ -1576,20 +1635,22 @@ export default function CollectorDashboard() {
                               <TableHead>Collector</TableHead>
                               {acq ? (
                                 <>
-                                  <TableHead className="text-center">NTB</TableHead>
-                                  <TableHead className="text-center">Supplementary</TableHead>
+                                  <TableHead className="text-center">NTB Actual</TableHead>
+                                  <TableHead className="text-center">NTB Goal</TableHead>
+                                  <TableHead className="text-center">Supplementary Actual</TableHead>
+                                  <TableHead className="text-center">Supplementary Goal</TableHead>
                                 </>
-                              ) : bdo ? (
+                              ) : bdo || hasImportedDashboardPerformance ? (
                                 <>
                                   <TableHead className="text-center w-20">Attendance</TableHead>
                                   <TableHead className="text-right">Goal</TableHead>
                                   <TableHead className="text-right">Actual</TableHead>
                                   <TableHead className="text-center">Achievement</TableHead>
-                                  <TableHead className="text-center">Booked</TableHead>
                                 </>
                               ) : (
                                 <>
                                   <TableHead className="text-center w-20">Attendance</TableHead>
+                                  <TableHead className="text-right">Agent Goal</TableHead>
                                   <TableHead className="text-center">Transmitted</TableHead>
                                   <TableHead className="text-center">Approved</TableHead>
                                   <TableHead className="text-center">Activated</TableHead>
@@ -1608,7 +1669,9 @@ export default function CollectorDashboard() {
                             const record = block.attendance[agent.id];
                             const isPresent = !record || record.status === 'PRESENT';
                             const value = kpiValueFor(block.kpiMetric, prod);
-                            const bdoMetrics = block.bdoPerformance?.[agent.id] || { goal: 0, actual: 0, achievement: 0 };
+                            const importedMetrics = block.importedPerformance?.[agent.id]
+                              || block.bdoPerformance?.[agent.id]
+                              || { goal: 0, actual: 0, achievement: 0 };
                             const mbPlMetrics = block.mbPlPerformance?.[agent.id] || {
                               goal: 0, actual: 0, transactionGoal: 0, transactionActual: 0,
                               volumeGoal: 0, volumeActual: 0, transactionAchievement: 0,
@@ -1677,13 +1740,16 @@ export default function CollectorDashboard() {
                                     <TableCell className="text-center text-purple-600">₱{Number(prod.balconVol || 0).toLocaleString()}</TableCell>
                                     <TableCell className="text-center border-l font-semibold">{Number((prod.c2gTxn || 0) + (prod.btTxn || 0) + (prod.balconTxn || 0)).toLocaleString()}</TableCell>
                                     <TableCell className="text-center text-purple-600 font-semibold">₱{Number((prod.c2gVol || 0) + (prod.btVol || 0) + (prod.balconVol || 0)).toLocaleString()}</TableCell>
+                                    <TableCell className="text-right border-l font-semibold text-blue-600">₱{Number(agent.monthlyTarget || 0).toLocaleString()}</TableCell>
                                   </>
                                 ) : acq ? (
                                   <>
                                     <TableCell className="text-center font-semibold text-blue-600">{Number(prod.ntb || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center font-semibold text-blue-600">{Number(agent.monthlyTarget || 0).toLocaleString()}</TableCell>
                                     <TableCell className="text-center font-semibold text-purple-600">{Number(prod.supplementary || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center font-semibold text-purple-600">{Number(agent.monthlyTargetSupplementary || 0).toLocaleString()}</TableCell>
                                   </>
-                                ) : bdo ? (
+                                ) : bdo || hasImportedDashboardPerformance ? (
                                   <>
                                     <TableCell className="text-center">
                                       {agent.importedOnly ? (
@@ -1703,10 +1769,9 @@ export default function CollectorDashboard() {
                                         </button>
                                       )}
                                     </TableCell>
-                                    <TableCell className="text-right font-semibold text-blue-600">{formatKpiValue(block.kpiMetric, bdoMetrics.goal)}</TableCell>
-                                    <TableCell className="text-right font-semibold text-purple-600">{formatKpiValue(block.kpiMetric, bdoMetrics.actual)}</TableCell>
-                                    <TableCell className="text-center font-semibold text-emerald-600">{bdoMetrics.achievement.toFixed(1)}%</TableCell>
-                                    <TableCell className="text-center font-semibold text-primary">{Number(prod.booked || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-right font-semibold text-blue-600">{formatKpiValue(block.kpiMetric, importedMetrics.goal)}</TableCell>
+                                    <TableCell className="text-right font-semibold text-purple-600">{formatKpiValue(block.kpiMetric, importedMetrics.actual)}</TableCell>
+                                    <TableCell className="text-center font-semibold text-emerald-600">{importedMetrics.achievement.toFixed(1)}%</TableCell>
                                   </>
                                 ) : (
                                   <>
@@ -1728,6 +1793,7 @@ export default function CollectorDashboard() {
                                         </button>
                                       )}
                                     </TableCell>
+                                    <TableCell className="text-right font-semibold text-blue-600">{formatKpiValue(block.kpiMetric, Number(agent.monthlyTarget || 0))}</TableCell>
                                     <TableCell className="text-center">{prod.transmittals}</TableCell>
                                     <TableCell className="text-center">{prod.approvals}</TableCell>
                                     <TableCell className="text-center">{prod.activations}</TableCell>
@@ -1799,22 +1865,22 @@ export default function CollectorDashboard() {
                                     ) : (
                                       <span className="text-muted-foreground text-xs">No target</span>
                                     )
-                                  ) : bdo ? (
-                                    bdoMetrics.goal > 0 ? (
+                                  ) : bdo || hasImportedDashboardPerformance ? (
+                                    importedMetrics.goal > 0 ? (
                                       <div className="flex items-center gap-2">
                                         <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                                           <div
-                                            className={`h-full transition-all ${getProgressColor(bdoMetrics.achievement)}`}
-                                            style={{ width: `${Math.min(bdoMetrics.achievement, 100)}%` }}
+                                            className={`h-full transition-all ${getProgressColor(importedMetrics.achievement)}`}
+                                            style={{ width: `${Math.min(importedMetrics.achievement, 100)}%` }}
                                           />
                                         </div>
                                         <span className={`text-xs w-10 text-right ${
-                                          bdoMetrics.achievement >= 100 ? 'text-green-500 font-bold' :
-                                          bdoMetrics.achievement >= 75 ? 'text-blue-500' :
-                                          bdoMetrics.achievement >= 50 ? 'text-yellow-500' :
+                                          importedMetrics.achievement >= 100 ? 'text-green-500 font-bold' :
+                                          importedMetrics.achievement >= 75 ? 'text-blue-500' :
+                                          importedMetrics.achievement >= 50 ? 'text-yellow-500' :
                                           'text-muted-foreground'
                                         }`}>
-                                          {bdoMetrics.achievement.toFixed(0)}%
+                                          {importedMetrics.achievement.toFixed(0)}%
                                         </span>
                                       </div>
                                     ) : (
@@ -1842,7 +1908,7 @@ export default function CollectorDashboard() {
                                   )}
                                 </TableCell>
                                 <TableCell className="text-right">
-                                  {agent.importedOnly || hasImportedMbPlPerformance ? (
+                                  {agent.importedOnly || agent.goalSource === 'bulk_import' || hasImportedMbPlPerformance ? (
                                     <span className="text-xs text-muted-foreground">Bulk Import</span>
                                   ) : <div className="flex gap-1 justify-end">
                                     <Button

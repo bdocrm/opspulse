@@ -272,9 +272,10 @@ export async function GET(req: NextRequest) {
         where: {
           campaignId: { in: assignedIds },
           reportYear: { gte: selectedStartPeriod.year, lte: selectedEndPeriod.year },
-          metricType: {
-            in: ["transactions", "volume", "transactions_score", "volume_score", "overall"],
-          },
+          OR: [
+            { goal: { not: null } },
+            { metricType: { in: ["transactions", "volume", "transactions_score", "volume_score", "overall"] } },
+          ],
         },
         select: {
           campaignId: true,
@@ -414,6 +415,17 @@ export async function GET(req: NextRequest) {
     const campaignNameById = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
     const mbPaCampaignIds = new Set(campaigns.filter((campaign) => /\bMB\s*PA\b/i.test(campaign.campaignName)).map((campaign) => campaign.id));
     const mbPlCampaignIds = new Set(campaigns.filter((campaign) => /\bMB\s*PL\b/i.test(campaign.campaignName)).map((campaign) => campaign.id));
+    const importedMetricGoalsByCampaign = new Map<string, Record<string, Record<string, number>>>();
+    for (const metric of rawMetricRecords) {
+      if (!metric.sourceFile || metric.goal == null || metric.reportMonth == null) continue;
+      const periodIndex = metric.reportYear * 12 + metric.reportMonth;
+      if (periodIndex < selectedStartPeriodIndex || periodIndex > selectedEndPeriodIndex) continue;
+      const byAgent = importedMetricGoalsByCampaign.get(metric.campaignId) ?? {};
+      const goals = byAgent[metric.agentId] ?? {};
+      goals[metric.metricType] = (goals[metric.metricType] ?? 0) + Number(metric.goal);
+      byAgent[metric.agentId] = goals;
+      importedMetricGoalsByCampaign.set(metric.campaignId, byAgent);
+    }
     for (const record of usableDashboardAgentRecords) {
       if (record.recordKind !== "ytd") continue;
       const summaryName = `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
@@ -569,15 +581,14 @@ export async function GET(req: NextRequest) {
       prodByCampaign.set(detail.campaignId, production);
     }
 
-    // MB PA progress is based on BILLINGS / imported TARGET, while its table
-    // ranking is based on GRAND TOTAL transactions. Older imports may have a
-    // target on only the first populated months, so carry the closest known
-    // per-agent target into target-less rows from the same selected range.
+    // MB PA progress is based on BILLINGS / the exact imported TARGET, while
+    // its table ranking is based on GRAND TOTAL transactions. Blank target
+    // cells remain blank/zero; never manufacture later-month goals by carrying
+    // an earlier target or falling back to a manually configured user target.
     const mbPaTargetByAgent = new Map<string, number>();
     const mbPaGoalByCampaign = new Map<string, number>();
     const mbPaActualByCampaign = new Map<string, number>();
     const mbPaRowsByAgent = new Map<string, typeof details>();
-    const storedMonthlyTargetByAgent = new Map(agents.map((agent) => [agent.id, Number(agent.monthlyTarget || 0)]));
     for (const detail of details) {
       if (!mbPaCampaignIds.has(detail.campaignId)) continue;
       const key = `${detail.campaignId}|${detail.agentId}`;
@@ -587,20 +598,8 @@ export async function GET(req: NextRequest) {
     }
     for (const rows of mbPaRowsByAgent.values()) {
       rows.sort((a, b) => a.productionEntry.date.getTime() - b.productionEntry.date.getTime());
-      const explicitTargets = rows.map((detail) => {
-        const stored = Number(detail.monthlyGoal || 0);
-        if (stored > 0) return stored;
-        const actual = Number(detail.monthlyActual ?? detail.grandTotalVol ?? 0);
-        const rawAchievement = Number(detail.monthlyAchievement || 0);
-        const achievement = rawAchievement > 2 ? rawAchievement / 100 : rawAchievement;
-        return actual > 0 && achievement > 0 ? actual / achievement : 0;
-      });
-      rows.forEach((detail, index) => {
-        const target = explicitTargets[index]
-          || [...explicitTargets.slice(0, index)].reverse().find((value) => value > 0)
-          || explicitTargets.slice(index + 1).find((value) => value > 0)
-          || storedMonthlyTargetByAgent.get(detail.agentId)
-          || 0;
+      rows.forEach((detail) => {
+        const target = Number(detail.monthlyGoal ?? 0);
         const categoryBilling = Number(detail.c2gVol || 0) + Number(detail.btVol || 0) + Number(detail.balconVol || 0);
         const actual = categoryBilling || Number(detail.grandTotalVol || 0) || Number(detail.monthlyActual ?? detail.volume ?? 0);
         mbPaTargetByAgent.set(detail.agentId, (mbPaTargetByAgent.get(detail.agentId) ?? 0) + target);
@@ -735,7 +734,7 @@ export async function GET(req: NextRequest) {
     const importedAgentGoalByCampaign = new Map<string, number>();
     const importedActualByCampaign = new Map<string, number>();
     const importedTargetByAgent = new Map<string, number>();
-    const importedBdoPerformanceByCampaign = new Map<
+    const importedAgentPerformanceByCampaign = new Map<
       string,
       Record<string, { importedTarget: number; actual: number }>
     >();
@@ -772,13 +771,13 @@ export async function GET(req: NextRequest) {
       }
       const effectiveActual = importedActual(record);
       if (effectiveActual == null) continue;
-      if (record.recordKind !== "ytd" && /^BDO\b/i.test(campaignNameById.get(record.campaignId) || "")) {
-        const byAgent = importedBdoPerformanceByCampaign.get(record.campaignId) ?? {};
+      if (record.recordKind === "agent_monitoring") {
+        const byAgent = importedAgentPerformanceByCampaign.get(record.campaignId) ?? {};
         const performance = byAgent[agentId] ?? { importedTarget: 0, actual: 0 };
         performance.importedTarget += target;
         performance.actual += effectiveActual;
         byAgent[agentId] = performance;
-        importedBdoPerformanceByCampaign.set(record.campaignId, byAgent);
+        importedAgentPerformanceByCampaign.set(record.campaignId, byAgent);
       }
       const byAgent = prodByCampaign.get(record.campaignId) ?? {};
       const cur = byAgent[agentId] ?? emptyProduction();
@@ -828,9 +827,11 @@ export async function GET(req: NextRequest) {
     const result = campaigns.map((c) => {
       const savedGoal = monthlyGoalsByCampaignId.get(c.id);
       const isBdoCampaign = /^BDO\b/i.test(c.campaignName);
+      const isAcqCampaign = /\bACQ\b/i.test(c.campaignName);
       const isMbPaCampaign = /\bMB\s*PA\b/i.test(c.campaignName);
       const isMbPlCampaign = /\bMB\s*PL\b/i.test(c.campaignName);
       const production = prodByCampaign.get(c.id) ?? {};
+      const normalizedGoalsByAgent = importedMetricGoalsByCampaign.get(c.id) ?? {};
       const rawMbPlPerformance = mbPlPerformanceByCampaign.get(c.id) ?? {};
       const mbPlPerformance = Object.fromEntries(Object.entries(rawMbPlPerformance).map(([agentId, performance]) => [
         agentId,
@@ -878,31 +879,54 @@ export async function GET(req: NextRequest) {
         ? (mbPlAchievementTotal / mbPlAchievementCount) * 100
         : mbPlImportedGoal > 0 ? (mbPlImportedActual / mbPlImportedGoal) * 100 : 0;
       const hasDashboardAgentImport = campaignsWithSelectedImportedAgentMonitoring.has(c.id);
+      const hasDashboardAgentTargetImport = [...preferredAgentDetailRecords.values()].some((record) =>
+        record.campaignId === c.id &&
+        record.recordKind === "agent_monitoring" &&
+        record.target != null
+      );
+      const hasCampaignAgentImport = campaignsWithMonthlyProductionImport.has(c.id)
+        || hasDashboardAgentImport
+        || hasDashboardAgentTargetImport
+        || hasMbPlImport;
       const syntheticTotalName = normalizeImportedAgentName(`${c.campaignName} Total`);
+      const importedGoalForAgent = (agentId: string) => {
+        const goals = normalizedGoalsByAgent[agentId] ?? {};
+        if (isMbPlCampaign && hasMbPlImport) return mbPlPerformance[agentId]?.transactionGoal;
+        if (isMbPaCampaign) return mbPaTargetByAgent.get(agentId) ?? goals.goal;
+        if (isAcqCampaign) return goals.ntb;
+        return importedTargetByAgent.get(agentId)
+          ?? goals[campaignKpiById.get(c.id) || c.kpiMetric || "booked"]
+          ?? goals.goal;
+      };
       const campaignAgentCandidates = [
-        ...(agentsByCampaign.get(c.id) ?? []).map((a) => ({
-          id: a.id,
-          name: a.name,
-          email: a.email,
-          seatNumber: a.seatNumber,
-          monthlyTarget: isBdoCampaign
-            ? a.monthlyTarget
-            : isMbPaCampaign
-              ? mbPaTargetByAgent.get(a.id) || a.monthlyTarget
-              : isMbPlCampaign && hasMbPlImport
-                ? mbPlPerformance[a.id]?.goal ?? 0
-                : importedTargetByAgent.get(a.id) || a.monthlyTarget,
-          monthlyTargetSupplementary: a.monthlyTargetSupplementary,
-          mbLevel: a.mbLevel,
-          disbursedTxnTarget: a.disbursedTxnTarget,
-          disbursedVolTarget: a.disbursedVolTarget,
-          grossTurnInsTxnTarget: a.grossTurnInsTxnTarget,
-          grossTurnInsVolTarget: a.grossTurnInsVolTarget,
-          importedOnly: false,
-        })),
+        ...(agentsByCampaign.get(c.id) ?? []).map((a) => {
+          const importedGoal = importedGoalForAgent(a.id);
+          const importedGoals = normalizedGoalsByAgent[a.id] ?? {};
+          return {
+            id: a.id,
+            name: a.name,
+            email: a.email,
+            seatNumber: a.seatNumber,
+            monthlyTarget: hasCampaignAgentImport ? importedGoal ?? null : importedGoal ?? a.monthlyTarget,
+            monthlyTargetSupplementary: hasCampaignAgentImport
+              ? importedGoals.supplementary ?? null
+              : importedGoals.supplementary ?? a.monthlyTargetSupplementary,
+            importedGoals,
+            goalSource: hasCampaignAgentImport || importedGoal != null ? "bulk_import" : "configured",
+            mbLevel: a.mbLevel,
+            disbursedTxnTarget: a.disbursedTxnTarget,
+            disbursedVolTarget: a.disbursedVolTarget,
+            grossTurnInsTxnTarget: a.grossTurnInsTxnTarget,
+            grossTurnInsVolTarget: a.grossTurnInsVolTarget,
+            importedOnly: false,
+          };
+        }),
         ...(importedRosterByCampaign.get(c.id) ?? []).map((agent) => ({
           ...agent,
-          monthlyTarget: isBdoCampaign ? null : importedTargetByAgent.get(agent.id) || null,
+          monthlyTarget: importedGoalForAgent(agent.id) ?? null,
+          monthlyTargetSupplementary: normalizedGoalsByAgent[agent.id]?.supplementary ?? null,
+          importedGoals: normalizedGoalsByAgent[agent.id] ?? {},
+          goalSource: hasCampaignAgentImport || importedGoalForAgent(agent.id) != null ? "bulk_import" : "configured",
         })),
       ].filter((agent) => !(
         hasDashboardAgentImport &&
@@ -945,14 +969,14 @@ export async function GET(req: NextRequest) {
       const effectiveBdoGoalConfig = isBdoCampaign
         ? monthlyGoalsByCampaignPeriod.get(`${c.id}|${latestGoalPeriod.year}|${latestGoalPeriod.month}`)
         : null;
-      const importedBdoPerformance = importedBdoPerformanceByCampaign.get(c.id) ?? {};
+      const rawImportedPerformance = importedAgentPerformanceByCampaign.get(c.id) ?? {};
       const importedTargetTotal = campaignAgents.reduce(
-        (sum, agent) => sum + Number(importedBdoPerformance[agent.id]?.importedTarget || 0),
+        (sum, agent) => sum + Number(rawImportedPerformance[agent.id]?.importedTarget || 0),
         0
       );
-      const bdoPerformance = isBdoCampaign
+      const importedPerformance = Object.keys(rawImportedPerformance).length > 0
         ? Object.fromEntries(campaignAgents.map((agent) => {
-            const imported = importedBdoPerformance[agent.id] ?? { importedTarget: 0, actual: 0 };
+            const imported = rawImportedPerformance[agent.id] ?? { importedTarget: 0, actual: 0 };
             return [agent.id, {
               goal: imported.importedTarget,
               actual: imported.actual,
@@ -960,22 +984,39 @@ export async function GET(req: NextRequest) {
             }];
           }))
         : undefined;
-      const bdoActualFromAgents = Object.values(importedBdoPerformance).reduce((sum, row) => sum + row.actual, 0);
-      const hasBdoAgentImport = Object.keys(importedBdoPerformance).length > 0;
+      const bdoPerformance = isBdoCampaign ? importedPerformance : undefined;
+      const bdoActualFromAgents = Object.values(rawImportedPerformance).reduce((sum, row) => sum + row.actual, 0);
+      const hasBdoAgentImport = Object.keys(rawImportedPerformance).length > 0;
+      const normalizedPrimaryGoalTotal = campaignAgents.reduce((sum, agent) => {
+        const importedGoal = importedGoalForAgent(agent.id);
+        return sum + Number(importedGoal ?? 0);
+      }, 0);
+      const normalizedSupplementaryGoalTotal = campaignAgents.reduce(
+        (sum, agent) => sum + Number(normalizedGoalsByAgent[agent.id]?.supplementary ?? 0),
+        0
+      );
 
       return {
         id: c.id,
         campaignName: c.campaignName,
         kpiMetric: isMbPlCampaign && hasMbPlImport
           ? "actual"
-          : effectiveBdoGoalConfig?.kpiMetric || savedGoal?.kpiMetric || campaignKpiById.get(c.id) || c.kpiMetric || "booked",
+          : hasDashboardAgentImport || hasDashboardAgentTargetImport
+            ? campaignKpiById.get(c.id) || c.kpiMetric || "booked"
+            : effectiveBdoGoalConfig?.kpiMetric || savedGoal?.kpiMetric || campaignKpiById.get(c.id) || c.kpiMetric || "booked",
         goal: isBdoCampaign
-          ? (hasBdoAgentImport ? importedTargetTotal : importedGoalByCampaign.get(c.id) || ceoGoal)
+          ? (hasDashboardAgentTargetImport
+            ? normalizedPrimaryGoalTotal
+            : hasBdoAgentImport ? importedTargetTotal : importedGoalByCampaign.get(c.id) || ceoGoal)
           : isMbPaCampaign
-            ? mbPaGoalByCampaign.get(c.id) || ceoGoal
+            ? hasCampaignAgentImport
+              ? normalizedPrimaryGoalTotal
+              : mbPaGoalByCampaign.get(c.id) || ceoGoal
             : isMbPlCampaign && hasMbPlImport
               ? mbPlImportedGoal
-            : importedGoalByCampaign.get(c.id) || importedAgentGoalByCampaign.get(c.id) || ceoGoal,
+            : hasCampaignAgentImport
+              ? normalizedPrimaryGoalTotal || importedAgentGoalByCampaign.get(c.id) || 0
+              : importedGoalByCampaign.get(c.id) || ceoGoal,
         actual: isBdoCampaign
           ? (hasBdoAgentImport ? bdoActualFromAgents : importedActualByCampaign.get(c.id) ?? null)
           : isMbPaCampaign
@@ -984,10 +1025,14 @@ export async function GET(req: NextRequest) {
               ? mbPlImportedActual
             : importedActualByCampaign.get(c.id) ?? null,
         achievement: isMbPlCampaign && hasMbPlImport ? mbPlImportedAchievement : null,
-        supplementaryGoal: Number(savedGoal?.supplementaryGoal ?? c.supplementaryGoal ?? 0),
+        supplementaryGoal: hasCampaignAgentImport && isAcqCampaign
+          ? normalizedSupplementaryGoalTotal
+          : normalizedSupplementaryGoalTotal
+            || Number(savedGoal?.supplementaryGoal ?? c.supplementaryGoal ?? 0),
         agents: campaignAgents,
         dataEntryAgentIds,
         bdoPerformance,
+        importedPerformance,
         mbPlPerformance: hasMbPlImport ? mbPlPerformance : undefined,
         mbPlTotals: hasMbPlImport ? {
           transactionGoal: mbPlImportedGoal,
