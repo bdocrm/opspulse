@@ -35,11 +35,7 @@ export async function GET(req: NextRequest) {
               ].filter(Boolean) as string[]
             )
           );
-    const importedCampaignIds = await getBulkImportedCampaignIds(
-      year,
-      month,
-      scopedCampaignIds
-    );
+    const importedCampaignIds = await getBulkImportedCampaignIds(scopedCampaignIds);
 
     if (importedCampaignIds.length === 0) {
       return NextResponse.json({ campaigns: [] });

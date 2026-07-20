@@ -190,7 +190,7 @@ export async function GET(req: NextRequest) {
 
     const { start: startOfMonth, end: endOfMonth } = monthRange(year, month);
 
-    const importedCampaignIds = await getBulkImportedCampaignIds(year, month, [campaignId]);
+    const importedCampaignIds = await getBulkImportedCampaignIds([campaignId]);
     if (!importedCampaignIds.includes(campaignId)) {
       return NextResponse.json(
         { error: "No bulk-imported report exists for this campaign and period" },

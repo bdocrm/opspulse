@@ -261,7 +261,7 @@ function CampaignSelectorView({
       {campaigns.length === 0 ? (
         <Card className="p-6 text-center">
           <p className="text-gray-600">
-            No bulk-imported campaign reports are available for this month.
+            No bulk-imported campaign reports are available.
           </p>
         </Card>
       ) : (
