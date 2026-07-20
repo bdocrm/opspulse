@@ -286,6 +286,7 @@ model ProductionDetail {
   approvalsVolume    BigInt          @default(0)
   bookedVolume       BigInt          @default(0)
   sourceSheet        String?
+  agentCode          String?
   agentLevel         String?
   dateHired          DateTime?
   agentType          String?

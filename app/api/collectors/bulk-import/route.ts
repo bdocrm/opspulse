@@ -10,13 +10,14 @@ import { isBdoDashboardWorkbook, parseBdoDashboardWorkbook, type BdoImportRecord
 import { isBpiDashboardWorkbook, parseBpiDashboardWorkbook } from '@/lib/bpi-dashboard-import';
 import { mapWorksheetCampaign } from '@/lib/campaign-import-selection';
 import { isMbPaMonthlyLayout, parseMbPaMonthlyRows } from '@/lib/mb-pa-import';
+import { isMbGoalAchievementLayout, parseMbGoalAchievementRows } from '@/lib/mb-goal-achievement-import';
 
 type ParsedEntry = {
   name: string; count: number; volume: number;
   transmittals?: number; approvals?: number; booked?: number; activations?: number;
   transmittedVolume?: number; approvalsVolume?: number; bookedVolume?: number;
   ntb?: number; supplementary?: number; seatCategory?: string;
-  agentLevel?: string; dateHired?: Date; agentType?: string;
+  agentCode?: string; agentLevel?: string; dateHired?: Date; agentType?: string;
   monthlyGoal?: number; monthlyActual?: number; monthlyAchievement?: number;
   overallGoal?: number; overallActual?: number; overallAchievement?: number;
   metricType?: string;
@@ -25,6 +26,7 @@ type ParsedEntry = {
   campaignName?: string;
   reportDate?: Date;
   validationErrors?: string[];
+  normalizedMetrics?: NormalizedMetric[];
   // MB PL wide-format per-category totals (transaction + volume)
   bauPayrollTxn?: number; bauPayrollVol?: number;
   bauDepositorTxn?: number; bauDepositorVol?: number;
@@ -83,6 +85,7 @@ function normalizePeriodDate(date: Date, periodType: ReportPeriodType) {
 }
 
 function expandEntryMetrics(entry: ParsedEntry): NormalizedMetric[] {
+  if (entry.normalizedMetrics?.length) return entry.normalizedMetrics;
   const metrics: NormalizedMetric[] = [];
   const countMetrics = [
     ['transmittals', entry.transmittals, entry.transmittedVolume],
@@ -148,6 +151,7 @@ async function ensureImportMetadataColumns() {
       ADD COLUMN IF NOT EXISTS "approvalsVolume" BIGINT NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS "bookedVolume" BIGINT NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS "sourceSheet" TEXT,
+      ADD COLUMN IF NOT EXISTS "agentCode" TEXT,
       ADD COLUMN IF NOT EXISTS "agentLevel" TEXT,
       ADD COLUMN IF NOT EXISTS "dateHired" TIMESTAMP(3),
       ADD COLUMN IF NOT EXISTS "agentType" TEXT,
@@ -616,6 +620,24 @@ function parseMonthlyAgentRows(rows: any[][], sheetName: string, campaignName: s
     };
   }
 
+  const mbGoalAchievement = /^mb\b/i.test(campaignName.trim())
+    ? parseMbGoalAchievementRows(rows, fallbackDate)
+    : null;
+  if (mbGoalAchievement?.entries.length) {
+    return {
+      format: 'MB Monthly Goal & Achievement',
+      entries: mbGoalAchievement.entries.map((entry) => ({
+        ...entry,
+        sourceSheet: sheetName,
+        campaignName,
+        metricType: 'all_metrics',
+      })),
+      invalidRows: mbGoalAchievement.invalidRows,
+      warnings: mbGoalAchievement.warnings,
+      errors: [] as string[],
+    };
+  }
+
   const monthHits: Array<{ row: number; col: number; month: number; year?: number }> = [];
   for (let r = 0; r < Math.min(rows.length, 20); r++) {
     for (let c = 0; c < (rows[r] || []).length; c++) {
@@ -630,7 +652,7 @@ function parseMonthlyAgentRows(rows: any[][], sheetName: string, campaignName: s
   let nameCol = -1;
   for (let r = 0; r < Math.min(rows.length, 30); r++) {
     const cells = (rows[r] || []).map(normalizeHeader);
-    const candidate = cells.findIndex((value) => ['agent', 'agent name', 'name', 'full name'].includes(value));
+    const candidate = cells.findIndex((value) => ['agent', 'agent name', 'agent fullname', 'name', 'full name'].includes(value));
     if (candidate >= 0) { headerRow = r; nameCol = candidate; break; }
   }
   if (headerRow < 0 || nameCol < 0) return null;
@@ -638,7 +660,7 @@ function parseMonthlyAgentRows(rows: any[][], sheetName: string, campaignName: s
   let dataStartRow = -1;
   for (let r = headerRow + 1; r < rows.length; r++) {
     const value = cellText(rows[r]?.[nameCol]);
-    if (value && !['agent', 'agent name', 'name', 'full name'].includes(normalizeHeader(value))) { dataStartRow = r; break; }
+    if (value && !['agent', 'agent name', 'agent fullname', 'name', 'full name'].includes(normalizeHeader(value))) { dataStartRow = r; break; }
   }
   if (dataStartRow < 0) return null;
   const lastHeaderRow = dataStartRow - 1;
@@ -877,6 +899,7 @@ function buildDetailData(row: ParsedEntry, metricType: string): Record<string, a
   if (row.supplementary !== undefined) data.supplementary = BigInt(row.supplementary || 0);
   if (row.seatCategory) data.seatCategory = row.seatCategory;
   if (row.sourceSheet) data.sourceSheet = row.sourceSheet;
+  if (row.agentCode) data.agentCode = row.agentCode;
   if (row.agentLevel) data.agentLevel = row.agentLevel;
   if (row.dateHired) data.dateHired = row.dateHired;
   if (row.agentType) data.agentType = row.agentType;
@@ -940,6 +963,7 @@ function buildDetailDataForWrite(row: ParsedEntry, metricType: string, partial =
   if (row.supplementary !== undefined) data.supplementary = BigInt(row.supplementary || 0);
   if (row.seatCategory) data.seatCategory = row.seatCategory;
   if (row.sourceSheet) data.sourceSheet = row.sourceSheet;
+  if (row.agentCode) data.agentCode = row.agentCode;
   if (row.agentLevel) data.agentLevel = row.agentLevel;
   if (row.dateHired) data.dateHired = row.dateHired;
   if (row.agentType) data.agentType = row.agentType;
@@ -1121,9 +1145,13 @@ async function buildWorkbookPreview({
     const defaultMapping = mapWorksheetCampaign(sheetName, selectedCampaigns);
     const mbPaCampaigns = selectedCampaigns.filter((campaign) => /\bmb\s*pa\b/i.test(campaign.campaignName));
     const detectedMbPaLayout = isMbPaMonthlyLayout(rows);
+    const mbCampaigns = selectedCampaigns.filter((campaign) => /^mb\b/i.test(campaign.campaignName.trim()));
+    const detectedMbGoalLayout = isMbGoalAchievementLayout(rows);
     const mapping = detectedMbPaLayout && mbPaCampaigns.length === 1
       ? { campaign: mbPaCampaigns[0], source: 'sheet' as const }
-      : defaultMapping;
+      : detectedMbGoalLayout && defaultMapping.source === 'unresolved' && mbCampaigns.length === 1
+        ? { campaign: mbCampaigns[0], source: 'sheet' as const }
+        : defaultMapping;
     const reportDate = parseReportDateFromRows(rows, selectedReportDate, sheetName);
     const detectedMetric = detectMetricFromText(`${sheetName} ${rows.slice(0, 5).flat().join(' ')}`, metricType);
     const parsed = parseDetectedRows(rows, detectedMetric, mapping.campaign.campaignName, sheetName, reportDate);
@@ -1131,6 +1159,7 @@ async function buildWorkbookPreview({
     let duplicateRows = 0;
     const warnings = [...parsed.warnings];
     if (detectedMbPaLayout) warnings.unshift('MB PA layout automatically detected from the TRANS and BILLINGS month blocks.');
+    if (detectedMbGoalLayout) warnings.unshift('MB monthly TARGET, ACTUAL, %, SCORE, and ACHIEVEMENT blocks were detected automatically.');
     const sheetSeen = new Set<string>();
 
     for (const entry of parsed.entries) {

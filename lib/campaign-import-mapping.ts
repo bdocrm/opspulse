@@ -1,4 +1,7 @@
 export const CAMPAIGN_IMPORT_ALIASES: Record<string, string[]> = {
+  'MB ACQ': ['MB ACQ', 'ACQUI', 'ACQUISITION'],
+  'MB PL': ['MB PERSONAL LOANS', 'MB PL'],
+  'MB PA': ['MB PA', 'MBPA'],
   'BPI PL': ['PERSONAL LOANS', 'BPI PERSONAL LOANS', 'PL', 'BPI PL'],
   'BPI PA OUTBOUND': ['PA SIP LOANS OUTBOUND', 'SIP LOANS OUTBOUND', 'PA OUTBOUND', 'BPI PA OUTBOUND'],
   'BPI PA INBOUND': ['PA SIP LOANS INBOUND', 'SIP LOANS INBOUND', 'PA INBOUND', 'BPI PA INBOUND'],
@@ -44,6 +47,21 @@ export function resolveCampaignEvidence(evidence: string[], selectedCampaigns: C
   for (const rawEvidence of evidence) {
     const normalizedEvidence = normalizeCampaignImportText(rawEvidence);
     if (!normalizedEvidence) continue;
+    // Short worksheet names such as ACQ, PL, and PA are common in MB annual
+    // workbooks. Resolve them only when they identify exactly one of the
+    // selected campaigns so "PL" never guesses between MB PL and BPI PL.
+    const shortMbAlias = normalizedEvidence.match(/^(?:ACQUI|ACQUISITION|ACQ|PL|PA|MBPA)$/)?.[0];
+    if (shortMbAlias) {
+      const suffix = /ACQ|ACQUI|ACQUISITION/.test(shortMbAlias) ? 'ACQ' : shortMbAlias === 'MBPA' ? 'PA' : shortMbAlias;
+      const suffixMatches = selectedCampaigns.filter((campaign) => {
+        const normalizedCampaign = normalizeCampaignImportText(campaign.campaignName);
+        return normalizedCampaign === suffix || normalizedCampaign.endsWith(` ${suffix}`);
+      });
+      if (suffixMatches.length === 1 && normalizeCampaignImportText(suffixMatches[0].campaignName).startsWith('MB ')) {
+        return { campaign: suffixMatches[0], source: 'evidence' as const, evidence: rawEvidence };
+      }
+      if (suffixMatches.length > 1) continue;
+    }
     const canonical = canonicalCampaignName(rawEvidence);
     const matches = selectedCampaigns.filter((campaign) => {
       const normalizedCampaign = normalizeCampaignImportText(campaign.campaignName);
