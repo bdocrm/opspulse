@@ -147,7 +147,6 @@ function CampaignSelectorView({
   onCampaignChange: (campaignId: string) => void;
   onCampaignSearchChange: (value: string) => void;
 }) {
-  const [isSeeding, setIsSeeding] = useState(false);
   const [overallSummary, setOverallSummary] = useState<OverallCampaignPerformance | null>(null);
   const [campaignSummaries, setCampaignSummaries] = useState<CampaignPerformanceSummaryMap>({});
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -218,22 +217,6 @@ function CampaignSelectorView({
     };
   }, [visibleCampaigns, year, month]);
 
-  const createTestData = async () => {
-    setIsSeeding(true);
-    try {
-      const res = await fetch("/api/dev/seed-test-data", { method: "POST" });
-      if (res.ok) {
-        location.reload();
-      } else {
-        alert("Failed to create test data");
-      }
-    } catch (err) {
-      alert("Error creating test data: " + String(err));
-    } finally {
-      setIsSeeding(false);
-    }
-  };
-
   return (
     <div className="space-y-6 p-6">
       <PageTitle
@@ -277,14 +260,9 @@ function CampaignSelectorView({
 
       {campaigns.length === 0 ? (
         <Card className="p-6 text-center">
-          <p className="text-gray-600 mb-4">No campaigns available</p>
-          <Button
-            onClick={createTestData}
-            disabled={isSeeding}
-            className="bg-blue-600 hover:bg-blue-700"
-          >
-            {isSeeding ? "Creating..." : "Create Test Data"}
-          </Button>
+          <p className="text-gray-600">
+            No bulk-imported campaign reports are available for this month.
+          </p>
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -758,6 +736,7 @@ function CampaignPerformancePageContent() {
   const initialYear = parseInt(searchParams.get("year") ?? now.getFullYear().toString());
   const initialMonth = parseInt(searchParams.get("month") ?? String(now.getMonth() + 1));
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [campaignsLoading, setCampaignsLoading] = useState(true);
   const [data, setData] = useState<CampaignPerformanceData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -770,18 +749,31 @@ function CampaignPerformancePageContent() {
 
   useEffect(() => {
     const fetchCampaigns = async () => {
+      setCampaignsLoading(true);
+      setCampaigns([]);
+      setError(null);
       try {
-        const res = await fetch("/api/campaigns");
+        const res = await fetch(
+          `/api/reports/campaign-performance/campaigns?year=${year}&month=${month}`
+        );
         if (!res.ok) throw new Error(`Failed to fetch campaigns: ${res.status}`);
         const result = await res.json();
-        setCampaigns(Array.isArray(result) ? result : result.campaigns || []);
+        const importedCampaigns = Array.isArray(result) ? result : result.campaigns || [];
+        setCampaigns(importedCampaigns);
+        setSelectedCampaignId((current) =>
+          current && importedCampaigns.some((campaign: Campaign) => campaign.id === current)
+            ? current
+            : ""
+        );
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load campaigns");
+      } finally {
+        setCampaignsLoading(false);
       }
     };
 
     fetchCampaigns();
-  }, []);
+  }, [year, month]);
 
   useEffect(() => {
     if (didAutoSelectPeriod) return;
@@ -853,6 +845,14 @@ function CampaignPerformancePageContent() {
 
   // Show campaign selector if no campaignId
   if (!campaignId) {
+    if (campaignsLoading) {
+      return (
+        <div className="flex min-h-screen items-center justify-center">
+          <div className="text-lg">Loading imported campaign reports...</div>
+        </div>
+      );
+    }
+
     return (
       <CampaignSelectorView
         campaigns={campaigns}

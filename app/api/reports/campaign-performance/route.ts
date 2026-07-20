@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
+import { getBulkImportedCampaignIds } from "@/lib/bulk-import-reports";
 import { prisma } from "@/lib/prisma";
 import type { KpiMetricKey } from "@/utils/kpi";
 
@@ -188,6 +189,14 @@ export async function GET(req: NextRequest) {
     }
 
     const { start: startOfMonth, end: endOfMonth } = monthRange(year, month);
+
+    const importedCampaignIds = await getBulkImportedCampaignIds(year, month, [campaignId]);
+    if (!importedCampaignIds.includes(campaignId)) {
+      return NextResponse.json(
+        { error: "No bulk-imported report exists for this campaign and period" },
+        { status: 404 }
+      );
+    }
 
     const monthlyConfig = await prisma.campaignGoal.findFirst({
       where: { campaignId, month, year },
