@@ -13,13 +13,14 @@ export function bulkImportMonthRange(year: number, month: number) {
 }
 
 export async function getBulkImportedCampaignIds(
-  year: number,
-  month: number,
+  year: number | null,
+  month: number | null,
   scopedCampaignIds?: string[]
 ) {
   if (scopedCampaignIds && scopedCampaignIds.length === 0) return [];
 
-  const { start, end } = bulkImportMonthRange(year, month);
+  const allMonths = year == null || month == null;
+  const range = allMonths ? null : bulkImportMonthRange(year, month);
   const campaignFilter = scopedCampaignIds
     ? { campaignId: { in: scopedCampaignIds } }
     : {};
@@ -30,13 +31,15 @@ export async function getBulkImportedCampaignIds(
         ...campaignFilter,
         importFileName: { not: null },
         details: { some: {} },
-        OR: [
-          { date: { gte: start, lte: end } },
-          {
-            periodStart: { lte: end },
-            periodEnd: { gte: start },
-          },
-        ],
+        ...(range ? {
+          OR: [
+            { date: { gte: range.start, lte: range.end } },
+            {
+              periodStart: { lte: range.end },
+              periodEnd: { gte: range.start },
+            },
+          ],
+        } : {}),
       },
       select: { campaignId: true },
       distinct: ["campaignId"],
@@ -44,8 +47,7 @@ export async function getBulkImportedCampaignIds(
     prisma.productionMetricRecord.findMany({
       where: {
         ...campaignFilter,
-        reportYear: year,
-        reportMonth: month,
+        ...(allMonths ? {} : { reportYear: year, reportMonth: month }),
       },
       select: { campaignId: true },
       distinct: ["campaignId"],
@@ -54,14 +56,16 @@ export async function getBulkImportedCampaignIds(
       where: {
         ...campaignFilter,
         recordKind: { in: ["agent_monitoring", "ytd"] },
-        year,
-        OR: [
-          { month },
-          {
-            month: null,
-            reportDate: { gte: start, lte: end },
-          },
-        ],
+        ...(range ? {
+          year: year as number,
+          OR: [
+            { month: month as number },
+            {
+              month: null,
+              reportDate: { gte: range.start, lte: range.end },
+            },
+          ],
+        } : {}),
       },
       select: { campaignId: true },
       distinct: ["campaignId"],

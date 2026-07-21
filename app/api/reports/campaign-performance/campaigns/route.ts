@@ -20,7 +20,8 @@ export async function GET(req: NextRequest) {
     const now = new Date();
     const year = parseInt(searchParams.get("year") ?? now.getFullYear().toString());
     const month = parseInt(searchParams.get("month") ?? String(now.getMonth() + 1));
-    if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    const allMonths = searchParams.get("allMonths") === "true";
+    if (!allMonths && (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12)) {
       return NextResponse.json({ error: "Invalid report period" }, { status: 400 });
     }
 
@@ -36,8 +37,8 @@ export async function GET(req: NextRequest) {
             )
           );
     const importedCampaignIds = await getBulkImportedCampaignIds(
-      year,
-      month,
+      allMonths ? null : year,
+      allMonths ? null : month,
       scopedCampaignIds
     );
 

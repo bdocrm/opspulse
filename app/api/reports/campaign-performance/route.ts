@@ -212,8 +212,9 @@ export async function GET(req: NextRequest) {
     const now = new Date();
     const year = parseInt(searchParams.get("year") ?? now.getFullYear().toString());
     const month = parseInt(searchParams.get("month") ?? String(now.getMonth() + 1));
+    const allMonths = searchParams.get("allMonths") === "true";
 
-    if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    if (!allMonths && (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12)) {
       return NextResponse.json({ error: "Invalid report period" }, { status: 400 });
     }
 
@@ -235,7 +236,11 @@ export async function GET(req: NextRequest) {
 
     const { start: startOfMonth, end: endOfMonth } = monthRange(year, month);
 
-    const importedCampaignIds = await getBulkImportedCampaignIds(year, month, [campaignId]);
+    const importedCampaignIds = await getBulkImportedCampaignIds(
+      allMonths ? null : year,
+      allMonths ? null : month,
+      [campaignId]
+    );
     if (!importedCampaignIds.includes(campaignId)) {
       return NextResponse.json(
         { error: "No bulk-imported report exists for this campaign and period" },
@@ -243,10 +248,15 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const monthlyConfig = await prisma.campaignGoal.findFirst({
-      where: { campaignId, month, year },
-      select: { monthlyGoal: true, kpiMetric: true },
+    const monthlyConfigs = await prisma.campaignGoal.findMany({
+      where: {
+        campaignId,
+        ...(allMonths ? {} : { month, year }),
+      },
+      select: { month: true, year: true, monthlyGoal: true, kpiMetric: true },
+      orderBy: [{ year: "desc" }, { month: "desc" }],
     });
+    const monthlyConfig = monthlyConfigs[0];
     const campaignGoal = Number(monthlyConfig?.monthlyGoal ?? campaign.monthlyGoal ?? 0);
     const configuredCampaignMetric = normalizeMetric(monthlyConfig?.kpiMetric ?? campaign.kpiMetric);
 
@@ -268,15 +278,17 @@ export async function GET(req: NextRequest) {
       prisma.productionDetail.findMany({
         where: {
           campaignId: campaignId,
-          productionEntry: {
-            OR: [
-              { date: { gte: startOfMonth, lte: endOfMonth } },
-              {
-                periodStart: { lte: endOfMonth },
-                periodEnd: { gte: startOfMonth },
+          productionEntry: allMonths
+            ? { importFileName: { not: null } }
+            : {
+                OR: [
+                  { date: { gte: startOfMonth, lte: endOfMonth } },
+                  {
+                    periodStart: { lte: endOfMonth },
+                    periodEnd: { gte: startOfMonth },
+                  },
+                ],
               },
-            ],
-          },
         },
         select: {
           agentId: true,
@@ -296,7 +308,10 @@ export async function GET(req: NextRequest) {
         },
       }),
       prisma.productionMetricRecord.findMany({
-        where: { campaignId, reportYear: year, reportMonth: month },
+        where: {
+          campaignId,
+          ...(allMonths ? {} : { reportYear: year, reportMonth: month }),
+        },
         select: {
           agentId: true,
           metricType: true,
@@ -306,6 +321,8 @@ export async function GET(req: NextRequest) {
           actual: true,
           achievement: true,
           reportDate: true,
+          reportMonth: true,
+          reportYear: true,
           agent: { select: { id: true, name: true, seatNumber: true, monthlyTarget: true } },
         },
       }),
@@ -313,11 +330,13 @@ export async function GET(req: NextRequest) {
         where: {
           campaignId,
           recordKind: { in: ["agent_monitoring", "ytd"] },
-          year,
-          OR: [
-            { month },
-            { month: null, reportDate: { gte: startOfMonth, lte: endOfMonth } },
-          ],
+          ...(allMonths ? {} : {
+            year,
+            OR: [
+              { month },
+              { month: null, reportDate: { gte: startOfMonth, lte: endOfMonth } },
+            ],
+          }),
         },
         select: {
           worksheetSource: true,
@@ -472,7 +491,8 @@ export async function GET(req: NextRequest) {
     // never added together as if they were the same measure.
     const preferredDashboardRows = new Map<string, (typeof dashboardAgentRows)[number]>();
     dashboardAgentRows.forEach((record) => {
-      const key = `${normalizeName(record.entityName)}|${normalizeImportedMetric(record.metric)}`;
+      const periodKey = allMonths ? `|${record.year}|${record.month ?? toBusinessYmd(record.reportDate).slice(0, 7)}` : "";
+      const key = `${normalizeName(record.entityName)}|${normalizeImportedMetric(record.metric)}${periodKey}`;
       const existing = preferredDashboardRows.get(key);
       const priority = record.monitoringType?.endsWith("_AGENT") ? 2 : 1;
       const existingPriority = existing?.monitoringType?.endsWith("_AGENT") ? 2 : existing ? 1 : 0;
@@ -533,12 +553,24 @@ export async function GET(req: NextRequest) {
     });
 
     const ytdRows = dashboardRecords.filter((record) => record.recordKind === "ytd");
-    const usableYtdRows = ytdRows.filter((record) => {
+    const usableYtdCandidates = ytdRows.filter((record) => {
       const actual = importedActual(record);
       if (actual == null || (actual === 0 && Number(record.target ?? 0) === 0)) return false;
       // A zero-valued YTD cell must not hide real agent productivity rows.
       return actual !== 0 || selectedDashboardRows.length === 0;
     });
+    const latestYtdPeriod = allMonths && usableYtdCandidates.length > 0
+      ? Math.max(...usableYtdCandidates.map((record) => {
+          const fallbackPeriod = toBusinessYmd(record.reportDate).slice(0, 7).split("-").map(Number);
+          return record.year * 12 + (record.month ?? fallbackPeriod[1]);
+        }))
+      : null;
+    const usableYtdRows = latestYtdPeriod == null
+      ? usableYtdCandidates
+      : usableYtdCandidates.filter((record) => {
+          const fallbackPeriod = toBusinessYmd(record.reportDate).slice(0, 7).split("-").map(Number);
+          return record.year * 12 + (record.month ?? fallbackPeriod[1]) === latestYtdPeriod;
+        });
     const ytdGoal = usableYtdRows.reduce((sum, record) => sum + Number(record.target ?? 0), 0);
     const ytdActual = usableYtdRows.reduce((sum, record) => sum + Number(importedActual(record) ?? 0), 0);
 
@@ -571,9 +603,50 @@ export async function GET(req: NextRequest) {
         ? new Set(normalizedOverrides.keys())
         : new Set(totalsByAgentId.keys());
     const agents = Array.from(agentsById.values()).filter((agent) => activeAgentIds.has(agent.id));
+    const importedPeriodKeys = new Set<string>();
+    if (hasDashboardPerformance) {
+      selectedDashboardRows.forEach((record) => {
+        const fallbackPeriod = toBusinessYmd(record.reportDate).slice(0, 7);
+        importedPeriodKeys.add(`${record.year}-${String(record.month ?? Number(fallbackPeriod.slice(5, 7))).padStart(2, "0")}`);
+      });
+      usableYtdRows.forEach((record) => {
+        const fallbackPeriod = toBusinessYmd(record.reportDate).slice(0, 7);
+        importedPeriodKeys.add(`${record.year}-${String(record.month ?? Number(fallbackPeriod.slice(5, 7))).padStart(2, "0")}`);
+      });
+    } else if (hasNormalizedPerformance) {
+      normalizedPrimaryRows.forEach((record) => {
+        if (record.reportMonth != null) {
+          importedPeriodKeys.add(`${record.reportYear}-${String(record.reportMonth).padStart(2, "0")}`);
+        }
+      });
+    } else {
+      productionDetails.forEach((detail) => {
+        importedPeriodKeys.add(toBusinessYmd(detail.productionEntry.periodEnd ?? detail.productionEntry.date).slice(0, 7));
+      });
+    }
+    const configuredGoalByPeriod = new Map(
+      monthlyConfigs.map((config) => [
+        `${config.year}-${String(config.month).padStart(2, "0")}`,
+        Number(config.monthlyGoal),
+      ])
+    );
+    const importedDetailGoal = productionDetails.reduce(
+      (sum, detail) => sum + Number(detail.monthlyGoal ?? 0),
+      0
+    );
+    const fallbackCampaignGoal = allMonths
+      ? importedDetailGoal > 0
+        ? importedDetailGoal
+        : [...importedPeriodKeys].reduce(
+            (sum, periodKey) => sum + (configuredGoalByPeriod.get(periodKey) ?? Number(campaign.monthlyGoal ?? 0)),
+            0
+          )
+      : campaignGoal;
     const campaignMetric = dashboardCurrencyMetric && hasDashboardPerformance
       ? "volume"
-      : resolveEffectiveMetric(configuredCampaignMetric, campaignGoal, campaignTotals, agents);
+      : hasNormalizedPerformance && normalizedPrimaryMetric === "transactions"
+        ? "transaction"
+        : resolveEffectiveMetric(configuredCampaignMetric, fallbackCampaignGoal, campaignTotals, agents);
     const selectedOverrides = hasDashboardPerformance
       ? dashboardOverrides
       : hasNormalizedPerformance
@@ -586,7 +659,7 @@ export async function GET(req: NextRequest) {
       ? ytdGoal
       : importedGoalTotal > 0
         ? importedGoalTotal
-        : campaignGoal;
+        : fallbackCampaignGoal;
     const totalActual = hasDashboardPerformance && usableYtdRows.length > 0
       ? ytdActual
       : hasDashboardPerformance || hasNormalizedPerformance
@@ -690,7 +763,9 @@ export async function GET(req: NextRequest) {
         id: campaign.id,
         name: campaign.campaignName,
         kpiMetric: campaignMetric,
-        reportBasis: usableYtdRows.length > 0 ? "YTD" : "Monthly",
+        reportBasis: usableYtdRows.length > 0
+          ? allMonths ? "Latest YTD" : "YTD"
+          : allMonths ? "All Months" : "Monthly",
       },
       overallPerformance: {
         totalGoal: totalGoal,

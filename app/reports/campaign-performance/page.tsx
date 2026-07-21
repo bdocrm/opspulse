@@ -32,6 +32,11 @@ interface AgentPerformance {
   status: "hit" | "near" | "missed";
 }
 
+interface AvailablePeriod {
+  year: number;
+  month: number;
+}
+
 interface CampaignPerformanceData {
   campaign: any;
   overallPerformance: any;
@@ -51,12 +56,54 @@ interface OverallCampaignPerformance {
   targetStatus?: "hit" | "near" | "missed";
   campaignCount: number;
   kpiMetric?: string;
-  reportBasis?: "Monthly" | "YTD";
+  reportBasis?: "Monthly" | "YTD" | "All Months" | "Latest YTD";
   aggregationMode?: "single-metric" | "mixed-metrics";
   targetHitCount?: number;
 }
 
 type CampaignPerformanceSummaryMap = Record<string, OverallCampaignPerformance>;
+
+function PeriodSelector({
+  periods,
+  year,
+  month,
+  allMonths,
+  onChange,
+}: {
+  periods: AvailablePeriod[];
+  year: number;
+  month: number;
+  allMonths: boolean;
+  onChange: (year: number, month: number, allMonths: boolean) => void;
+}) {
+  const value = allMonths ? "all" : `${year}-${String(month).padStart(2, "0")}`;
+
+  return (
+    <select
+      value={value}
+      onChange={(event) => {
+        if (event.target.value === "all") {
+          onChange(year, month, true);
+          return;
+        }
+        const [nextYear, nextMonth] = event.target.value.split("-").map(Number);
+        onChange(nextYear, nextMonth, false);
+      }}
+      className="h-10 min-w-[180px] rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+    >
+      <option value="all">All months</option>
+      {periods.map((period) => {
+        const periodValue = `${period.year}-${String(period.month).padStart(2, "0")}`;
+        const label = new Intl.DateTimeFormat("en-US", {
+          month: "long",
+          year: "numeric",
+          timeZone: "UTC",
+        }).format(new Date(Date.UTC(period.year, period.month - 1, 1)));
+        return <option key={periodValue} value={periodValue}>{label}</option>;
+      })}
+    </select>
+  );
+}
 
 const achievementTextClass = (value: number) => {
   if (value >= 100) return "text-green-600";
@@ -138,20 +185,24 @@ function OverallCampaignPerformanceCard({
 
 function CampaignSelectorView({
   campaigns,
+  availablePeriods,
   year,
   month,
+  allMonths,
   selectedCampaignId,
   campaignSearch,
-  onMonthChange,
+  onPeriodChange,
   onCampaignChange,
   onCampaignSearchChange,
 }: {
   campaigns: Campaign[];
+  availablePeriods: AvailablePeriod[];
   year: number;
   month: number;
+  allMonths: boolean;
   selectedCampaignId: string;
   campaignSearch: string;
-  onMonthChange: (year: number, month: number) => void;
+  onPeriodChange: (year: number, month: number, allMonths: boolean) => void;
   onCampaignChange: (campaignId: string) => void;
   onCampaignSearchChange: (value: string) => void;
 }) {
@@ -179,7 +230,7 @@ function CampaignSelectorView({
       try {
         const results = await Promise.allSettled(
           visibleCampaigns.map((campaign) =>
-            fetch(`/api/reports/campaign-performance?campaignId=${campaign.id}&year=${year}&month=${month}`).then((res) => {
+            fetch(`/api/reports/campaign-performance?campaignId=${campaign.id}&year=${year}&month=${month}&allMonths=${allMonths}`).then((res) => {
               if (!res.ok) throw new Error(`Failed to fetch ${campaign.campaignName}`);
               return res.json() as Promise<CampaignPerformanceData>;
             })
@@ -238,24 +289,24 @@ function CampaignSelectorView({
     return () => {
       cancelled = true;
     };
-  }, [visibleCampaigns, year, month]);
+  }, [visibleCampaigns, year, month, allMonths]);
 
   return (
     <div className="space-y-6 p-6">
       <PageTitle
         title="Agent Performance Analysis"
-        subtitle="Select a campaign to view detailed agent performance metrics"
+        subtitle={allMonths
+          ? "Showing performance from all available bulk import files"
+          : "Select a campaign to view detailed agent performance metrics"}
       />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <input
-          type="month"
-          value={`${year}-${String(month).padStart(2, "0")}`}
-          onChange={(e) => {
-            const [nextYear, nextMonth] = e.target.value.split("-");
-            onMonthChange(parseInt(nextYear), parseInt(nextMonth));
-          }}
-          className="h-10 rounded-md border border-slate-300 px-3 py-2 text-sm"
+        <PeriodSelector
+          periods={availablePeriods}
+          year={year}
+          month={month}
+          allMonths={allMonths}
+          onChange={onPeriodChange}
         />
         <select
           value={selectedCampaignId}
@@ -299,7 +350,7 @@ function CampaignSelectorView({
             return (
             <Link
               key={campaign.id}
-              href={`/reports/campaign-performance?campaignId=${campaign.id}&year=${year}&month=${month}`}
+              href={`/reports/campaign-performance?campaignId=${campaign.id}&year=${year}&month=${month}${allMonths ? "&allMonths=true" : ""}`}
             >
               <Card className="p-6 cursor-pointer hover:shadow-lg hover:border-blue-400 transition-all h-full">
                 <h3 className="text-lg font-bold text-gray-800 mb-3">
@@ -307,7 +358,7 @@ function CampaignSelectorView({
                 </h3>
                 <div className="space-y-2 text-sm text-gray-600">
                   <div className="flex justify-between">
-                    <span>{campaignSummary?.reportBasis === "YTD" ? "YTD Goal:" : "Monthly Goal:"}</span>
+                    <span>{campaignSummary?.reportBasis === "YTD" || campaignSummary?.reportBasis === "Latest YTD" ? "YTD Goal:" : allMonths ? "All Months Goal:" : "Monthly Goal:"}</span>
                     <span className="font-semibold text-blue-600">
                       {campaignGoal.toLocaleString()}
                     </span>
@@ -358,18 +409,22 @@ function CampaignSelectorView({
 function CampaignDetailView({
   data,
   campaign: campaignData,
+  availablePeriods,
   year,
   month,
+  allMonths,
   agentSearch,
-  onMonthChange,
+  onPeriodChange,
   onAgentSearchChange,
 }: {
   data: CampaignPerformanceData;
   campaign: Campaign;
+  availablePeriods: AvailablePeriod[];
   year: number;
   month: number;
+  allMonths: boolean;
   agentSearch: string;
-  onMonthChange: (year: number, month: number) => void;
+  onPeriodChange: (year: number, month: number, allMonths: boolean) => void;
   onAgentSearchChange: (value: string) => void;
 }) {
   const {
@@ -398,22 +453,20 @@ function CampaignDetailView({
       <div className="flex justify-between items-start">
         <PageTitle
           title={`Campaign Performance: ${campaign.name}`}
-          subtitle={`${campaign.kpiMetric.charAt(0).toUpperCase() + campaign.kpiMetric.slice(1)} Analysis`}
+          subtitle={`${campaign.kpiMetric.charAt(0).toUpperCase() + campaign.kpiMetric.slice(1)} Analysis${allMonths ? " · All imported months" : ""}`}
         />
-        <Link href="/reports/campaign-performance">
+        <Link href={`/reports/campaign-performance?year=${year}&month=${month}${allMonths ? "&allMonths=true" : ""}`}>
           <Button variant="outline">← Back to Campaigns</Button>
         </Link>
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <input
-          type="month"
-          value={`${year}-${String(month).padStart(2, "0")}`}
-          onChange={(e) => {
-            const [nextYear, nextMonth] = e.target.value.split("-");
-            onMonthChange(parseInt(nextYear), parseInt(nextMonth));
-          }}
-          className="h-10 rounded-md border border-slate-300 px-3 py-2 text-sm"
+        <PeriodSelector
+          periods={availablePeriods}
+          year={year}
+          month={month}
+          allMonths={allMonths}
+          onChange={onPeriodChange}
         />
         <input
           value={agentSearch}
@@ -430,7 +483,11 @@ function CampaignDetailView({
         </h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-white p-4 rounded-lg shadow-sm">
-            <p className="text-sm text-gray-600">{campaign.reportBasis === "YTD" ? "YTD Goal" : "Total Goal"}</p>
+            <p className="text-sm text-gray-600">
+              {campaign.reportBasis === "YTD" || campaign.reportBasis === "Latest YTD"
+                ? "YTD Goal"
+                : campaign.reportBasis === "All Months" ? "All Months Goal" : "Total Goal"}
+            </p>
             <p className="text-2xl font-bold text-blue-600">
               {overallPerformance.totalGoal.toLocaleString()}
             </p>
@@ -758,13 +815,16 @@ function CampaignPerformancePageContent() {
   const now = new Date();
   const initialYear = parseInt(searchParams.get("year") ?? now.getFullYear().toString());
   const initialMonth = parseInt(searchParams.get("month") ?? String(now.getMonth() + 1));
+  const initialAllMonths = searchParams.get("allMonths") === "true";
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [availablePeriods, setAvailablePeriods] = useState<AvailablePeriod[]>([]);
   const [campaignsLoading, setCampaignsLoading] = useState(true);
   const [data, setData] = useState<CampaignPerformanceData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [year, setYear] = useState(initialYear);
   const [month, setMonth] = useState(initialMonth);
+  const [allMonths, setAllMonths] = useState(initialAllMonths);
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [campaignSearch, setCampaignSearch] = useState("");
   const [agentSearch, setAgentSearch] = useState("");
@@ -777,7 +837,7 @@ function CampaignPerformancePageContent() {
       setError(null);
       try {
         const res = await fetch(
-          `/api/reports/campaign-performance/campaigns?year=${year}&month=${month}`
+          `/api/reports/campaign-performance/campaigns?year=${year}&month=${month}&allMonths=${allMonths}`
         );
         if (!res.ok) throw new Error(`Failed to fetch campaigns: ${res.status}`);
         const result = await res.json();
@@ -796,7 +856,7 @@ function CampaignPerformancePageContent() {
     };
 
     fetchCampaigns();
-  }, [year, month]);
+  }, [year, month, allMonths]);
 
   useEffect(() => {
     if (didAutoSelectPeriod) return;
@@ -806,11 +866,12 @@ function CampaignPerformancePageContent() {
         const res = await fetch("/api/reports/campaign-performance/periods");
         if (!res.ok) return;
         const result = await res.json();
-        const periods: Array<{ year: number; month: number }> = result.periods || [];
+        const periods: AvailablePeriod[] = result.periods || [];
+        setAvailablePeriods(periods);
         if (periods.length === 0) return;
 
         const selectedHasData = periods.some((period) => period.year === year && period.month === month);
-        if (!selectedHasData) {
+        if (!allMonths && !selectedHasData) {
           setYear(periods[0].year);
           setMonth(periods[0].month);
         }
@@ -820,7 +881,7 @@ function CampaignPerformancePageContent() {
     };
 
     fetchAvailablePeriods();
-  }, [didAutoSelectPeriod, year, month]);
+  }, [allMonths, didAutoSelectPeriod, year, month]);
 
   useEffect(() => {
     if (!campaignId) {
@@ -833,7 +894,7 @@ function CampaignPerformancePageContent() {
       setError(null);
       try {
         const res = await fetch(
-          `/api/reports/campaign-performance?campaignId=${campaignId}&year=${year}&month=${month}`
+          `/api/reports/campaign-performance?campaignId=${campaignId}&year=${year}&month=${month}&allMonths=${allMonths}`
         );
         if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
         const result = await res.json();
@@ -846,7 +907,7 @@ function CampaignPerformancePageContent() {
     };
 
     fetchPerformance();
-  }, [campaignId, year, month]);
+  }, [campaignId, year, month, allMonths]);
 
   if (loading)
     return (
@@ -879,13 +940,16 @@ function CampaignPerformancePageContent() {
     return (
       <CampaignSelectorView
         campaigns={campaigns}
+        availablePeriods={availablePeriods}
         year={year}
         month={month}
+        allMonths={allMonths}
         selectedCampaignId={selectedCampaignId}
         campaignSearch={campaignSearch}
-        onMonthChange={(nextYear, nextMonth) => {
+        onPeriodChange={(nextYear, nextMonth, nextAllMonths) => {
           setYear(nextYear);
           setMonth(nextMonth);
+          setAllMonths(nextAllMonths);
         }}
         onCampaignChange={setSelectedCampaignId}
         onCampaignSearchChange={setCampaignSearch}
@@ -908,12 +972,15 @@ function CampaignPerformancePageContent() {
     <CampaignDetailView
       data={data}
       campaign={selectedCampaign || { id: campaignId, campaignName: "Unknown", monthlyGoal: 0, kpiMetric: "" }}
+      availablePeriods={availablePeriods}
       year={year}
       month={month}
+      allMonths={allMonths}
       agentSearch={agentSearch}
-      onMonthChange={(nextYear, nextMonth) => {
+      onPeriodChange={(nextYear, nextMonth, nextAllMonths) => {
         setYear(nextYear);
         setMonth(nextMonth);
+        setAllMonths(nextAllMonths);
       }}
       onAgentSearchChange={setAgentSearch}
     />
