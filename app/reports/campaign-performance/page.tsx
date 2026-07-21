@@ -51,6 +51,9 @@ interface OverallCampaignPerformance {
   targetStatus?: "hit" | "near" | "missed";
   campaignCount: number;
   kpiMetric?: string;
+  reportBasis?: "Monthly" | "YTD";
+  aggregationMode?: "single-metric" | "mixed-metrics";
+  targetHitCount?: number;
 }
 
 type CampaignPerformanceSummaryMap = Record<string, OverallCampaignPerformance>;
@@ -93,6 +96,7 @@ function OverallCampaignPerformanceCard({
   const achievementRate = summary?.achievementRate ?? 0;
   const targetHit = summary?.targetHit ?? false;
   const targetStatus = summary?.targetStatus ?? (targetHit ? "hit" : "missed");
+  const mixedMetrics = summary?.aggregationMode === "mixed-metrics";
 
   return (
     <Card className="p-5 border-slate-200 bg-white shadow-sm">
@@ -106,15 +110,19 @@ function OverallCampaignPerformanceCard({
         <span
           className={`inline-flex w-fit rounded-full px-3 py-1 text-xs font-semibold ${statusBadgeClass(targetStatus)}`}
         >
-          {statusLabel(targetStatus)}
+          {mixedMetrics ? "MIXED KPIs" : statusLabel(targetStatus)}
         </span>
       </div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {[
-          { label: "Total Goal", value: totalGoal.toLocaleString(), className: "text-blue-600" },
-          { label: "Total Actual", value: totalActual.toLocaleString(), className: actualTextClass(totalActual) },
-          { label: "Achievement Rate", value: `${achievementRate.toFixed(1)}%`, className: achievementTextClass(achievementRate) },
-          { label: "Target Status", value: statusLabel(targetStatus), className: statusTextClass(targetStatus) },
+          mixedMetrics
+            ? { label: "Campaigns", value: String(summary?.campaignCount ?? 0), className: "text-blue-600" }
+            : { label: "Total Goal", value: totalGoal.toLocaleString(), className: "text-blue-600" },
+          mixedMetrics
+            ? { label: "Targets Hit", value: `${summary?.targetHitCount ?? 0} of ${summary?.campaignCount ?? 0}`, className: "text-green-600" }
+            : { label: "Total Actual", value: totalActual.toLocaleString(), className: actualTextClass(totalActual) },
+          { label: mixedMetrics ? "Average Achievement" : "Achievement Rate", value: `${achievementRate.toFixed(1)}%`, className: achievementTextClass(achievementRate) },
+          { label: mixedMetrics ? "Portfolio Status" : "Target Status", value: statusLabel(targetStatus), className: statusTextClass(targetStatus) },
         ].map(({ label, value, className }) => (
           <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
@@ -186,22 +194,37 @@ function CampaignSelectorView({
             ...result.value.overallPerformance,
             campaignCount: 1,
             kpiMetric: result.value.campaign.kpiMetric,
+            reportBasis: result.value.campaign.reportBasis,
           };
           return acc;
         }, {});
         const summaries = fulfilledResults.map((result) => result.value.overallPerformance);
 
-        const totalGoal = summaries.reduce((sum, item) => sum + Number(item.totalGoal || 0), 0);
-        const totalActual = summaries.reduce((sum, item) => sum + Number(item.totalActual || 0), 0);
-        const achievementRate = totalGoal > 0 ? (totalActual / totalGoal) * 100 : 0;
+        const metricKeys = new Set(
+          fulfilledResults.map((result) => String(result.value.campaign.kpiMetric || "").toLowerCase())
+        );
+        const mixedMetrics = metricKeys.size > 1;
+        const totalGoal = mixedMetrics
+          ? 0
+          : summaries.reduce((sum, item) => sum + Number(item.totalGoal || 0), 0);
+        const totalActual = mixedMetrics
+          ? 0
+          : summaries.reduce((sum, item) => sum + Number(item.totalActual || 0), 0);
+        const achievementRate = mixedMetrics
+          ? summaries.reduce((sum, item) => sum + Number(item.achievementRate || 0), 0) / summaries.length
+          : totalGoal > 0 ? (totalActual / totalGoal) * 100 : 0;
+        const targetHitCount = summaries.filter((item) => Boolean(item.targetHit)).length;
 
         if (!cancelled) {
           setOverallSummary({
             totalGoal,
             totalActual,
             achievementRate,
-            targetHit: totalGoal > 0 && totalActual >= totalGoal,
+            targetHit: achievementRate >= 100,
+            targetStatus: achievementRate >= 100 ? "hit" : achievementRate >= 85 ? "near" : "missed",
             campaignCount: summaries.length,
+            aggregationMode: mixedMetrics ? "mixed-metrics" : "single-metric",
+            targetHitCount,
           });
           setCampaignSummaries(summariesByCampaign);
         }
@@ -284,7 +307,7 @@ function CampaignSelectorView({
                 </h3>
                 <div className="space-y-2 text-sm text-gray-600">
                   <div className="flex justify-between">
-                    <span>Monthly Goal:</span>
+                    <span>{campaignSummary?.reportBasis === "YTD" ? "YTD Goal:" : "Monthly Goal:"}</span>
                     <span className="font-semibold text-blue-600">
                       {campaignGoal.toLocaleString()}
                     </span>
@@ -407,7 +430,7 @@ function CampaignDetailView({
         </h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-white p-4 rounded-lg shadow-sm">
-            <p className="text-sm text-gray-600">Total Goal</p>
+            <p className="text-sm text-gray-600">{campaign.reportBasis === "YTD" ? "YTD Goal" : "Total Goal"}</p>
             <p className="text-2xl font-bold text-blue-600">
               {overallPerformance.totalGoal.toLocaleString()}
             </p>

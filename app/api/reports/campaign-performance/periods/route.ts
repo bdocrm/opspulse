@@ -3,6 +3,20 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+const BUSINESS_TIME_ZONE = "Asia/Manila";
+
+function businessPeriod(value: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: "numeric",
+    month: "numeric",
+  }).formatToParts(value);
+  return {
+    year: Number(parts.find((part) => part.type === "year")?.value),
+    month: Number(parts.find((part) => part.type === "month")?.value),
+  };
+}
+
 export async function GET() {
   try {
     const session = await getServerSession(authOptions);
@@ -46,7 +60,10 @@ export async function GET() {
         select: { reportYear: true, reportMonth: true },
       }),
       prisma.dashboardImportRecord.findMany({
-        where: campaignWhere,
+        where: {
+          ...campaignWhere,
+          recordKind: { in: ["agent_monitoring", "ytd"] },
+        },
         select: { year: true, month: true, reportDate: true },
       }),
     ]);
@@ -54,7 +71,8 @@ export async function GET() {
     const periodKeys = new Set<string>();
     productionImports.forEach((row) => {
       const periodDate = row.periodEnd ?? row.date;
-      periodKeys.add(`${periodDate.getFullYear()}-${periodDate.getMonth() + 1}`);
+      const period = businessPeriod(periodDate);
+      periodKeys.add(`${period.year}-${period.month}`);
     });
     metricImports.forEach((row) => {
       if (row.reportMonth != null) {
@@ -62,7 +80,8 @@ export async function GET() {
       }
     });
     dashboardImports.forEach((row) => {
-      periodKeys.add(`${row.year}-${row.month ?? row.reportDate.getMonth() + 1}`);
+      const period = row.month == null ? businessPeriod(row.reportDate) : { year: row.year, month: row.month };
+      periodKeys.add(`${period.year}-${period.month}`);
     });
 
     const periods = Array.from(periodKeys)
@@ -72,7 +91,13 @@ export async function GET() {
       })
       .sort((a, b) => b.year - a.year || b.month - a.month);
 
-    return NextResponse.json({ periods });
+    return NextResponse.json({ periods }, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+      },
+    });
   } catch (error) {
     console.error("Campaign performance periods error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

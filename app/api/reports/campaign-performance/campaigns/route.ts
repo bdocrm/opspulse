@@ -35,7 +35,11 @@ export async function GET(req: NextRequest) {
               ].filter(Boolean) as string[]
             )
           );
-    const importedCampaignIds = await getBulkImportedCampaignIds(scopedCampaignIds);
+    const importedCampaignIds = await getBulkImportedCampaignIds(
+      year,
+      month,
+      scopedCampaignIds
+    );
 
     if (importedCampaignIds.length === 0) {
       return NextResponse.json({ campaigns: [] });
@@ -63,6 +67,12 @@ export async function GET(req: NextRequest) {
         monthlyGoal: Number(monthlyGoals[0]?.monthlyGoal ?? campaign.monthlyGoal ?? 0),
         kpiMetric: monthlyGoals[0]?.kpiMetric ?? campaign.kpiMetric,
       })),
+    }, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+      },
     });
   } catch (error) {
     console.error("Imported campaign report list error:", error);

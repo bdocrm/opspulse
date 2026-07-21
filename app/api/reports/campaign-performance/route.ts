@@ -58,6 +58,8 @@ type MetricTotals = {
   booked: number;
   volume: number;
   transaction: number;
+  ntb: number;
+  supplementary: number;
 };
 
 type AgentTotals = MetricTotals & { workedDates: Set<string> };
@@ -70,12 +72,49 @@ function emptyAgentTotals(): AgentTotals {
     booked: 0,
     volume: 0,
     transaction: 0,
+    ntb: 0,
+    supplementary: 0,
     workedDates: new Set<string>(),
   };
 }
 
 function normalizeName(value: string | null | undefined) {
-  return (value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+  return (value ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function importedAgentId(campaignId: string, name: string) {
+  return `imported:${campaignId}:${Buffer.from(normalizeName(name)).toString("base64url")}`;
+}
+
+function normalizeImportedMetric(value: string | null | undefined) {
+  return (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function isImportedClassificationRow(record: {
+  worksheetSource: string;
+  monitoringType: string | null;
+  entityName: string;
+}) {
+  return record.worksheetSource === "PL YTD Productivity" &&
+    record.monitoringType === "PL_PRODUCTIVITY" &&
+    /^(?:old|semi old|new|(?:old|semi old|new|total) average per agent)$/.test(normalizeName(record.entityName));
+}
+
+function importedActual(record: {
+  target: number | null;
+  actual: number | null;
+  achievement: number | null;
+}) {
+  if (record.actual != null) return Number(record.actual);
+  if (record.target != null && record.achievement != null) {
+    return Number(record.target) * Number(record.achievement);
+  }
+  return null;
 }
 
 function agentSeatKey(name: string | null | undefined, seatNumber: number | null | undefined) {
@@ -89,6 +128,8 @@ function mergeTotals(target: AgentTotals, source: AgentTotals) {
   target.booked += source.booked;
   target.volume += source.volume;
   target.transaction += source.transaction;
+  target.ntb += source.ntb;
+  target.supplementary += source.supplementary;
   source.workedDates.forEach((date) => target.workedDates.add(date));
 }
 
@@ -172,6 +213,10 @@ export async function GET(req: NextRequest) {
     const year = parseInt(searchParams.get("year") ?? now.getFullYear().toString());
     const month = parseInt(searchParams.get("month") ?? String(now.getMonth() + 1));
 
+    if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+      return NextResponse.json({ error: "Invalid report period" }, { status: 400 });
+    }
+
     if (!campaignId) {
       return NextResponse.json(
         { error: "campaignId is required" },
@@ -190,7 +235,7 @@ export async function GET(req: NextRequest) {
 
     const { start: startOfMonth, end: endOfMonth } = monthRange(year, month);
 
-    const importedCampaignIds = await getBulkImportedCampaignIds([campaignId]);
+    const importedCampaignIds = await getBulkImportedCampaignIds(year, month, [campaignId]);
     if (!importedCampaignIds.includes(campaignId)) {
       return NextResponse.json(
         { error: "No bulk-imported report exists for this campaign and period" },
@@ -206,45 +251,93 @@ export async function GET(req: NextRequest) {
     const configuredCampaignMetric = normalizeMetric(monthlyConfig?.kpiMetric ?? campaign.kpiMetric);
 
     // Get all agents in the campaign
-    const campaignAgents = await prisma.user.findMany({
-      where: {
-        role: "AGENT",
-        campaignId: campaignId,
-      },
-      select: {
-        id: true,
-        name: true,
-        seatNumber: true,
-        monthlyTarget: true,
-      },
-      orderBy: [{ seatNumber: "asc" }, { name: "asc" }],
-    });
-
-    const productionDetails = await prisma.productionDetail.findMany({
-      where: {
-        campaignId: campaignId,
-        productionEntry: {
+    const [campaignAgents, productionDetails, productionMetrics, rawDashboardRecords] = await Promise.all([
+      prisma.user.findMany({
+        where: {
+          role: "AGENT",
+          campaignId: campaignId,
+        },
+        select: {
+          id: true,
+          name: true,
+          seatNumber: true,
+          monthlyTarget: true,
+        },
+        orderBy: [{ seatNumber: "asc" }, { name: "asc" }],
+      }),
+      prisma.productionDetail.findMany({
+        where: {
+          campaignId: campaignId,
+          productionEntry: {
+            OR: [
+              { date: { gte: startOfMonth, lte: endOfMonth } },
+              {
+                periodStart: { lte: endOfMonth },
+                periodEnd: { gte: startOfMonth },
+              },
+            ],
+          },
+        },
+        select: {
+          agentId: true,
+          transmittals: true,
+          activations: true,
+          approvals: true,
+          booked: true,
+          volume: true,
+          transaction: true,
+          ntb: true,
+          supplementary: true,
+          monthlyGoal: true,
+          monthlyActual: true,
+          monthlyAchievement: true,
+          agent: { select: { id: true, name: true, seatNumber: true, monthlyTarget: true } },
+          productionEntry: { select: { date: true, periodEnd: true } },
+        },
+      }),
+      prisma.productionMetricRecord.findMany({
+        where: { campaignId, reportYear: year, reportMonth: month },
+        select: {
+          agentId: true,
+          metricType: true,
+          count: true,
+          volume: true,
+          goal: true,
+          actual: true,
+          achievement: true,
+          reportDate: true,
+          agent: { select: { id: true, name: true, seatNumber: true, monthlyTarget: true } },
+        },
+      }),
+      prisma.dashboardImportRecord.findMany({
+        where: {
+          campaignId,
+          recordKind: { in: ["agent_monitoring", "ytd"] },
+          year,
           OR: [
-            { date: { gte: startOfMonth, lte: endOfMonth } },
-            {
-              periodStart: { lte: endOfMonth },
-              periodEnd: { gte: startOfMonth },
-            },
+            { month },
+            { month: null, reportDate: { gte: startOfMonth, lte: endOfMonth } },
           ],
         },
-      },
-      select: {
-        agentId: true,
-        transmittals: true,
-        activations: true,
-        approvals: true,
-        booked: true,
-        volume: true,
-        transaction: true,
-        agent: { select: { id: true, name: true, seatNumber: true, monthlyTarget: true } },
-        productionEntry: { select: { date: true, periodEnd: true } },
-      },
-    });
+        select: {
+          worksheetSource: true,
+          sourceRow: true,
+          recordKind: true,
+          monitoringType: true,
+          entityName: true,
+          metric: true,
+          target: true,
+          actual: true,
+          achievement: true,
+          reportDate: true,
+          year: true,
+          month: true,
+        },
+        orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
+      }).catch(() => []),
+    ]);
+
+    const dashboardRecords = rawDashboardRecords.filter((record) => !isImportedClassificationRow(record));
 
     const agentsById = new Map(campaignAgents.map((agent) => [agent.id, agent]));
     productionDetails.forEach((detail) => {
@@ -252,8 +345,30 @@ export async function GET(req: NextRequest) {
         agentsById.set(detail.agent.id, detail.agent);
       }
     });
-    const agents = Array.from(agentsById.values());
+    productionMetrics.forEach((metric) => {
+      if (metric.agent && !agentsById.has(metric.agent.id)) {
+        agentsById.set(metric.agent.id, metric.agent);
+      }
+    });
 
+    const agentsByName = new Map(
+      Array.from(agentsById.values()).map((agent) => [normalizeName(agent.name), agent])
+    );
+    const dashboardAgentRows = dashboardRecords.filter(
+      (record) => record.recordKind === "agent_monitoring" && normalizeName(record.entityName)
+    );
+    dashboardAgentRows.forEach((record) => {
+      const normalizedName = normalizeName(record.entityName);
+      if (agentsByName.has(normalizedName)) return;
+      const importedAgent = {
+        id: importedAgentId(campaignId, record.entityName),
+        name: record.entityName.trim(),
+        seatNumber: null,
+        monthlyTarget: null,
+      };
+      agentsById.set(importedAgent.id, importedAgent);
+      agentsByName.set(normalizedName, importedAgent);
+    });
     // Group production by agent ID for easy lookup.
     const totalsByAgentId = new Map<string, AgentTotals>();
     const totalsByNameSeat = new Map<string, AgentTotals>();
@@ -265,6 +380,8 @@ export async function GET(req: NextRequest) {
       booked: 0,
       volume: 0,
       transaction: 0,
+      ntb: 0,
+      supplementary: 0,
     };
 
     productionDetails.forEach((detail) => {
@@ -274,6 +391,8 @@ export async function GET(req: NextRequest) {
       const booked = Number(detail.booked || 0);
       const volume = Number(detail.volume || 0);
       const transaction = Number(detail.transaction || 0);
+      const ntb = Number(detail.ntb || 0);
+      const supplementary = Number(detail.supplementary || 0);
 
       campaignTotals.transmittals += transmittals;
       campaignTotals.activations += activations;
@@ -281,6 +400,8 @@ export async function GET(req: NextRequest) {
       campaignTotals.booked += booked;
       campaignTotals.volume += volume;
       campaignTotals.transaction += transaction;
+      campaignTotals.ntb += ntb;
+      campaignTotals.supplementary += supplementary;
 
       const rowTotals = emptyAgentTotals();
       rowTotals.transmittals = transmittals;
@@ -289,6 +410,8 @@ export async function GET(req: NextRequest) {
       rowTotals.booked = booked;
       rowTotals.volume = volume;
       rowTotals.transaction = transaction;
+      rowTotals.ntb = ntb;
+      rowTotals.supplementary = supplementary;
       rowTotals.workedDates.add(toBusinessYmd(detail.productionEntry.periodEnd ?? detail.productionEntry.date));
 
       const idTotals = totalsByAgentId.get(detail.agentId) ?? emptyAgentTotals();
@@ -310,27 +433,187 @@ export async function GET(req: NextRequest) {
       }
     });
 
-    const agentPerformances: AgentPerformance[] = [];
-    const campaignMetric = resolveEffectiveMetric(
-      configuredCampaignMetric,
-      campaignGoal,
-      campaignTotals,
-      agents
+    type PerformanceOverride = { goal: number; actual: number };
+    const addOverride = (map: Map<string, PerformanceOverride>, agentId: string, goal: number, actual: number) => {
+      const current = map.get(agentId) ?? { goal: 0, actual: 0 };
+      current.goal += goal;
+      current.actual += actual;
+      map.set(agentId, current);
+    };
+
+    // Normalized metric rows are authoritative for workbook layouts such as
+    // MB ACQ and MB PA. ProductionDetail is retained for the supporting count
+    // columns, but it must not replace the imported per-agent goal/actual.
+    const normalizedMetricTypes = new Set(productionMetrics.map((record) => normalizeImportedMetric(record.metricType)));
+    const normalizedPrimaryMetric = normalizedMetricTypes.has("ntb")
+      ? "ntb"
+      : normalizedMetricTypes.has("transactions")
+        ? "transactions"
+        : normalizedMetricTypes.has("actual")
+          ? "actual"
+          : normalizedMetricTypes.has(normalizeImportedMetric(configuredCampaignMetric))
+            ? normalizeImportedMetric(configuredCampaignMetric)
+            : null;
+    const normalizedPrimaryRows = normalizedPrimaryMetric
+      ? productionMetrics.filter((record) => normalizeImportedMetric(record.metricType) === normalizedPrimaryMetric)
+      : [];
+    const normalizedOverrides = new Map<string, PerformanceOverride>();
+    normalizedPrimaryRows.forEach((record) => {
+      const actual = normalizedPrimaryMetric === "actual"
+        ? Number(record.actual ?? 0)
+        : normalizedPrimaryMetric === "volume"
+          ? Number(record.actual ?? record.volume ?? 0)
+          : Number(record.actual ?? record.count ?? 0);
+      addOverride(normalizedOverrides, record.agentId, Number(record.goal ?? 0), actual);
+    });
+
+    // Prefer the dedicated agent worksheet over a mirrored summary worksheet,
+    // then choose one KPI per agent so transmitted/approved/booked values are
+    // never added together as if they were the same measure.
+    const preferredDashboardRows = new Map<string, (typeof dashboardAgentRows)[number]>();
+    dashboardAgentRows.forEach((record) => {
+      const key = `${normalizeName(record.entityName)}|${normalizeImportedMetric(record.metric)}`;
+      const existing = preferredDashboardRows.get(key);
+      const priority = record.monitoringType?.endsWith("_AGENT") ? 2 : 1;
+      const existingPriority = existing?.monitoringType?.endsWith("_AGENT") ? 2 : existing ? 1 : 0;
+      if (!existing || priority > existingPriority) preferredDashboardRows.set(key, record);
+    });
+    const uniqueDashboardAgentRows = [...preferredDashboardRows.values()];
+    const dashboardCurrencyMetric = dashboardRecords.some(
+      (record) => Number(record.target ?? 0) >= 1_000_000
+    ) || uniqueDashboardAgentRows.some(
+      (record) => normalizeImportedMetric(record.metric).includes("cash installment")
     );
-    const totalActual = metricValue(campaignMetric, campaignTotals);
+    const availableDashboardMetrics = new Set(
+      uniqueDashboardAgentRows.map((record) => normalizeImportedMetric(record.metric))
+    );
+    const preferredMetricNames = dashboardCurrencyMetric
+      ? ["booked volume", "cash installment", "volume"]
+      : configuredCampaignMetric === "approvals"
+        ? ["approvals count", "approvals"]
+        : configuredCampaignMetric === "booked"
+          ? ["booked count", "booked"]
+          : configuredCampaignMetric === "activations"
+            ? ["activations count", "activations"]
+            : ["transmitted count", "transmittals"];
+    const selectedDashboardMetric = preferredMetricNames.find((preferred) =>
+      availableDashboardMetrics.has(preferred)
+    ) ?? preferredMetricNames.find((preferred) =>
+      [...availableDashboardMetrics].some((metric) => metric.includes(preferred))
+    );
+    const selectedDashboardRows = selectedDashboardMetric
+      ? uniqueDashboardAgentRows.filter((record) => {
+          const metric = normalizeImportedMetric(record.metric);
+          return metric === selectedDashboardMetric || metric.includes(selectedDashboardMetric);
+        })
+      : [];
+    const dashboardOverrides = new Map<string, PerformanceOverride>();
+
+    uniqueDashboardAgentRows.forEach((record) => {
+      const actual = importedActual(record);
+      if (actual == null) return;
+      const agent = agentsByName.get(normalizeName(record.entityName));
+      if (!agent) return;
+      const metric = normalizeImportedMetric(record.metric);
+      const rowTotals = emptyAgentTotals();
+      if (metric === "transmitted count") rowTotals.transmittals = actual;
+      else if (metric === "approvals count") rowTotals.approvals = actual;
+      else if (metric === "booked count") rowTotals.booked = actual;
+      else if (metric === "booked volume" || metric.includes("cash installment")) rowTotals.volume = actual;
+      rowTotals.workedDates.add(toBusinessYmd(record.reportDate));
+      const current = totalsByAgentId.get(agent.id) ?? emptyAgentTotals();
+      mergeTotals(current, rowTotals);
+      totalsByAgentId.set(agent.id, current);
+    });
+    selectedDashboardRows.forEach((record) => {
+      const actual = importedActual(record);
+      const agent = agentsByName.get(normalizeName(record.entityName));
+      if (actual == null || !agent) return;
+      addOverride(dashboardOverrides, agent.id, Number(record.target ?? 0), actual);
+    });
+
+    const ytdRows = dashboardRecords.filter((record) => record.recordKind === "ytd");
+    const usableYtdRows = ytdRows.filter((record) => {
+      const actual = importedActual(record);
+      if (actual == null || (actual === 0 && Number(record.target ?? 0) === 0)) return false;
+      // A zero-valued YTD cell must not hide real agent productivity rows.
+      return actual !== 0 || selectedDashboardRows.length === 0;
+    });
+    const ytdGoal = usableYtdRows.reduce((sum, record) => sum + Number(record.target ?? 0), 0);
+    const ytdActual = usableYtdRows.reduce((sum, record) => sum + Number(importedActual(record) ?? 0), 0);
+
+    if (selectedDashboardRows.length === 0 && usableYtdRows.length > 0) {
+      const syntheticName = `${campaign.campaignName} Total`;
+      const syntheticAgent = {
+        id: importedAgentId(campaignId, syntheticName),
+        name: syntheticName,
+        seatNumber: null,
+        monthlyTarget: null,
+      };
+      agentsById.set(syntheticAgent.id, syntheticAgent);
+      addOverride(dashboardOverrides, syntheticAgent.id, ytdGoal, ytdActual);
+      const totals = emptyAgentTotals();
+      if (dashboardCurrencyMetric) totals.volume = ytdActual;
+      else if (configuredCampaignMetric === "activations") totals.activations = ytdActual;
+      else if (configuredCampaignMetric === "approvals") totals.approvals = ytdActual;
+      else if (configuredCampaignMetric === "booked") totals.booked = ytdActual;
+      else if (configuredCampaignMetric === "transaction") totals.transaction = ytdActual;
+      else totals.transmittals = ytdActual;
+      usableYtdRows.forEach((record) => totals.workedDates.add(toBusinessYmd(record.reportDate)));
+      totalsByAgentId.set(syntheticAgent.id, totals);
+    }
+
+    const hasDashboardPerformance = selectedDashboardRows.length > 0 || usableYtdRows.length > 0;
+    const hasNormalizedPerformance = normalizedPrimaryRows.length > 0;
+    const activeAgentIds = hasDashboardPerformance
+      ? new Set(dashboardOverrides.keys())
+      : hasNormalizedPerformance
+        ? new Set(normalizedOverrides.keys())
+        : new Set(totalsByAgentId.keys());
+    const agents = Array.from(agentsById.values()).filter((agent) => activeAgentIds.has(agent.id));
+    const campaignMetric = dashboardCurrencyMetric && hasDashboardPerformance
+      ? "volume"
+      : resolveEffectiveMetric(configuredCampaignMetric, campaignGoal, campaignTotals, agents);
+    const selectedOverrides = hasDashboardPerformance
+      ? dashboardOverrides
+      : hasNormalizedPerformance
+        ? normalizedOverrides
+        : new Map<string, PerformanceOverride>();
+    const importedGoalIsAuthoritative = [...selectedOverrides.values()].some((performance) => performance.goal > 0);
+    const importedGoalTotal = [...selectedOverrides.values()].reduce((sum, performance) => sum + performance.goal, 0);
+    const importedActualTotal = [...selectedOverrides.values()].reduce((sum, performance) => sum + performance.actual, 0);
+    const totalGoal = hasDashboardPerformance && ytdGoal > 0
+      ? ytdGoal
+      : importedGoalTotal > 0
+        ? importedGoalTotal
+        : campaignGoal;
+    const totalActual = hasDashboardPerformance && usableYtdRows.length > 0
+      ? ytdActual
+      : hasDashboardPerformance || hasNormalizedPerformance
+        ? importedActualTotal
+        : metricValue(campaignMetric, campaignTotals);
+
+    const agentPerformances: AgentPerformance[] = [];
     let coreTotal = 0;
     let coreMet = 0;
     let rookieTotal = 0;
     let rookieMet = 0;
+    const compatibleConfiguredGoal = (agent: (typeof agents)[number]) => {
+      const target = Number(agent.monthlyTarget ?? 0);
+      if (target <= 0 || importedGoalIsAuthoritative) return 0;
+      if (campaignMetric === "volume" && target < 1_000_000) return 0;
+      return target;
+    };
     const explicitTargetTotal = agents.reduce(
-      (sum, agent) => sum + (Number(agent.monthlyTarget) > 0 ? Number(agent.monthlyTarget) : 0),
+      (sum, agent) => sum + (selectedOverrides.get(agent.id)?.goal || compatibleConfiguredGoal(agent)),
       0
     );
-    const totalGoal = campaignGoal > 0 ? campaignGoal : explicitTargetTotal;
-    const agentsWithoutTargets = agents.filter((agent) => !agent.monthlyTarget || Number(agent.monthlyTarget) <= 0);
+    const agentsWithoutTargets = agents.filter(
+      (agent) => !(selectedOverrides.get(agent.id)?.goal || compatibleConfiguredGoal(agent))
+    );
     const fallbackGoal =
       agentsWithoutTargets.length > 0
-        ? Math.max(campaignGoal - explicitTargetTotal, 0) / agentsWithoutTargets.length
+        ? Math.max(totalGoal - explicitTargetTotal, 0) / agentsWithoutTargets.length
         : 0;
 
     // Calculate performance for each agent using pre-fetched data
@@ -340,8 +623,9 @@ export async function GET(req: NextRequest) {
         totalsByNameSeat.get(agentSeatKey(agent.name, agent.seatNumber)) ??
         totalsByName.get(normalizeName(agent.name)) ??
         emptyAgentTotals();
-      const actual = metricValue(campaignMetric, agentTotals);
-      const goal = Number(agent.monthlyTarget) > 0 ? Number(agent.monthlyTarget) : fallbackGoal;
+      const importedPerformance = selectedOverrides.get(agent.id);
+      const actual = importedPerformance?.actual ?? metricValue(campaignMetric, agentTotals);
+      const goal = importedPerformance?.goal || compatibleConfiguredGoal(agent) || fallbackGoal;
       const achievement = goal > 0 ? (Number(actual) / goal) * 100 : 0;
       const status = performanceStatus(achievement);
 
@@ -406,6 +690,7 @@ export async function GET(req: NextRequest) {
         id: campaign.id,
         name: campaign.campaignName,
         kpiMetric: campaignMetric,
+        reportBasis: usableYtdRows.length > 0 ? "YTD" : "Monthly",
       },
       overallPerformance: {
         totalGoal: totalGoal,
@@ -439,6 +724,12 @@ export async function GET(req: NextRequest) {
       },
       allAgents: agentPerformances.sort((a, b) => b.achievement - a.achievement),
       recommendations,
+    }, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+      },
     });
   } catch (error) {
     console.error("Campaign performance API error:", error);
