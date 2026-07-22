@@ -20,6 +20,7 @@ import { LeaderboardChart } from "@/components/charts/leaderboard-chart";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Activity, Search, Download } from "lucide-react";
+import { ReportPeriodSelector } from "@/components/report-period-selector";
 
 interface ProductivityMetric {
   agentId: string;
@@ -41,6 +42,7 @@ export default function ProductivityAnalyticsPage() {
   const router = useRouter();
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [allMonths, setAllMonths] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState<'efficiency' | 'quality' | 'tasks'>('efficiency');
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
@@ -58,7 +60,7 @@ export default function ProductivityAnalyticsPage() {
   }, [session, status, router]);
 
   const { data, isLoading } = useSWR(
-    session?.user ? `/api/analytics/productivity?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}` : null,
+    session?.user ? `/api/analytics/productivity?year=${year}&month=${month}&allMonths=${allMonths}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}` : null,
     (url: string) => fetch(url).then(res => res.json())
   );
 
@@ -105,21 +107,21 @@ export default function ProductivityAnalyticsPage() {
     <div className="space-y-6">
       <PageTitle
         title="Productivity Analytics"
-        subtitle="Analyze agent efficiency and productivity metrics"
+        subtitle={allMonths ? "Productivity from all available bulk import files" : "Analyze agent efficiency and productivity metrics"}
       />
 
       <div className="flex flex-col items-stretch gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="flex flex-col items-stretch gap-4 sm:flex-row sm:items-end">
-          <input
-            type="month"
-            aria-label="Reporting month"
-            value={`${year}-${String(month).padStart(2, '0')}`}
-            onChange={(e) => {
-              const [y, m] = e.target.value.split('-');
-              setYear(parseInt(y));
-              setMonth(parseInt(m));
+          <ReportPeriodSelector
+            year={year}
+            month={month}
+            allMonths={allMonths}
+            onChange={(nextYear, nextMonth, nextAllMonths) => {
+              setYear(nextYear);
+              setMonth(nextMonth);
+              setAllMonths(nextAllMonths);
             }}
-            className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm sm:w-[170px]"
+            className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm sm:w-[180px]"
           />
           {session?.user && (session.user as any).role === 'CEO' && (
             <CampaignSelector

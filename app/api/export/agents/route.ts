@@ -40,6 +40,7 @@ export async function GET(req: NextRequest) {
     const now = new Date();
     const year = parseInt(searchParams.get("year") ?? String(now.getFullYear()));
     const month = parseInt(searchParams.get("month") ?? String(now.getMonth() + 1));
+    const allMonths = searchParams.get("allMonths") === "true";
     const campaignId = searchParams.get("campaignId");
     const agentId = searchParams.get("id");
     const { start: startDate, end: endDate } = monthRange(year, month);
@@ -48,15 +49,17 @@ export async function GET(req: NextRequest) {
       where: {
         ...(campaignId ? { campaignId } : {}),
         ...(agentId ? { agentId } : {}),
-        productionEntry: {
-          OR: [
-            { date: { gte: startDate, lte: endDate } },
-            {
-              periodStart: { lte: endDate },
-              periodEnd: { gte: startDate },
+        productionEntry: allMonths
+          ? { importFileName: { not: null } }
+          : {
+              OR: [
+                { date: { gte: startDate, lte: endDate } },
+                {
+                  periodStart: { lte: endDate },
+                  periodEnd: { gte: startDate },
+                },
+              ],
             },
-          ],
-        },
       },
       select: {
         agentId: true,
@@ -118,7 +121,7 @@ export async function GET(req: NextRequest) {
         Agent: agent.name,
         Seat: agent.seat ?? "",
         "Days Worked": agent.workedDates.size,
-        "Monthly Target": agent.target ?? "",
+        [allMonths ? "Configured Monthly Target" : "Monthly Target"]: agent.target ?? "",
         Transmittals: agent.transmittals,
         Activations: agent.activations,
         Approvals: agent.approvals,
@@ -142,7 +145,7 @@ export async function GET(req: NextRequest) {
     return new NextResponse(csv, {
       headers: {
         "Content-Type": "text/csv",
-        "Content-Disposition": 'attachment; filename="agents_export.csv"',
+        "Content-Disposition": `attachment; filename="agents_${allMonths ? 'all_months' : `${year}_${String(month).padStart(2, '0')}`}.csv"`,
       },
     });
   } catch (error) {

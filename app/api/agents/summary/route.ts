@@ -83,20 +83,23 @@ export async function GET(request: NextRequest) {
     const campaignId = searchParams.get('campaignId');
     const year = parseInt(searchParams.get('year') ?? new Date().getFullYear().toString());
     const month = parseInt(searchParams.get('month') ?? String(new Date().getMonth() + 1));
+    const allMonths = searchParams.get('allMonths') === 'true';
 
     const { start: startDate, end: endDate } = monthRange(year, month);
 
     const where: any = {
       ...(campaignId ? { campaignId } : {}),
-      productionEntry: {
-        OR: [
-          { date: { gte: startDate, lte: endDate } },
-          {
-            periodStart: { lte: endDate },
-            periodEnd: { gte: startDate },
+      productionEntry: allMonths
+        ? { importFileName: { not: null } }
+        : {
+            OR: [
+              { date: { gte: startDate, lte: endDate } },
+              {
+                periodStart: { lte: endDate },
+                periodEnd: { gte: startDate },
+              },
+            ],
           },
-        ],
-      },
     };
     if (agentId) {
       where.agentId = agentId;
@@ -122,15 +125,46 @@ export async function GET(request: NextRequest) {
     const campaignIds = Array.from(new Set(details.map((detail) => detail.campaignId)));
     const monthlyGoalRows = campaignIds.length > 0
       ? await prisma.campaignGoal.findMany({
-          where: { campaignId: { in: campaignIds }, month, year },
+          where: {
+            campaignId: { in: campaignIds },
+            ...(allMonths ? {} : { month, year }),
+          },
           select: {
             campaignId: true,
+            month: true,
+            year: true,
             monthlyGoal: true,
             kpiMetric: true,
           },
         })
       : [];
-    const monthlyByCampaignId = new Map(monthlyGoalRows.map((row) => [row.campaignId, row]));
+    const periodsByCampaign = new Map<string, Set<string>>();
+    details.forEach((detail) => {
+      const periods = periodsByCampaign.get(detail.campaignId) ?? new Set<string>();
+      periods.add(toBusinessYmd(detail.productionEntry.periodEnd ?? detail.productionEntry.date).slice(0, 7));
+      periodsByCampaign.set(detail.campaignId, periods);
+    });
+    const goalByCampaignPeriod = new Map(
+      monthlyGoalRows.map((row) => [
+        `${row.campaignId}|${row.year}-${String(row.month).padStart(2, '0')}`,
+        row,
+      ])
+    );
+    const monthlyByCampaignId = new Map(campaignIds.map((id) => {
+      const sample = details.find((detail) => detail.campaignId === id)!;
+      const periods = periodsByCampaign.get(id) ?? new Set<string>();
+      if (!allMonths) {
+        return [id, monthlyGoalRows.find((row) => row.campaignId === id)] as const;
+      }
+      const latestConfig = monthlyGoalRows.find((row) => row.campaignId === id);
+      return [id, {
+        monthlyGoal: [...periods].reduce(
+          (sum, period) => sum + Number(goalByCampaignPeriod.get(`${id}|${period}`)?.monthlyGoal ?? sample.campaign.monthlyGoal ?? 0),
+          0
+        ),
+        kpiMetric: latestConfig?.kpiMetric ?? sample.campaign.kpiMetric,
+      }] as const;
+    }));
 
     const agentMap = new Map();
 
@@ -187,6 +221,7 @@ export async function GET(request: NextRequest) {
           volume: 0,
           transaction: 0,
           workedDates: new Set<string>(),
+          periodKeys: new Set<string>(),
         });
       }
 
@@ -198,19 +233,20 @@ export async function GET(request: NextRequest) {
       camp.volume += volume;
       camp.transaction += transaction;
       camp.workedDates.add(dateKey);
+      camp.periodKeys.add(dateKey.slice(0, 7));
     });
 
     const agents = Array.from(agentMap.values()).map((agent: any) => {
       const campaigns = Array.from(agent.campaigns.values()).map((camp: any) => {
         const configuredMetric = normalizeMetric(camp.kpiMetric);
-        const agentGoal = Number(agent.monthlyTarget || 0);
+        const agentGoal = Number(agent.monthlyTarget || 0) * (allMonths ? Math.max(camp.periodKeys.size, 1) : 1);
         const effectiveMetric = resolveEffectiveMetric(configuredMetric, camp.monthlyGoal, camp, agentGoal);
         const goal = agentGoal > 0 ? agentGoal : camp.monthlyGoal;
         const mtd = metricValue(effectiveMetric, camp);
         const elapsed = camp.workedDates.size;
-        const rr = runRate(mtd, elapsed, WORKING_DAYS_DEFAULT);
+        const rr = allMonths ? mtd : runRate(mtd, elapsed, WORKING_DAYS_DEFAULT);
         const ach = achievementPct(mtd, goal);
-        const rrAch = rrAchievementPct(rr, goal);
+        const rrAch = allMonths ? ach : rrAchievementPct(rr, goal);
         const avgQuality = percent(camp.approvals, camp.transmittals);
         const avgConversion = percent(camp.booked, camp.transmittals);
 

@@ -91,7 +91,7 @@ function PeriodSelector({
       }}
       className="h-10 min-w-[180px] rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
     >
-      <option value="all">All months</option>
+      <option value="all">All Months</option>
       {periods.map((period) => {
         const periodValue = `${period.year}-${String(period.month).padStart(2, "0")}`;
         const label = new Intl.DateTimeFormat("en-US", {

@@ -114,6 +114,7 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const year = parseInt(searchParams.get('year') ?? new Date().getFullYear().toString());
     const month = parseInt(searchParams.get('month') ?? String(new Date().getMonth() + 1));
+    const allMonths = searchParams.get('allMonths') === 'true';
 
     const { start: startDate, end: endDate } = monthRange(year, month);
 
@@ -136,15 +137,17 @@ export async function GET(req: NextRequest) {
     const details = await prisma.productionDetail.findMany({
       where: {
         campaignId: { in: scopedCampaignIds },
-        productionEntry: {
-          OR: [
-            { date: { gte: startDate, lte: endDate } },
-            {
-              periodStart: { lte: endDate },
-              periodEnd: { gte: startDate },
+        productionEntry: allMonths
+          ? { importFileName: { not: null } }
+          : {
+              OR: [
+                { date: { gte: startDate, lte: endDate } },
+                {
+                  periodStart: { lte: endDate },
+                  periodEnd: { gte: startDate },
+                },
+              ],
             },
-          ],
-        },
       },
       select: {
         agentId: true,
@@ -171,8 +174,7 @@ export async function GET(req: NextRequest) {
       ? await prisma.dashboardImportRecord.findMany({
           where: {
             campaignId: { in: scopedCampaignIds },
-            year,
-            month,
+            ...(allMonths ? {} : { year, month }),
           },
           select: {
             campaignId: true,
@@ -199,16 +201,58 @@ export async function GET(req: NextRequest) {
     ]));
     const monthlyGoalRows = campaignIds.length > 0
       ? await prisma.campaignGoal.findMany({
-          where: { campaignId: { in: campaignIds }, month, year },
+          where: {
+            campaignId: { in: campaignIds },
+            ...(allMonths ? {} : { month, year }),
+          },
           select: {
             campaignId: true,
+            month: true,
+            year: true,
             monthlyGoal: true,
             kpiMetric: true,
             workingDays: true,
           },
         })
       : [];
-    const monthlyByCampaignId = new Map(monthlyGoalRows.map((row) => [row.campaignId, row]));
+    const importedPeriodsByCampaign = new Map<string, Set<string>>();
+    details.forEach((detail) => {
+      const periods = importedPeriodsByCampaign.get(detail.campaignId) ?? new Set<string>();
+      periods.add(toBusinessYmd(detail.productionEntry.periodEnd ?? detail.productionEntry.date).slice(0, 7));
+      importedPeriodsByCampaign.set(detail.campaignId, periods);
+    });
+    dashboardImportRows.forEach((row) => {
+      const periods = importedPeriodsByCampaign.get(row.campaignId) ?? new Set<string>();
+      periods.add(`${row.year}-${String(row.month ?? Number(toBusinessYmd(row.reportDate).slice(5, 7))).padStart(2, '0')}`);
+      importedPeriodsByCampaign.set(row.campaignId, periods);
+    });
+    const goalByCampaignPeriod = new Map(monthlyGoalRows.map((row) => [
+      `${row.campaignId}|${row.year}-${String(row.month).padStart(2, '0')}`,
+      row,
+    ]));
+    const monthlyByCampaignId = new Map<string, {
+      monthlyGoal: number;
+      kpiMetric: string;
+      workingDays: number;
+    }>();
+    campaignIds.forEach((campaignId) => {
+      const campaign = campaignById.get(campaignId)!;
+      if (!allMonths) {
+        const config = monthlyGoalRows.find((row) => row.campaignId === campaignId);
+        if (config) monthlyByCampaignId.set(campaignId, config);
+        return;
+      }
+      const periods = importedPeriodsByCampaign.get(campaignId) ?? new Set<string>();
+      const latestConfig = monthlyGoalRows.find((row) => row.campaignId === campaignId);
+      monthlyByCampaignId.set(campaignId, {
+        monthlyGoal: [...periods].reduce(
+          (sum, period) => sum + Number(goalByCampaignPeriod.get(`${campaignId}|${period}`)?.monthlyGoal ?? campaign.monthlyGoal ?? 0),
+          0
+        ),
+        kpiMetric: latestConfig?.kpiMetric ?? campaign.kpiMetric,
+        workingDays: WORKING_DAYS_DEFAULT,
+      });
+    });
 
     const campaignMap = new Map<string, {
       id: string;
@@ -382,8 +426,14 @@ export async function GET(req: NextRequest) {
     for (const campaignId of campaignIds) {
       const rows = importedKpiRows.filter((row) => row.campaignId === campaignId);
       if (rows.length === 0) continue;
-      const ytdRows = rows.filter((row) => row.recordKind === 'ytd');
-      const selectedRows = ytdRows.length > 0 ? ytdRows : rows.filter((row) => row.recordKind !== 'ytd');
+      const ytdRows = rows.filter((row) => row.recordKind === 'ytd' && row.value !== 0);
+      const latestYtdPeriod = allMonths && ytdRows.length > 0
+        ? Math.max(...ytdRows.map((row) => row.year * 12 + Number(row.month || 0)))
+        : null;
+      const selectedYtdRows = latestYtdPeriod == null
+        ? ytdRows
+        : ytdRows.filter((row) => row.year * 12 + Number(row.month || 0) === latestYtdPeriod);
+      const selectedRows = selectedYtdRows.length > 0 ? selectedYtdRows : rows.filter((row) => row.recordKind !== 'ytd');
       if (selectedRows.length === 0) continue;
       importedKpiByCampaign.set(campaignId, {
         metric: selectedRows[0].effectiveMetric,
@@ -403,9 +453,9 @@ export async function GET(req: NextRequest) {
       // ProductionDetail mirror also exists.
       const mtd = importedKpi?.mtd ?? metricValue(effectiveMetric, campaign);
       const elapsed = campaign.workedDates.size;
-      const rr = runRate(mtd, elapsed, campaign.workingDays);
+      const rr = allMonths ? mtd : runRate(mtd, elapsed, campaign.workingDays);
       const ach = achievementPct(mtd, monthlyGoal);
-      const rrAch = rrAchievementPct(rr, monthlyGoal);
+      const rrAch = allMonths ? ach : rrAchievementPct(rr, monthlyGoal);
       const importedQuality = importedQualityByCampaign.get(campaign.id);
       const qualityTransmittals = importedQuality?.transmittals || campaign.transmittals;
       const qualityApprovals = importedQuality?.transmittals

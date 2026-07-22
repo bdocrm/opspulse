@@ -997,23 +997,23 @@ export default function BulkImportPage() {
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <FileText className="h-5 w-5 text-slate-500" />
+                  <FileText className="h-5 w-5 text-muted-foreground" />
                   Imported Files
                 </CardTitle>
                 <CardDescription>Review imported batches, see when they were uploaded, and delete a batch if needed.</CardDescription>
               </div>
-              <span className="text-xs font-medium text-slate-500">{sortedImportFiles.length} file(s)</span>
+              <span className="text-xs font-medium text-muted-foreground">{sortedImportFiles.length} file(s)</span>
             </div>
           </CardHeader>
           <CardContent>
             {sortedImportFiles.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-slate-200 py-8 text-center text-sm text-slate-500">
+              <div className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
                 No imported files yet.
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto rounded-lg border">
                 <table className="w-full text-sm">
-                  <thead className="bg-slate-50 text-left text-slate-500">
+                  <thead className="bg-muted/60 text-left text-muted-foreground">
                     <tr>
                       <th className="p-2 font-medium">File</th>
                       <th className="p-2 font-medium">Campaign</th>
@@ -1031,17 +1031,17 @@ export default function BulkImportPage() {
                   </thead>
                   <tbody>
                     {sortedImportFiles.map((item, index) => (
-                      <tr key={item.id} className={index % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'}>
+                      <tr key={item.id} className={index % 2 === 0 ? 'bg-card' : 'bg-muted/30'}>
                         <td className="max-w-[260px] p-2">
-                          <p className="truncate font-medium text-slate-900">{item.fileName}</p>
-                          <p className="text-xs capitalize text-slate-500">{metricLabel(item.metricType)}</p>
+                          <p className="truncate font-medium text-foreground">{item.fileName}</p>
+                          <p className="text-xs capitalize text-muted-foreground">{metricLabel(item.metricType)}</p>
                         </td>
                         <td className="p-2">{item.campaignName}</td>
                         <td className="p-2">{formatDateTime(item.importedAt)}</td>
                         <td className="p-2">
                           <p>{formatDate(item.reportDate)}</p>
                           {item.periodStart && item.periodEnd && (
-                            <p className="text-xs text-slate-500">
+                            <p className="text-xs text-muted-foreground">
                               {formatDate(item.periodStart)} - {formatDate(item.periodEnd)}
                             </p>
                           )}
@@ -1064,7 +1064,7 @@ export default function BulkImportPage() {
                               type="button"
                               variant="outline"
                               size="sm"
-                              className="gap-1 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                              className="gap-1 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/60 dark:hover:text-red-300"
                               onClick={() => setDeleteTarget(item)}
                             >
                               <Trash2 className="h-4 w-4" />
@@ -1092,27 +1092,27 @@ export default function BulkImportPage() {
             {selectedImport && (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
-                  <div className="rounded-lg border bg-slate-50 p-3">
-                    <p className="text-xs text-slate-500">Records</p>
+                  <div className="rounded-lg border bg-muted/40 p-3">
+                    <p className="text-xs text-muted-foreground">Records</p>
                     <p className="text-lg font-semibold">{selectedImport.detailCount.toLocaleString()}</p>
                   </div>
-                  <div className="rounded-lg border bg-slate-50 p-3">
-                    <p className="text-xs text-slate-500">Metric</p>
+                  <div className="rounded-lg border bg-muted/40 p-3">
+                    <p className="text-xs text-muted-foreground">Metric</p>
                     <p className="text-lg font-semibold capitalize">{metricLabel(selectedImport.metricType)}</p>
                   </div>
-                  <div className="rounded-lg border bg-slate-50 p-3">
-                    <p className="text-xs text-slate-500">Volume</p>
+                  <div className="rounded-lg border bg-muted/40 p-3">
+                    <p className="text-xs text-muted-foreground">Volume</p>
                     <p className="text-lg font-semibold">PHP {selectedImport.totals.volume.toLocaleString()}</p>
                   </div>
-                  <div className="rounded-lg border bg-slate-50 p-3">
-                    <p className="text-xs text-slate-500">NTB / Supp</p>
+                  <div className="rounded-lg border bg-muted/40 p-3">
+                    <p className="text-xs text-muted-foreground">NTB / Supp</p>
                     <p className="text-lg font-semibold">{selectedImport.totals.ntb.toLocaleString()} / {selectedImport.totals.supplementary.toLocaleString()}</p>
                   </div>
                 </div>
 
                 <div className="overflow-x-auto rounded-lg border">
                   <table className="w-full text-sm">
-                    <thead className="bg-slate-100 text-left">
+                    <thead className="bg-muted/60 text-left text-muted-foreground">
                       <tr>
                         <th className="p-2">Agent</th>
                         <th className="p-2 text-right">Transmitted</th>
@@ -1125,10 +1125,10 @@ export default function BulkImportPage() {
                     </thead>
                     <tbody>
                       {(selectedImport.details ?? []).map((detail, index) => (
-                        <tr key={detail.id} className={index % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
+                        <tr key={detail.id} className={index % 2 === 0 ? 'bg-card' : 'bg-muted/30'}>
                           <td className="p-2">
                             <p className="font-medium">{detail.agent}</p>
-                            <p className="text-xs text-slate-500">
+                            <p className="text-xs text-muted-foreground">
                               {detail.seatNumber ? `Seat ${detail.seatNumber}` : 'No seat'}
                               {detail.seatCategory ? ` - ${detail.seatCategory}` : ''}
                             </p>

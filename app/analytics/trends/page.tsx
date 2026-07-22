@@ -22,6 +22,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { ReportPeriodSelector } from "@/components/report-period-selector";
 
 interface TrendData {
   date: string;
@@ -96,6 +97,7 @@ export default function PerformanceTrendsPage() {
   const router = useRouter();
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [allMonths, setAllMonths] = useState(false);
   const [metric, setMetric] = useState<TrendMetric>('all');
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
 
@@ -112,7 +114,7 @@ export default function PerformanceTrendsPage() {
   }, [session, status, router]);
 
   const { data, isLoading } = useSWR(
-    session?.user ? `/api/analytics/trends?year=${year}&month=${month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}` : null,
+    session?.user ? `/api/analytics/trends?year=${year}&month=${month}&allMonths=${allMonths}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}` : null,
     (url: string) => fetch(url, { credentials: 'include' }).then(res => res.json())
   );
 
@@ -145,20 +147,20 @@ export default function PerformanceTrendsPage() {
     <div className="space-y-6">
       <PageTitle
         title="Performance Trends"
-        subtitle="Track metrics performance over time"
+        subtitle={allMonths ? "Trends across all available bulk import files" : "Track metrics performance over time"}
       />
 
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
         <div className="flex gap-4">
-          <input
-            type="month"
-            value={`${year}-${String(month).padStart(2, '0')}`}
-            onChange={(e) => {
-              const [y, m] = e.target.value.split('-');
-              setYear(parseInt(y));
-              setMonth(parseInt(m));
+          <ReportPeriodSelector
+            year={year}
+            month={month}
+            allMonths={allMonths}
+            onChange={(nextYear, nextMonth, nextAllMonths) => {
+              setYear(nextYear);
+              setMonth(nextMonth);
+              setAllMonths(nextAllMonths);
             }}
-            className="px-3 py-2 border rounded-md"
           />
           {session?.user && (session.user as any).role === 'CEO' && (
             <CampaignSelector
@@ -195,11 +197,11 @@ export default function PerformanceTrendsPage() {
           value={metricTotal}
         />
         <KpiCard
-          title="Daily Average"
+          title={allMonths ? "Period Average" : "Daily Average"}
           value={metricAvg}
         />
         <KpiCard
-          title="Peak Day"
+          title={allMonths ? "Peak Period" : "Peak Day"}
           value={metricPeak}
         />
         <KpiCard
@@ -234,7 +236,7 @@ export default function PerformanceTrendsPage() {
       {/* Detailed breakdown */}
       <Card>
         <CardHeader>
-          <CardTitle>Daily Breakdown</CardTitle>
+          <CardTitle>{allMonths ? "Imported Period Breakdown" : "Daily Breakdown"}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-2 max-h-96 overflow-y-auto">

@@ -81,6 +81,7 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const year = parseInt(searchParams.get('year') ?? new Date().getFullYear().toString());
     const month = parseInt(searchParams.get('month') ?? String(new Date().getMonth() + 1));
+    const allMonths = searchParams.get('allMonths') === 'true';
     const campaignId = searchParams.get('campaignId');
 
     const { start: startDate, end: endDate } = monthRange(year, month);
@@ -108,11 +109,13 @@ export async function GET(req: NextRequest) {
       prisma.productionDetail.findMany({
         where: {
           ...campaignWhere,
-          productionEntry: { date: { gte: startDate, lte: endDate } },
+          productionEntry: allMonths
+            ? { importFileName: { not: null } }
+            : { date: { gte: startDate, lte: endDate } },
         },
         select,
       }),
-      prisma.productionDetail.findMany({
+      allMonths ? Promise.resolve([]) : prisma.productionDetail.findMany({
         where: {
           ...campaignWhere,
           productionEntry: { date: { gte: prevStartDate, lte: prevEndDate } },

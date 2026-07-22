@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { Users, Target, TrendingUp, Activity, Search, Download, Eye } from "lucide-react";
 import { usePagination } from "@/hooks/use-pagination";
 import { PaginationControls } from "@/components/pagination-controls";
+import { ReportPeriodSelector } from "@/components/report-period-selector";
 
 interface AgentSummary {
   id: string;
@@ -66,16 +67,17 @@ export default function AgentSummariesPage() {
   const router = useRouter();
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [allMonths, setAllMonths] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [totalAgentsCount, setTotalAgentsCount] = useState(0);
   const pagination = usePagination(1, 25, totalAgentsCount);
-  const summaryEndpoint = `/api/agents/summary?year=${year}&month=${month}${selectedAgent ? `&id=${selectedAgent}` : ''}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`;
-  const exportEndpoint = `/api/export/agents?year=${year}&month=${month}${selectedAgent ? `&id=${selectedAgent}` : ''}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`;
+  const summaryEndpoint = `/api/agents/summary?year=${year}&month=${month}&allMonths=${allMonths}${selectedAgent ? `&id=${selectedAgent}` : ''}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`;
+  const exportEndpoint = `/api/export/agents?year=${year}&month=${month}&allMonths=${allMonths}${selectedAgent ? `&id=${selectedAgent}` : ''}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`;
 
   const handleViewDetails = (agentId: string) => {
-    router.push(`/agent-details/${agentId}?year=${year}&month=${month}`);
+    router.push(`/agent-details/${agentId}?year=${year}&month=${month}${allMonths ? '&allMonths=true' : ''}`);
   };
 
   useEffect(() => {
@@ -144,20 +146,20 @@ export default function AgentSummariesPage() {
     <div className="space-y-6">
       <PageTitle
         title="Agent Production Summaries"
-        subtitle="Comprehensive overview of agent performance and production metrics"
+        subtitle={allMonths ? "Performance from all available bulk import files" : "Comprehensive overview of agent performance and production metrics"}
       />
 
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
         <div className="flex flex-col sm:flex-row gap-4">
-          <input
-            type="month"
-            value={`${year}-${String(month).padStart(2, '0')}`}
-            onChange={(e) => {
-              const [y, m] = e.target.value.split('-');
-              setYear(parseInt(y));
-              setMonth(parseInt(m));
+          <ReportPeriodSelector
+            year={year}
+            month={month}
+            allMonths={allMonths}
+            onChange={(nextYear, nextMonth, nextAllMonths) => {
+              setYear(nextYear);
+              setMonth(nextMonth);
+              setAllMonths(nextAllMonths);
             }}
-            className="px-3 py-2 border rounded-md"
           />
           <CampaignSelector
             campaigns={campaigns}

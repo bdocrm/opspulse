@@ -220,9 +220,10 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const year = parseInt(searchParams.get('year') ?? new Date().getFullYear().toString());
     const month = parseInt(searchParams.get('month') ?? String(new Date().getMonth() + 1));
+    const allMonths = searchParams.get('allMonths') === 'true';
     const requestedCampaignId = searchParams.get('campaignId');
 
-    if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    if (!allMonths && (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12)) {
       return NextResponse.json({ error: 'Invalid reporting period' }, { status: 400 });
     }
 
@@ -277,15 +278,16 @@ export async function GET(req: NextRequest) {
       prisma.productionDetail.findMany({
         where: {
           ...(campaignIdWhere ? { campaignId: campaignIdWhere } : {}),
-          productionEntry: { date: { gte: startDate, lte: endDate } },
+          productionEntry: allMonths
+            ? { importFileName: { not: null } }
+            : { date: { gte: startDate, lte: endDate } },
         },
         select: detailSelect,
       }),
       prisma.dashboardImportRecord.findMany({
         where: {
           ...(campaignIdWhere ? { campaignId: campaignIdWhere } : {}),
-          year,
-          month,
+          ...(allMonths ? {} : { year, month }),
           recordKind: 'agent_monitoring',
           entityName: { not: '' },
           OR: [{ actual: { not: null } }, { achievement: { not: null } }],
@@ -302,6 +304,9 @@ export async function GET(req: NextRequest) {
           actual: true,
           achievement: true,
           sourceFile: true,
+          year: true,
+          month: true,
+          reportDate: true,
         },
       }).catch(() => []),
       prisma.user.findMany({
@@ -327,7 +332,7 @@ export async function GET(req: NextRequest) {
       prisma.attendance.findMany({
         where: {
           ...(campaignIdWhere ? { campaignId: campaignIdWhere } : {}),
-          date: { gte: startDate, lte: endDate },
+          ...(allMonths ? {} : { date: { gte: startDate, lte: endDate } }),
         },
         select: { agentId: true, campaignId: true, date: true, status: true },
       }),
@@ -411,6 +416,7 @@ export async function GET(req: NextRequest) {
       const key = [
         row.campaignId,
         normalizeName(row.entityName),
+        ...(allMonths ? [row.year, row.month ?? toBusinessYmd(row.reportDate).slice(0, 7)] : []),
         normalizeMetric(row.metric),
         normalizeMetric(row.category),
         normalizeMetric(row.product),

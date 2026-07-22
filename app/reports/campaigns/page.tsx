@@ -22,6 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { kpiColorClass } from "@/utils/kpi";
 import { cn } from "@/lib/utils";
 import { BarChart3, Download, Search, TrendingUp, AlertTriangle } from "lucide-react";
+import { ReportPeriodSelector } from "@/components/report-period-selector";
 
 interface CampaignReport {
   id: string;
@@ -58,6 +59,7 @@ export default function CampaignReportsPage() {
   const router = useRouter();
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [allMonths, setAllMonths] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedCampaignId, setSelectedCampaignId] = useState("all");
   const [filterStatus, setFilterStatus] = useState<'all' | 'on-track' | 'at-risk' | 'exceeding'>('all');
@@ -76,7 +78,7 @@ export default function CampaignReportsPage() {
   }, [session, status, router]);
 
   const { data, isLoading } = useSWR(
-    session?.user ? `/api/reports/campaigns?year=${year}&month=${month}&dataVersion=2` : null,
+    session?.user ? `/api/reports/campaigns?year=${year}&month=${month}&allMonths=${allMonths}&dataVersion=2` : null,
     fetchFreshJson,
     {
       revalidateOnMount: true,
@@ -84,10 +86,13 @@ export default function CampaignReportsPage() {
       dedupingInterval: 0,
     }
   );
-  const { data: campaignOptions = [] } = useSWR<CampaignOption[]>(
-    session?.user ? `/api/goals?month=${month}&year=${year}` : null,
+  const { data: campaignOptionsData } = useSWR<CampaignOption[] | { campaigns: CampaignOption[] }>(
+    session?.user ? (allMonths ? '/api/reports/campaign-performance/campaigns?allMonths=true' : `/api/goals?month=${month}&year=${year}`) : null,
     fetchFreshJson
   );
+  const campaignOptions = Array.isArray(campaignOptionsData)
+    ? campaignOptionsData
+    : campaignOptionsData?.campaigns ?? [];
 
   const campaigns: CampaignReport[] = data?.campaigns || [];
   const summary = data?.summary || {
@@ -136,20 +141,20 @@ export default function CampaignReportsPage() {
     <div className="space-y-6">
       <PageTitle
         title="Campaign Reports"
-        subtitle="Comprehensive campaign performance analysis"
+        subtitle={allMonths ? "Campaign performance from all available bulk import files" : "Comprehensive campaign performance analysis"}
       />
 
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
         <div className="flex flex-col sm:flex-row gap-4">
-          <input
-            type="month"
-            value={`${year}-${String(month).padStart(2, '0')}`}
-            onChange={(e) => {
-              const [y, m] = e.target.value.split('-');
-              setYear(parseInt(y));
-              setMonth(parseInt(m));
+          <ReportPeriodSelector
+            year={year}
+            month={month}
+            allMonths={allMonths}
+            onChange={(nextYear, nextMonth, nextAllMonths) => {
+              setYear(nextYear);
+              setMonth(nextMonth);
+              setAllMonths(nextAllMonths);
             }}
-            className="px-3 py-2 border rounded-md"
           />
           <Select value={selectedCampaignId} onValueChange={setSelectedCampaignId}>
             <SelectTrigger className="w-64">
@@ -255,8 +260,8 @@ export default function CampaignReportsPage() {
                 <TableRow>
                   <TableHead>Campaign Name</TableHead>
                   <TableHead>KPI Metric</TableHead>
-                  <TableHead>Goal</TableHead>
-                  <TableHead>MTD</TableHead>
+                  <TableHead>{allMonths ? "All Months Goal" : "Goal"}</TableHead>
+                  <TableHead>{allMonths ? "Actual" : "MTD"}</TableHead>
                   <TableHead>Achievement %</TableHead>
                   <TableHead>Run Rate</TableHead>
                   <TableHead>Agents</TableHead>
