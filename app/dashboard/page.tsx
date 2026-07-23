@@ -52,13 +52,15 @@ interface CampaignRow {
   campaignName: string;
   hasData: boolean;
   kpiMetric: string;
-  goal: number;
-  mtd: number;
-  achievement: number;
-  runRate: number;
-  rrAchievement: number;
+  goal: number | null;
+  mtd: number | null;
+  achievement: number | null;
+  runRate: number | null;
+  rrAchievement: number | null;
   workingDays: number;
   daysLapsed: number;
+  dataStatus: string;
+  warnings: string[];
 }
 
 interface DailyTrendRow {
@@ -78,12 +80,14 @@ interface LeaderboardRow extends SimpleValueRow {
 
 interface DashboardData {
   kpis: {
-    totalMTD: number;
-    avgAchievement: number;
-    avgRunRate: number;
-    avgRRAchievement: number;
+    totalMTD: number | null;
+    avgAchievement: number | null;
+    avgRunRate: number | null;
+    avgRRAchievement: number | null;
+    dataStatus?: string;
+    warnings?: string[];
   };
-  campaigns: { name: string; achievement: number }[];
+  campaigns: { name: string; achievement: number | null }[];
   campaignTable: CampaignRow[];
   dailyTrend: DailyTrendRow[];
   distribution: SimpleValueRow[];
@@ -97,7 +101,7 @@ type StatusTone = "good" | "attention" | "critical" | "info";
 interface ExecutiveRow {
   name: string;
   hasData?: boolean;
-  value?: number;
+  value?: number | null;
   actual?: number;
   goal?: number | null;
   achievement?: number | null;
@@ -436,7 +440,7 @@ export default function DashboardPage() {
     .sort((a, b) => {
       if (a.hasData !== b.hasData) return a.hasData ? -1 : 1;
       return a.hasData
-        ? b.achievement - a.achievement
+        ? Number(b.achievement ?? -Infinity) - Number(a.achievement ?? -Infinity)
         : a.campaignName.localeCompare(b.campaignName);
     })
     .map((campaign, index) => {
@@ -448,7 +452,7 @@ export default function DashboardPage() {
         hasData: campaign.hasData,
         achievement: campaign.hasData ? campaign.achievement : null,
         value: campaign.achievement,
-        actual: campaign.hasData ? campaign.mtd : undefined,
+        actual: campaign.hasData ? campaign.mtd ?? undefined : undefined,
         goal: campaign.goal,
         contribution: campaignTotal > 0 ? (Number(campaign.mtd || 0) / campaignTotal) * 100 : 0,
         rank: index + 1,
@@ -546,7 +550,7 @@ export default function DashboardPage() {
     : { label: "No production data", tone: "info" as const };
   const overallStatus = performanceCampaignRows.length === 0
     ? "without production data"
-    : kpis.avgAchievement >= 100 ? "above target" : kpis.avgAchievement >= 80 ? "near target" : "below target";
+    : kpis.avgAchievement == null ? "with a missing goal" : kpis.avgAchievement >= 100 ? "above target" : kpis.avgAchievement >= 80 ? "near target" : "below target";
 
   const ceoSummary = performanceCampaignRows.length > 0
     ? `Total MTD is ${overallStatus} at ${formatPct(kpis.avgAchievement)}. ${bestCampaign?.name ?? "The leading campaign"} is currently the strongest campaign. ${weakestCampaign ? `${weakestCampaign.name} needs attention.` : "No campaign is in the critical range right now."}${campaignsWithoutData > 0 ? ` ${campaignsWithoutData} campaign${campaignsWithoutData === 1 ? "" : "s"} have no production data for this period.` : ""}`
@@ -627,27 +631,27 @@ export default function DashboardPage() {
       <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           title="Total MTD"
-          value={`₱${kpis.totalMTD.toLocaleString()}`}
+          value={kpis.totalMTD == null ? "No data" : `₱${kpis.totalMTD.toLocaleString()}`}
           icon={Target}
-          pct={kpis.avgAchievement}
+          pct={kpis.avgAchievement ?? undefined}
         />
         <KpiCard
           title="Achievement %"
-          value={`${kpis.avgAchievement.toFixed(1)}%`}
+          value={kpis.avgAchievement == null ? "Goal missing" : `${kpis.avgAchievement.toFixed(1)}%`}
           icon={TrendingUp}
-          pct={kpis.avgAchievement}
+          pct={kpis.avgAchievement ?? undefined}
         />
         <KpiCard
           title="Run Rate"
-          value={`₱${kpis.avgRunRate.toLocaleString()}`}
+          value={kpis.avgRunRate == null ? "No data" : `₱${kpis.avgRunRate.toLocaleString()}`}
           icon={Activity}
-          pct={kpis.avgRRAchievement}
+          pct={kpis.avgRRAchievement ?? undefined}
         />
         <KpiCard
           title="RR Achievement %"
-          value={`${kpis.avgRRAchievement.toFixed(1)}%`}
+          value={kpis.avgRRAchievement == null ? "Goal missing" : `${kpis.avgRRAchievement.toFixed(1)}%`}
           icon={BarChart3}
-          pct={kpis.avgRRAchievement}
+          pct={kpis.avgRRAchievement ?? undefined}
         />
       </div>
 
@@ -791,22 +795,22 @@ export default function DashboardPage() {
                     <TableRow key={c.id}>
                       <TableCell className="font-medium">{c.campaignName}</TableCell>
                       <TableCell>{c.kpiMetric}</TableCell>
-                      <TableCell className="text-right">{c.goal.toLocaleString()}</TableCell>
-                      <TableCell className="text-right">{c.hasData ? c.mtd.toLocaleString() : "No data"}</TableCell>
+                      <TableCell className="text-right">{c.goal == null ? "Goal missing" : c.goal.toLocaleString()}</TableCell>
+                      <TableCell className="text-right">{c.hasData && c.mtd != null ? c.mtd.toLocaleString() : "No data"}</TableCell>
                       <TableCell className="text-right">
-                        {c.hasData ? (
+                        {c.hasData && c.achievement != null ? (
                           <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", kpiColorClass(c.achievement))}>
                             {c.achievement.toFixed(1)}%
                           </span>
-                        ) : "N/A"}
+                        ) : c.hasData ? "Goal missing" : "N/A"}
                       </TableCell>
-                      <TableCell className="text-right">{c.hasData ? c.runRate.toLocaleString() : "N/A"}</TableCell>
+                      <TableCell className="text-right">{c.hasData && c.runRate != null ? c.runRate.toLocaleString() : "N/A"}</TableCell>
                       <TableCell className="text-right">
-                        {c.hasData ? (
+                        {c.hasData && c.rrAchievement != null ? (
                           <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", kpiColorClass(c.rrAchievement))}>
                             {c.rrAchievement.toFixed(1)}%
                           </span>
-                        ) : "N/A"}
+                        ) : c.hasData ? "Goal missing" : "N/A"}
                       </TableCell>
                     </TableRow>
                   ))

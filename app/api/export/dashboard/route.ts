@@ -1,59 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import Papa from "papaparse";
-import {
-  computeMTD,
-  achievementPct,
-  daysLapsed,
-  runRate,
-  rrAchievementPct,
-  WORKING_DAYS_DEFAULT,
-  type KpiMetricKey,
-} from "@/utils/kpi";
+import { GET as getDashboard } from "@/app/api/dashboard/route";
 
 export async function GET(req: NextRequest) {
   try {
-    const now = new Date();
-    const startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-
-    const campaigns = await prisma.campaign.findMany({
-      include: {
-        dailySales: {
-          where: { date: { gte: startDate, lte: endDate } },
-        },
-      },
-    });
-
-    const rows = campaigns.map((c) => {
-      const metric = c.kpiMetric as KpiMetricKey;
-      const salesRows = c.dailySales.map((s) => ({
-        date: s.date.toISOString(),
-        transmittals: Number(s.transmittals),
-        activations: Number(s.activations),
-        approvals: Number(s.approvals),
-        booked: Number(s.booked),
-        qualityRate: s.qualityRate,
-        conversionRate: s.conversionRate,
-        volume: Number(s.volume),
-        transaction: Number(s.transaction),
-      }));
-      const mtd = computeMTD(salesRows, metric);
-      const elapsed = daysLapsed(salesRows);
-      const rr = runRate(mtd, elapsed, WORKING_DAYS_DEFAULT);
-      const ach = achievementPct(mtd, c.monthlyGoal);
-      const rrAch = rrAchievementPct(rr, c.monthlyGoal);
-
-      return {
-        Campaign: c.campaignName,
-        "KPI Metric": c.kpiMetric,
-        Goal: c.monthlyGoal,
-        MTD: Math.round(mtd),
-        "Achievement %": ach.toFixed(1),
-        "Run Rate": Math.round(rr),
-        "RR Achievement %": rrAch.toFixed(1),
-      };
-    });
+    const dashboardResponse = await getDashboard(req);
+    if (!dashboardResponse.ok) return dashboardResponse;
+    const dashboard = await dashboardResponse.json();
+    const rows = (dashboard.campaignTable || []).map((campaign: any) => ({
+      Campaign: campaign.campaignName,
+      "KPI Metric": campaign.kpiMetric,
+      Goal: campaign.goal ?? "Goal missing",
+      MTD: campaign.mtd ?? "No data",
+      "Achievement %": campaign.achievement == null ? "N/A" : Number(campaign.achievement).toFixed(1),
+      "Run Rate": campaign.runRate ?? "N/A",
+      "RR Achievement %": campaign.rrAchievement == null ? "N/A" : Number(campaign.rrAchievement).toFixed(1),
+      Status: campaign.dataStatus,
+    }));
 
     const csv = Papa.unparse(rows);
     return new NextResponse(csv, {

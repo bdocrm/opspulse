@@ -11,6 +11,7 @@ import { isBpiDashboardWorkbook, parseBpiDashboardWorkbook } from '@/lib/bpi-das
 import { mapWorksheetCampaign } from '@/lib/campaign-import-selection';
 import { isMbPaMonthlyLayout, parseMbPaMonthlyRows } from '@/lib/mb-pa-import';
 import { isMbGoalAchievementLayout, parseMbGoalAchievementRows } from '@/lib/mb-goal-achievement-import';
+import { parseImportNumber } from '@/lib/import-number';
 
 type ParsedEntry = {
   name: string; count: number; volume: number;
@@ -20,6 +21,7 @@ type ParsedEntry = {
   agentCode?: string; agentLevel?: string; dateHired?: Date; agentType?: string;
   monthlyGoal?: number; monthlyActual?: number; monthlyAchievement?: number;
   overallGoal?: number; overallActual?: number; overallAchievement?: number;
+  teamGoal?: number; elapsedWorkingDays?: number; totalWorkingDays?: number;
   metricType?: string;
   sourceSheet?: string;
   campaignId?: string;
@@ -431,6 +433,8 @@ function nameToEmail(name: string): string {
 
 function normalizeAgentName(name: string): string {
   return name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -457,6 +461,13 @@ function cellText(value: any): string {
 }
 
 function parseNumberSafe(value: any): { value: number; error?: string } {
+  {
+    const imported = parseImportNumber(value);
+    if (!imported.valid) return { value: 0, error: `Invalid number "${String(value).slice(0, 30)}"` };
+    if (imported.value == null) return { value: 0 };
+    if (imported.value < 0) return { value: 0, error: 'Negative values are not allowed' };
+    return { value: imported.percentage ? imported.value / 100 : imported.value };
+  }
   if (value == null || value === '') return { value: 0 };
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return { value: 0, error: 'Invalid number' };
@@ -479,11 +490,22 @@ function isFooterOrBlankName(value: string) {
 
 function findHeaderAlias(rows: any[][], aliases: string[], maxRows = 20): { row: number; col: number } | null {
   const normalizedAliases = aliases.map(normalizeHeader);
-  for (let r = 0; r < Math.min(rows.length, maxRows); r++) {
-    const row = rows[r] || [];
-    for (let c = 0; c < row.length; c++) {
-      const value = normalizeHeader(row[c]);
-      if (normalizedAliases.some((alias) => value === alias || value.includes(alias))) return { row: r, col: c };
+  // Alias order is the deterministic priority; exact matches always win.
+  for (const alias of normalizedAliases) {
+    for (let r = 0; r < Math.min(rows.length, maxRows); r++) {
+      const row = rows[r] || [];
+      for (let c = 0; c < row.length; c++) {
+        if (normalizeHeader(row[c]) === alias) return { row: r, col: c };
+      }
+    }
+  }
+  for (const alias of normalizedAliases) {
+    for (let r = 0; r < Math.min(rows.length, maxRows); r++) {
+      const row = rows[r] || [];
+      for (let c = 0; c < row.length; c++) {
+        const value = normalizeHeader(row[c]);
+        if (value.includes(alias)) return { row: r, col: c };
+      }
     }
   }
   return null;
@@ -750,11 +772,11 @@ function parseDetectedRows(rows: any[][], metricType: string, campaignName: stri
   if (monthly?.entries.length) return monthly;
   const warnings: string[] = [];
   const errors: string[] = [];
-  const nameHit = findHeaderAlias(rows, ['full name', 'agent name']);
+  const nameHit = findHeaderAlias(rows, ['agent name', 'employee name', 'collector name', 'user name', 'full name']);
   const lastHit = findHeaderAlias(rows, ['last name']);
   const firstHit = findHeaderAlias(rows, ['first name']);
   const countHit = findHeaderAlias(rows, ['count']);
-  const volumeHit = findHeaderAlias(rows, ['volume', 'total volume']);
+  const volumeHit = findHeaderAlias(rows, ['mtd production', 'total mtd', 'mtd', 'actual production', 'collected amount', 'total collection', 'amount collected', 'production', 'volume', 'total volume']);
   const transmittedHit = findHeaderAlias(rows, ['transmitted', 'transmittals', 'transmittal']);
   const approvalsHit = findHeaderAlias(rows, ['approval', 'approvals']);
   const bookedHit = findHeaderAlias(rows, ['booked', 'booking']);
@@ -766,14 +788,18 @@ function parseDetectedRows(rows: any[][], metricType: string, campaignName: stri
   const transmittedVolumeHit = findHeaderAlias(rows, ['transmitted volume', 'transmittal volume']);
   const approvalVolumeHit = findHeaderAlias(rows, ['approval volume', 'approved volume']);
   const bookedVolumeHit = findHeaderAlias(rows, ['booked volume', 'booking volume']);
-  const goalHit = findHeaderAlias(rows, ['goal', 'target']);
-  const actualHit = findHeaderAlias(rows, ['actual', 'performance']);
+  const teamGoalHit = findHeaderAlias(rows, ['team goal', 'campaign goal', 'monthly goal', 'campaign target', 'team target']);
+  const goalCandidate = findHeaderAlias(rows, ['agent goal', 'individual goal', 'agent target', 'individual target', 'personal goal', 'monthly agent goal', 'goal', 'target']);
+  const goalHit = goalCandidate && teamGoalHit && goalCandidate.row === teamGoalHit.row && goalCandidate.col === teamGoalHit.col ? null : goalCandidate;
+  const actualHit = findHeaderAlias(rows, ['mtd production', 'total mtd', 'mtd', 'actual production', 'actual', 'collected amount', 'total collection', 'amount collected', 'performance', 'production']);
   const achievementHit = findHeaderAlias(rows, ['achievement', 'attainment']);
   const ntbHit = findHeaderAlias(rows, ['ntb']);
   const suppHit = findHeaderAlias(rows, ['supplementary', 'supplemental']);
   const dateHit = findDateHeader(rows);
-  const agentCodeHit = findHeaderAlias(rows, ['agent code']);
+  const agentCodeHit = findHeaderAlias(rows, ['employee id', 'agent id', 'collector id', 'agent code']);
   const seatHit = findHeaderAlias(rows, ['seat category', 'seat cat']);
+  const elapsedWorkingDaysHit = findHeaderAlias(rows, ['elapsed working days', 'working days elapsed', 'days passed']);
+  const totalWorkingDaysHit = findHeaderAlias(rows, ['total working days', 'business days', 'workdays']);
 
   const isAcq = Boolean(agentCodeHit && lastHit && firstHit && (ntbHit || suppHit));
   const isAllMetrics = Boolean(nameHit && (transmittedHit || approvalsHit || bookedHit || activationsHit || goalHit || actualHit || achievementHit || ntbHit || suppHit));
@@ -792,7 +818,7 @@ function parseDetectedRows(rows: any[][], metricType: string, campaignName: stri
     return { format: 'ACQ', entries, invalidRows: Math.max(0, parsed.length - entries.length), warnings, errors };
   }
 
-  const headerRow = Math.max(nameHit?.row ?? 0, countHit?.row ?? 0, transmittedHit?.row ?? 0, approvalsHit?.row ?? 0, bookedHit?.row ?? 0, activationsHit?.row ?? 0, goalHit?.row ?? 0, actualHit?.row ?? 0, achievementHit?.row ?? 0, ntbHit?.row ?? 0, suppHit?.row ?? 0, volumeHit?.row ?? 0, dateHit?.row ?? 0);
+  const headerRow = Math.max(nameHit?.row ?? 0, countHit?.row ?? 0, transmittedHit?.row ?? 0, approvalsHit?.row ?? 0, bookedHit?.row ?? 0, activationsHit?.row ?? 0, goalHit?.row ?? 0, teamGoalHit?.row ?? 0, actualHit?.row ?? 0, achievementHit?.row ?? 0, ntbHit?.row ?? 0, suppHit?.row ?? 0, volumeHit?.row ?? 0, dateHit?.row ?? 0, elapsedWorkingDaysHit?.row ?? 0, totalWorkingDaysHit?.row ?? 0);
   const nameCol = nameHit?.col ?? 1;
   const metric = isAllMetrics ? 'all_metrics' : detectMetricFromText(`${sheetName} ${(rows[headerRow] || []).join(' ')}`, metricType);
   const entries: ParsedEntry[] = [];
@@ -829,11 +855,14 @@ function parseDetectedRows(rows: any[][], metricType: string, campaignName: stri
     const approvalVolume = parseNumberSafe(row[approvalVolumeHit?.col ?? -1]);
     const bookedVolume = parseNumberSafe(row[bookedVolumeHit?.col ?? -1]);
     const goal = parseNumberSafe(row[goalHit?.col ?? -1]);
+    const teamGoal = parseNumberSafe(row[teamGoalHit?.col ?? -1]);
     const actual = parseNumberSafe(row[actualHit?.col ?? -1]);
     const achievement = parseNumberSafe(row[achievementHit?.col ?? -1]);
     const ntb = parseNumberSafe(row[ntbHit?.col ?? -1]);
     const supplementary = parseNumberSafe(row[suppHit?.col ?? -1]);
-    for (const parsed of [transmittals, approvals, booked, activations, transmittedVolume, approvalVolume, bookedVolume, goal, actual, achievement, ntb, supplementary]) if (parsed.error) rowErrors.push(parsed.error);
+    const elapsedWorkingDays = parseNumberSafe(row[elapsedWorkingDaysHit?.col ?? -1]);
+    const totalWorkingDays = parseNumberSafe(row[totalWorkingDaysHit?.col ?? -1]);
+    for (const parsed of [transmittals, approvals, booked, activations, transmittedVolume, approvalVolume, bookedVolume, goal, teamGoal, actual, achievement, ntb, supplementary, elapsedWorkingDays, totalWorkingDays]) if (parsed.error) rowErrors.push(parsed.error);
 
     if (rowErrors.length > 0) {
       invalidRows++;
@@ -844,6 +873,7 @@ function parseDetectedRows(rows: any[][], metricType: string, campaignName: stri
     const detectedRowDate = dateHit ? parseDetectedDate(row[dateHit.col], activeSectionDate) : undefined;
     entries.push({
       name: rawName,
+      agentCode: agentCodeHit ? cellText(row[agentCodeHit.col]) || undefined : undefined,
       count: Math.floor(metric === 'approvals' ? approvals.value || count.value : metric === 'booked' ? booked.value || count.value : transmittals.value || count.value),
       volume: Math.round(volume.value),
       transmittals: isAllMetrics && transmittedHit ? Math.floor(transmittals.value) : undefined,
@@ -856,8 +886,11 @@ function parseDetectedRows(rows: any[][], metricType: string, campaignName: stri
       ntb: ntbHit ? Math.floor(ntb.value) : undefined,
       supplementary: suppHit ? Math.floor(supplementary.value) : undefined,
       monthlyGoal: goalHit ? goal.value : undefined,
+      teamGoal: teamGoalHit ? teamGoal.value : undefined,
       monthlyActual: actualHit ? actual.value : undefined,
       monthlyAchievement: achievementHit ? achievement.value : undefined,
+      elapsedWorkingDays: elapsedWorkingDaysHit ? Math.floor(elapsedWorkingDays.value) : undefined,
+      totalWorkingDays: totalWorkingDaysHit ? Math.floor(totalWorkingDays.value) : undefined,
       metricType: metric,
       sourceSheet: sheetName,
       campaignName,
@@ -1066,6 +1099,62 @@ function classifyEntries(entries: ParsedEntry[], agentsByCampaign: Map<string, {
 
 function normalizedMetricKey(campaignId: string, agentId: string, metricType: string, reportDate: Date, reportPeriodType: ReportPeriodType) {
   return `${campaignId}|${agentId}|${metricType}|${reportPeriodType}|${ymd(reportDate)}`;
+}
+
+async function persistImportedCampaignSettings(tx: Prisma.TransactionClient, entries: ParsedEntry[]) {
+  const settings = new Map<string, {
+    campaignId: string;
+    month: number;
+    year: number;
+    teamGoals: Set<number>;
+    elapsedWorkingDays: Set<number>;
+    totalWorkingDays: Set<number>;
+  }>();
+  for (const entry of entries) {
+    if (!entry.campaignId || !entry.reportDate) continue;
+    if (entry.teamGoal == null && entry.elapsedWorkingDays == null && entry.totalWorkingDays == null) continue;
+    const month = entry.reportDate.getMonth() + 1;
+    const year = entry.reportDate.getFullYear();
+    const key = `${entry.campaignId}|${year}|${month}`;
+    const current = settings.get(key) ?? {
+      campaignId: entry.campaignId,
+      month,
+      year,
+      teamGoals: new Set<number>(),
+      elapsedWorkingDays: new Set<number>(),
+      totalWorkingDays: new Set<number>(),
+    };
+    if (entry.teamGoal != null && entry.teamGoal > 0) current.teamGoals.add(entry.teamGoal);
+    if (entry.elapsedWorkingDays != null && entry.elapsedWorkingDays > 0) current.elapsedWorkingDays.add(entry.elapsedWorkingDays);
+    if (entry.totalWorkingDays != null && entry.totalWorkingDays > 0) current.totalWorkingDays.add(entry.totalWorkingDays);
+    settings.set(key, current);
+  }
+
+  for (const setting of settings.values()) {
+    if (setting.teamGoals.size > 1 || setting.elapsedWorkingDays.size > 1 || setting.totalWorkingDays.size > 1) {
+      throw new Error(`Conflicting campaign settings were found for ${setting.year}-${String(setting.month).padStart(2, '0')}.`);
+    }
+    const teamGoal = [...setting.teamGoals][0];
+    const elapsed = [...setting.elapsedWorkingDays][0];
+    const total = [...setting.totalWorkingDays][0];
+    const update: Record<string, number> = {};
+    if (teamGoal != null) update.monthlyGoal = teamGoal;
+    if (elapsed != null) update.daysLapsed = elapsed;
+    if (total != null) update.workingDays = total;
+    if (!Object.keys(update).length) continue;
+    await tx.campaignGoal.upsert({
+      where: { campaignId_month_year: { campaignId: setting.campaignId, month: setting.month, year: setting.year } },
+      create: {
+        campaignId: setting.campaignId,
+        month: setting.month,
+        year: setting.year,
+        monthlyGoal: teamGoal ?? 0,
+        daysLapsed: elapsed ?? 0,
+        workingDays: total ?? 22,
+      },
+      update,
+    });
+  }
 }
 
 function legacyMetricTypes(detail: any): string[] {
@@ -2277,11 +2366,11 @@ export async function POST(req: NextRequest) {
             if (!existing) continue;
             const enrichment: Record<string, any> = {};
             if (existing.id) {
-              if (existing.count == null && metric.count != null) enrichment.count = BigInt(Math.round(metric.count));
-              if (existing.volume == null && metric.volume != null) enrichment.volume = BigInt(Math.round(metric.volume));
-              if (existing.goal == null && metric.goal != null) enrichment.goal = metric.goal;
-              if (existing.actual == null && metric.actual != null) enrichment.actual = metric.actual;
-              if (existing.achievement == null && metric.achievement != null) enrichment.achievement = metric.achievement;
+              if ((duplicateMode !== 'skip' || existing.count == null) && metric.count != null) enrichment.count = BigInt(Math.round(metric.count));
+              if ((duplicateMode !== 'skip' || existing.volume == null) && metric.volume != null) enrichment.volume = BigInt(Math.round(metric.volume));
+              if ((duplicateMode !== 'skip' || existing.goal == null) && metric.goal != null) enrichment.goal = metric.goal;
+              if ((duplicateMode !== 'skip' || existing.actual == null) && metric.actual != null) enrichment.actual = metric.actual;
+              if ((duplicateMode !== 'skip' || existing.achievement == null) && metric.achievement != null) enrichment.achievement = metric.achievement;
             }
             if (Object.keys(enrichment).length) {
               await tx.productionMetricRecord.update({ where: { id: existing.id }, data: enrichment });
@@ -2384,6 +2473,7 @@ export async function POST(req: NextRequest) {
         ? await tx.productionMetricRecord.createMany({ data: normalizedRecords, skipDuplicates: true })
         : { count: 0 };
       skippedRecords += normalizedRecords.length - normalizedInsert.count;
+      await persistImportedCampaignSettings(tx, entries);
 
       const auditLog = {
         fileName: file.name,
@@ -2780,11 +2870,11 @@ export async function POST(req: NextRequest) {
           if (!existing) continue;
           const enrichment: Record<string, any> = {};
           if (existing.id) {
-            if (existing.count == null && metric.count != null) enrichment.count = BigInt(Math.round(metric.count));
-            if (existing.volume == null && metric.volume != null) enrichment.volume = BigInt(Math.round(metric.volume));
-            if (existing.goal == null && metric.goal != null) enrichment.goal = metric.goal;
-            if (existing.actual == null && metric.actual != null) enrichment.actual = metric.actual;
-            if (existing.achievement == null && metric.achievement != null) enrichment.achievement = metric.achievement;
+            if ((duplicateMode !== 'skip' || existing.count == null) && metric.count != null) enrichment.count = BigInt(Math.round(metric.count));
+            if ((duplicateMode !== 'skip' || existing.volume == null) && metric.volume != null) enrichment.volume = BigInt(Math.round(metric.volume));
+            if ((duplicateMode !== 'skip' || existing.goal == null) && metric.goal != null) enrichment.goal = metric.goal;
+            if ((duplicateMode !== 'skip' || existing.actual == null) && metric.actual != null) enrichment.actual = metric.actual;
+            if ((duplicateMode !== 'skip' || existing.achievement == null) && metric.achievement != null) enrichment.achievement = metric.achievement;
           }
           if (Object.keys(enrichment).length) {
             await tx.productionMetricRecord.update({ where: { id: existing.id }, data: enrichment });
@@ -2843,6 +2933,7 @@ export async function POST(req: NextRequest) {
       ? await tx.productionMetricRecord.createMany({ data: normalizedCsvRecords, skipDuplicates: true })
       : { count: 0 };
     csvSkipped += normalizedCsvRecords.length - normalizedCsvInsert.count;
+    await persistImportedCampaignSettings(tx, csvEntries.map((entry) => ({ ...entry, campaignId: csvTargetCampaignId })));
     for (const entryId of csvCreatedEntryIds) await saveImportMetadata(entryId, file.name, metricType, [csvSheetName], undefined, tx);
 
     csvResults.details.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.agent.localeCompare(b.agent));

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import Image from "next/image";
@@ -19,6 +20,7 @@ import {
   Gauge,
   Projector,
   UserCircle,
+  ChevronDown,
   type LucideIcon,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
@@ -91,6 +93,12 @@ interface SidebarProps {
 export function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
   const { data: session } = useSession();
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(() => {
+    const activeSection = groupedLinkSections.find((section) =>
+      section.links.some((href) => pathname.startsWith(href))
+    );
+    return new Set(activeSection ? [activeSection.label] : []);
+  });
   const userRole = (session?.user as any)?.role;
   const allLinks = [...defaultLinks, ...(userRole === 'CEO' ? adminLinks : [])];
   const visibleLinks = allLinks.filter(({ href, roles }) => {
@@ -102,6 +110,26 @@ export function Sidebar({ open, onClose }: SidebarProps) {
     }
     return true;
   });
+
+  useEffect(() => {
+    const activeSection = groupedLinkSections.find((section) =>
+      section.links.some((href) => pathname.startsWith(href))
+    );
+    if (!activeSection) return;
+    setExpandedSections((current) => {
+      if (current.has(activeSection.label)) return current;
+      return new Set([...current, activeSection.label]);
+    });
+  }, [pathname]);
+
+  const toggleSection = (label: string) => {
+    setExpandedSections((current) => {
+      const next = new Set(current);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  };
 
   const renderLink = ({ href, label, icon: Icon }: SidebarLink) => {
     const active = pathname.startsWith(href);
@@ -172,12 +200,28 @@ export function Sidebar({ open, onClose }: SidebarProps) {
               {groupedLinkSections.map((section) => {
                 const links = visibleLinks.filter((link) => section.links.includes(link.href));
                 if (links.length === 0) return null;
+                const expanded = expandedSections.has(section.label);
                 return (
                   <div key={section.label} className="space-y-1">
-                    <p className="px-3 text-[11px] font-semibold uppercase text-muted-foreground">
-                      {section.label}
-                    </p>
-                    {links.map(renderLink)}
+                    <button
+                      type="button"
+                      onClick={() => toggleSection(section.label)}
+                      aria-expanded={expanded}
+                      className="flex w-full items-center justify-between rounded-md px-3 py-2 text-[11px] font-semibold uppercase text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      <span>{section.label}</span>
+                      <ChevronDown
+                        className={cn(
+                          "h-4 w-4 transition-transform duration-200",
+                          expanded && "rotate-180"
+                        )}
+                      />
+                    </button>
+                    {expanded && (
+                      <div className="space-y-1">
+                        {links.map(renderLink)}
+                      </div>
+                    )}
                   </div>
                 );
               })}

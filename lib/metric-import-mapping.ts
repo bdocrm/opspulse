@@ -3,12 +3,12 @@ export const METRIC_ALIASES = {
   approvals: ['approval', 'approvals', 'approved', 'approval count'],
   booked: ['booked', 'booking', 'bookings', 'booked count'],
   activations: ['activation', 'activations', 'activated'],
-  goal: ['goal', 'target'],
-  actual: ['actual', 'performance'],
+  goal: ['agent goal', 'individual goal', 'agent target', 'individual target', 'personal goal', 'monthly agent goal', 'goal', 'target'],
+  actual: ['mtd production', 'total mtd', 'mtd', 'actual production', 'actual', 'collected amount', 'total collection', 'amount collected', 'performance', 'production'],
   achievement: ['achievement', 'attainment'],
   ntb: ['ntb', 'new to bank'],
   supplementary: ['supplementary', 'supplemental', 'supp'],
-  volume: ['volume', 'amount'],
+  volume: ['booked volume', 'collected amount', 'total collection', 'amount collected', 'production', 'volume', 'amount'],
   count: ['count', 'transaction', 'transactions'],
 } as const;
 
@@ -26,4 +26,3 @@ export function matchMetricAlias(value: unknown): RecognizedMetric | null {
   }
   return null;
 }
-

@@ -1,17 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import {
+  aggregateRunRateMetrics,
+  calculateRunRateMetrics,
+  type RunRateMetrics,
+} from "@/lib/run-rate-analytics";
 
 // ─── KPI helpers ──────────────────────────────────────────────────────────────
-
-function calcAchievement(mtd: number, goal: number) {
-  return goal > 0 ? (mtd / goal) * 100 : 0;
-}
-function calcRunRate(mtd: number, daysLapsed: number, workingDays: number) {
-  return daysLapsed > 0 ? (mtd / daysLapsed) * workingDays : 0;
-}
-function calcRRAch(rr: number, goal: number) {
-  return goal > 0 ? (rr / goal) * 100 : 0;
-}
 
 // ACQ campaigns (name contains "ACQ") report acquisitions in `ntb`, not peso
 // `volume`. Mirror the Collector Dashboard so MB ACQ shows real numbers here too.
@@ -38,6 +33,33 @@ function normalizeAgentName(value: string) {
   return String(value || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
 }
 
+function periodKey(year: number, month: number) {
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function datePeriod(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "numeric",
+  }).formatToParts(date);
+  return {
+    year: Number(parts.find((part) => part.type === "year")?.value),
+    month: Number(parts.find((part) => part.type === "month")?.value),
+  };
+}
+
+function businessDateKey(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -48,10 +70,11 @@ export async function GET(req: NextRequest) {
     const campaignId = searchParams.get("campaignId") ?? null;
     const allMonths  = month === 0;
 
-    const startDate = allMonths ? new Date(year, 0, 1)  : new Date(year, month - 1, 1);
-    startDate.setHours(0, 0, 0, 0);
-    const endDate   = allMonths ? new Date(year, 11, 31) : new Date(year, month, 0);
-    endDate.setHours(23, 59, 59, 999);
+    const rangeStartMonth = allMonths ? 1 : month;
+    const rangeEndMonth = allMonths ? 12 : month;
+    const lastDay = new Date(Date.UTC(year, rangeEndMonth, 0)).getUTCDate();
+    const startDate = new Date(`${year}-${String(rangeStartMonth).padStart(2, "0")}-01T00:00:00.000+08:00`);
+    const endDate = new Date(`${year}-${String(rangeEndMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}T23:59:59.999+08:00`);
 
     // 1. Campaigns
     const campaigns = await prisma.campaign.findMany({
@@ -88,20 +111,54 @@ export async function GET(req: NextRequest) {
     const campaignNameById = new Map(campaigns.map((c) => [c.id, c.campaignName]));
 
     // 3. All ProductionDetail rows for the period
-    const allDetails = await prisma.productionDetail.findMany({
-      where: {
-        ...(campaignId ? { campaignId } : {}),
-        productionEntry: { date: { gte: startDate, lte: endDate } },
-      },
-      select: {
-        campaignId: true,
-        volume: true,
-        ntb: true,
-        monthlyGoal: true,
-        agent: { select: { id: true, name: true, monthlyTarget: true } },
-        productionEntry: { select: { date: true } },
-      },
-    });
+    const [allDetails, monthlyGoalRows, normalizedGoalRows] = await Promise.all([
+      prisma.productionDetail.findMany({
+        where: {
+          ...(campaignId ? { campaignId } : {}),
+          productionEntry: { date: { gte: startDate, lte: endDate } },
+        },
+        select: {
+          campaignId: true,
+          volume: true,
+          ntb: true,
+          monthlyGoal: true,
+          monthlyActual: true,
+          agent: { select: { id: true, name: true, monthlyTarget: true } },
+          productionEntry: { select: { date: true } },
+        },
+      }),
+      prisma.campaignGoal.findMany({
+        where: { campaignId: { in: cIds }, year, ...(allMonths ? {} : { month }) },
+        select: {
+          campaignId: true,
+          month: true,
+          year: true,
+          monthlyGoal: true,
+          workingDays: true,
+          daysLapsed: true,
+        },
+      }).catch(() => []),
+      prisma.productionMetricRecord.findMany({
+        where: {
+          campaignId: { in: cIds },
+          reportYear: year,
+          ...(allMonths ? {} : { reportMonth: month }),
+          goal: { not: null },
+        },
+        select: {
+          campaignId: true,
+          agentId: true,
+          reportYear: true,
+          reportMonth: true,
+          metricType: true,
+          goal: true,
+        },
+      }).catch(() => []),
+    ]);
+    const campaignGoalByPeriod = new Map(monthlyGoalRows.map((goal) => [
+      `${goal.campaignId}|${periodKey(goal.year, goal.month)}`,
+      goal,
+    ]));
 
     // Dashboard-style BPI/BDO workbooks are normalized into DashboardImportRecord.
     // Merge their campaign KPI values into the CEO dashboard without collapsing
@@ -136,11 +193,13 @@ export async function GET(req: NextRequest) {
       const existingPriority = existing?.monitoringType?.endsWith("_AGENT") ? 2 : existing ? 1 : 0;
       if (priority > existingPriority) preferredDashboardRows.set(rowKey, row);
     }
-    const importedTargetByAgent = new Map<string, number>();
+    const importedTargetByAgentPeriod = new Map<string, number>();
     for (const row of preferredDashboardRows.values()) {
       if (row.recordKind !== "agent_monitoring" || Number(row.target || 0) <= 0) continue;
       const key = `${row.campaignId}|${normalizeAgentName(row.entityName)}`;
-      importedTargetByAgent.set(key, (importedTargetByAgent.get(key) || 0) + Number(row.target));
+      const selectedPeriod = periodKey(row.year, row.month || datePeriod(row.reportDate).month);
+      const periodTargetKey = `${key}|${selectedPeriod}`;
+      importedTargetByAgentPeriod.set(periodTargetKey, Math.max(importedTargetByAgentPeriod.get(periodTargetKey) || 0, Number(row.target)));
     }
     const importedRows = [...preferredDashboardRows.values()].flatMap((row) => {
       const campaign = campaignById.get(row.campaignId);
@@ -157,13 +216,17 @@ export async function GET(req: NextRequest) {
         (kpi === "volume" && (row.recordKind === "ytd" || metric.includes("booked volume") || metric.includes("cash installment") || (!campaignsWithAgentRows.has(row.campaignId) && metric.includes("volume"))));
       return matchesKpi ? [{ ...row, value: actual, agentName: row.entityName || `${campaign.campaignName} Total` }] : [];
     });
-    const campaignsWithYtdSummary = new Set(importedRows.filter((row) => row.recordKind === "ytd").map((row) => row.campaignId));
+    const campaignPeriodsWithYtdSummary = new Set(importedRows
+      .filter((row) => row.recordKind === "ytd")
+      .map((row) => `${row.campaignId}|${periodKey(row.year, row.month || datePeriod(row.reportDate).month)}`));
     const importedByCampaign = new Map<string, typeof importedRows>();
-    const importedGoalByCampaign = new Map<string, number>();
+    const importedGoalByCampaignPeriod = new Map<string, number>();
     for (const row of importedRows) {
       importedByCampaign.set(row.campaignId, [...(importedByCampaign.get(row.campaignId) || []), row]);
-      if (row.target && (row.recordKind === "ytd" || !campaignsWithYtdSummary.has(row.campaignId))) {
-        importedGoalByCampaign.set(row.campaignId, (importedGoalByCampaign.get(row.campaignId) || 0) + Number(row.target));
+      const selectedPeriod = periodKey(row.year, row.month || datePeriod(row.reportDate).month);
+      const campaignPeriod = `${row.campaignId}|${selectedPeriod}`;
+      if (row.target && (row.recordKind === "ytd" || !campaignPeriodsWithYtdSummary.has(campaignPeriod))) {
+        importedGoalByCampaignPeriod.set(campaignPeriod, (importedGoalByCampaignPeriod.get(campaignPeriod) || 0) + Number(row.target));
       }
     }
     const dashboardPeriods = await prisma.$queryRaw<Array<{ year: number; month: number }>>`
@@ -179,23 +242,75 @@ export async function GET(req: NextRequest) {
       detailsByCampaign.get(d.campaignId)!.push(d);
     }
 
+    // Keep one imported goal per agent and reporting period. This prevents a
+    // daily file from multiplying the same monthly target during aggregation.
+    const importedAgentGoalByPeriod = new Map<string, number>();
+    for (const detail of allDetails) {
+      const period = datePeriod(detail.productionEntry.date);
+      const key = `${detail.campaignId}|${periodKey(period.year, period.month)}|${detail.agent.id}`;
+      const goal = Number(detail.monthlyGoal ?? 0);
+      if (goal > 0) importedAgentGoalByPeriod.set(key, Math.max(importedAgentGoalByPeriod.get(key) || 0, goal));
+    }
+    for (const record of normalizedGoalRows) {
+      if (record.reportMonth == null) continue;
+      const key = `${record.campaignId}|${periodKey(record.reportYear, record.reportMonth)}|${record.agentId}`;
+      const goal = Number(record.goal ?? 0);
+      if (goal > 0) importedAgentGoalByPeriod.set(key, Math.max(importedAgentGoalByPeriod.get(key) || 0, goal));
+    }
+    const importedAgentGoalTotal = (campaignIdValue: string, selectedPeriod: string) =>
+      [...importedAgentGoalByPeriod.entries()]
+        .filter(([key]) => key.startsWith(`${campaignIdValue}|${selectedPeriod}|`))
+        .reduce((sum, [, value]) => sum + value, 0);
+
     // 5. Campaign-level KPIs
     const allCampaignRows = campaigns.map((c) => {
       const details = detailsByCampaign.get(c.id) ?? [];
       const imported = importedByCampaign.get(c.id) ?? [];
-      const wDays   = Number(extrasById[c.id]?.workingDays ?? 22);
-      const dLapsed = Number(extrasById[c.id]?.daysLapsed  ?? 0);
+      const availablePeriodKeys = allMonths
+        ? [...new Set([
+            ...details.map((detail) => {
+              const period = datePeriod(detail.productionEntry.date);
+              return periodKey(period.year, period.month);
+            }),
+            ...imported.map((row) => periodKey(row.year, row.month || datePeriod(row.reportDate).month)),
+          ])]
+        : [periodKey(year, month)];
       // MTD = sum of volume (peso amounts) for standard campaigns, or NTB for ACQ
       // campaigns — matching the OM / Collector dashboards.
-      const ytdSummary = imported.filter((row) => row.recordKind === "ytd");
-      const importedDetails = imported.filter((row) => row.recordKind !== "ytd");
-      const mtd = ytdSummary.length
-        ? ytdSummary.reduce((sum, row) => sum + row.value, 0)
-        : details.reduce((sum, d) => sum + metricValue(c.campaignName, d), 0) + importedDetails.reduce((sum, row) => sum + row.value, 0);
-      const goal    = importedGoalByCampaign.get(c.id) || c.monthlyGoal;
-      const rr      = calcRunRate(mtd, dLapsed, wDays);
-      const ach     = calcAchievement(mtd, goal);
-      const rrAch   = calcRRAch(rr, goal);
+      const periodMetrics = availablePeriodKeys.map((selectedPeriod): RunRateMetrics => {
+        const [periodYear, periodMonth] = selectedPeriod.split("-").map(Number);
+        const periodDetails = details.filter((detail) => {
+          const detailPeriod = datePeriod(detail.productionEntry.date);
+          return detailPeriod.year === periodYear && detailPeriod.month === periodMonth;
+        });
+        const periodImported = imported.filter((row) =>
+          row.year === periodYear && (row.month || datePeriod(row.reportDate).month) === periodMonth
+        );
+        const ytdSummary = periodImported.filter((row) => row.recordKind === "ytd");
+        const importedDetails = periodImported.filter((row) => row.recordKind !== "ytd");
+        const hasProduction = periodDetails.length > 0 || periodImported.length > 0;
+        const mtd = !hasProduction
+          ? null
+          : ytdSummary.length
+            ? ytdSummary.reduce((sum, row) => sum + row.value, 0)
+            : periodDetails.reduce((sum, detail) => sum + metricValue(c.campaignName, detail), 0)
+              + importedDetails.reduce((sum, row) => sum + row.value, 0);
+        const configuredGoal = campaignGoalByPeriod.get(`${c.id}|${selectedPeriod}`);
+        const dashboardGoal = importedGoalByCampaignPeriod.get(`${c.id}|${selectedPeriod}`) || 0;
+        const agentGoal = importedAgentGoalTotal(c.id, selectedPeriod);
+        const goal = dashboardGoal || Number(configuredGoal?.monthlyGoal ?? 0) || agentGoal || Number(c.monthlyGoal ?? 0);
+        return calculateRunRateMetrics({
+          mtdProduction: mtd,
+          goal: goal > 0 ? goal : null,
+          month: periodMonth,
+          year: periodYear,
+          configuredTotalWorkingDays: Number(configuredGoal?.workingDays ?? extrasById[c.id]?.workingDays ?? 0),
+          configuredElapsedWorkingDays: Number(configuredGoal?.daysLapsed ?? extrasById[c.id]?.daysLapsed ?? 0),
+          goalLevel: "team",
+          now,
+        });
+      });
+      const metrics = aggregateRunRateMetrics(periodMetrics, "team");
 
       return {
         id: c.id,
@@ -203,13 +318,16 @@ export async function GET(req: NextRequest) {
         hasData: details.length > 0 || imported.length > 0,
         // Show the metric that actually drives MTD (NTB for acquisition campaigns).
         kpiMetric: isAcqCampaign(c.campaignName) ? "ntb" : bpiCurrencyCampaigns.has(c.id) ? "volume" : c.kpiMetric,
-        goal,
-        mtd:          Math.round(mtd),
-        achievement:  ach,
-        runRate:      Math.round(rr),
-        rrAchievement: rrAch,
-        workingDays:  wDays,
-        daysLapsed:   dLapsed,
+        goal: metrics.goal,
+        mtd: metrics.mtdProduction == null ? null : Math.round(metrics.mtdProduction),
+        achievement: metrics.achievementPercentage,
+        runRate: metrics.projectedRunRate == null ? null : Math.round(metrics.projectedRunRate),
+        rrAchievement: metrics.runRateAchievementPercentage,
+        workingDays: metrics.totalWorkingDays,
+        daysLapsed: metrics.elapsedWorkingDays,
+        dataStatus: metrics.dataStatus,
+        warnings: metrics.warnings,
+        metrics,
       };
     });
 
@@ -220,12 +338,25 @@ export async function GET(req: NextRequest) {
     const campaignsWithData = allCampaignRows.filter((c) => c.hasData);
 
     // 6. Aggregated KPI cards
-    // No-data campaigns remain visible but do not dilute the performance averages.
-    const n = campaignsWithData.length || 1;
-    const totalMTD         = campaignsWithData.reduce((a, c) => a + c.mtd, 0);
-    const avgAchievement   = campaignsWithData.reduce((a, c) => a + c.achievement, 0)   / n;
-    const avgRunRate       = campaignsWithData.reduce((a, c) => a + c.runRate, 0)       / n;
-    const avgRRAchievement = campaignsWithData.reduce((a, c) => a + c.rrAchievement, 0) / n;
+    const combinedMetrics = aggregateRunRateMetrics(
+      campaignsWithData.map((campaign) => campaign.metrics),
+      "team"
+    );
+    const totalMTD = combinedMetrics.mtdProduction;
+    const avgAchievement = combinedMetrics.achievementPercentage;
+    const avgRunRate = combinedMetrics.projectedRunRate;
+    const avgRRAchievement = combinedMetrics.runRateAchievementPercentage;
+    console.info("dashboard_run_rate_calculated", {
+      campaignId: campaignId ?? "all",
+      year,
+      month,
+      campaignCount: campaignsWithData.length,
+      mtdProduction: totalMTD,
+      teamGoal: combinedMetrics.goal,
+      projectedRunRate: avgRunRate,
+      runRateAchievementPercentage: avgRRAchievement,
+      dataStatus: combinedMetrics.dataStatus,
+    });
 
     // 7. Campaign achievement chart
     const campaignsChart = campaignTable.map((c) => ({
@@ -236,11 +367,14 @@ export async function GET(req: NextRequest) {
     // 8. Daily trend (aggregate the per-campaign metric per date)
     const dailyMap = new Map<string, number>();
     for (const d of allDetails) {
-      const key = new Date(d.productionEntry.date).toISOString().slice(0, 10);
+      const key = businessDateKey(d.productionEntry.date);
       dailyMap.set(key, (dailyMap.get(key) ?? 0) + metricValue(campaignNameById.get(d.campaignId), d));
     }
-    for (const row of importedRows.filter((record) => !campaignsWithYtdSummary.has(record.campaignId) || record.recordKind === "ytd")) {
-      const date = row.month ? `${row.year}-${String(row.month).padStart(2, "0")}-01` : new Date(row.reportDate).toISOString().slice(0, 10);
+    for (const row of importedRows.filter((record) => {
+      const key = `${record.campaignId}|${periodKey(record.year, record.month || datePeriod(record.reportDate).month)}`;
+      return !campaignPeriodsWithYtdSummary.has(key) || record.recordKind === "ytd";
+    })) {
+      const date = row.month ? `${row.year}-${String(row.month).padStart(2, "0")}-01` : businessDateKey(row.reportDate);
       dailyMap.set(date, (dailyMap.get(date) ?? 0) + row.value);
     }
     const dailyTrend = Array.from(dailyMap.entries())
@@ -249,11 +383,15 @@ export async function GET(req: NextRequest) {
 
     // 9. Distribution (each campaign's share of total MTD)
     const distribution = campaignsWithData
-      .filter((c) => c.mtd > 0)
-      .map((c) => ({ name: c.campaignName, value: c.mtd }));
+      .filter((c) => Number(c.mtd ?? 0) > 0)
+      .map((c) => ({ name: c.campaignName, value: Number(c.mtd) }));
 
     // 10. Agent leaderboard (top 10 by the per-campaign metric)
-    const agentMap = new Map<string, { name: string; value: number; goal: number }>();
+    const agentMap = new Map<string, {
+      name: string;
+      campaignId: string;
+      periods: Map<string, { value: number; goal: number }>;
+    }>();
     const registeredAgentKeyByCampaignName = new Map<string, string>();
     for (const d of allDetails) {
       const val = metricValue(campaignNameById.get(d.campaignId), d);
@@ -262,40 +400,67 @@ export async function GET(req: NextRequest) {
       if (!agentMap.has(aid)) {
         agentMap.set(aid, {
           name: d.agent.name,
-          value: 0,
-          goal: Number(d.monthlyGoal || d.agent.monthlyTarget || 0),
+          campaignId: d.campaignId,
+          periods: new Map(),
         });
-      } else {
-        const current = agentMap.get(aid)!;
-        current.goal = Math.max(current.goal, Number(d.monthlyGoal || d.agent.monthlyTarget || 0));
       }
-      agentMap.get(aid)!.value += val;
+      const period = datePeriod(d.productionEntry.date);
+      const selectedPeriod = periodKey(period.year, period.month);
+      const periodValue = agentMap.get(aid)!.periods.get(selectedPeriod) ?? { value: 0, goal: 0 };
+      periodValue.value += val;
+      periodValue.goal = Math.max(periodValue.goal, Number(d.monthlyGoal || d.agent.monthlyTarget || 0));
+      agentMap.get(aid)!.periods.set(selectedPeriod, periodValue);
     }
     for (const row of importedRows.filter((record) => record.recordKind !== "ytd")) {
       const targetKey = `${row.campaignId}|${normalizeAgentName(row.agentName)}`;
       const key = registeredAgentKeyByCampaignName.get(targetKey) || `imported:${targetKey}`;
-      const goal = importedTargetByAgent.get(targetKey) || 0;
-      if (!agentMap.has(key)) agentMap.set(key, { name: row.agentName, value: 0, goal });
-      else agentMap.get(key)!.goal = Math.max(agentMap.get(key)!.goal, goal);
-      agentMap.get(key)!.value += row.value;
+      const selectedPeriod = periodKey(row.year, row.month || datePeriod(row.reportDate).month);
+      const goal = importedTargetByAgentPeriod.get(`${targetKey}|${selectedPeriod}`) || 0;
+      if (!agentMap.has(key)) agentMap.set(key, { name: row.agentName, campaignId: row.campaignId, periods: new Map() });
+      const periodValue = agentMap.get(key)!.periods.get(selectedPeriod) ?? { value: 0, goal: 0 };
+      periodValue.value += row.value;
+      periodValue.goal = Math.max(periodValue.goal, goal);
+      agentMap.get(key)!.periods.set(selectedPeriod, periodValue);
     }
-    const leaderboard = Array.from(agentMap.values())
-      .filter((a) => a.value > 0)
-      .sort((a, b) => b.value - a.value)
+    const leaderboard = Array.from(agentMap.values()).map((agent) => {
+      const periodMetrics = [...agent.periods.entries()].map(([selectedPeriod, values]) => {
+        const [periodYear, periodMonth] = selectedPeriod.split("-").map(Number);
+        const configuredGoal = campaignGoalByPeriod.get(`${agent.campaignId}|${selectedPeriod}`);
+        return calculateRunRateMetrics({
+          mtdProduction: values.value,
+          goal: values.goal > 0 ? values.goal : null,
+          month: periodMonth,
+          year: periodYear,
+          configuredTotalWorkingDays: Number(configuredGoal?.workingDays ?? extrasById[agent.campaignId]?.workingDays ?? 0),
+          configuredElapsedWorkingDays: Number(configuredGoal?.daysLapsed ?? extrasById[agent.campaignId]?.daysLapsed ?? 0),
+          goalLevel: "agent",
+          now,
+        });
+      });
+      return { ...agent, metrics: aggregateRunRateMetrics(periodMetrics, "agent") };
+    })
+      .filter((agent) => Number(agent.metrics.mtdProduction ?? 0) > 0)
+      .sort((a, b) => Number(b.metrics.mtdProduction) - Number(a.metrics.mtdProduction))
       .slice(0, 10)
-      .map((a) => ({
-        name: a.name,
-        value: Math.round(a.value),
-        goal: a.goal > 0 ? a.goal : null,
-        achievement: a.goal > 0 ? calcAchievement(a.value, a.goal) : null,
+      .map((agent) => ({
+        name: agent.name,
+        value: Math.round(Number(agent.metrics.mtdProduction)),
+        goal: agent.metrics.goal,
+        achievement: agent.metrics.achievementPercentage,
+        runRate: agent.metrics.projectedRunRate == null ? null : Math.round(agent.metrics.projectedRunRate),
+        rrAchievement: agent.metrics.runRateAchievementPercentage,
+        dataStatus: agent.metrics.dataStatus,
+        warnings: agent.metrics.warnings,
       }));
 
     return NextResponse.json({
       kpis: {
-        totalMTD:       Math.round(totalMTD),
+        totalMTD:       totalMTD == null ? null : Math.round(totalMTD),
         avgAchievement,
-        avgRunRate:     Math.round(avgRunRate),
+        avgRunRate:     avgRunRate == null ? null : Math.round(avgRunRate),
         avgRRAchievement,
+        dataStatus: combinedMetrics.dataStatus,
+        warnings: combinedMetrics.warnings,
       },
       campaigns:    campaignsChart,
       campaignTable,
