@@ -419,7 +419,6 @@ function parsePaInboundProductivity(
       const parsed = parseNumeric(row[column.col]);
       addIssue(warnings, sheetName, rowIndex + 1, parsed, row[column.col]);
       if (parsed.value == null) continue;
-      const target = column.metric === 'Booked Volume' ? goals.get(column.month) : undefined;
       records.push({
         worksheetSource: sheetName,
         sourceRow: rowIndex + 1,
@@ -432,12 +431,29 @@ function parsePaInboundProductivity(
         month: column.month,
         year: column.year,
         reportDate: new Date(column.year, column.month - 1, 1),
-        target,
         actual: parsed.value,
-        achievement: target ? parsed.value / target : undefined,
         remark: `Source Column: ${XLSX.utils.encode_col(column.col)}`,
       });
     }
+  }
+  // The MONTH / GOAL table is a campaign-level target. Persist it once per
+  // reporting period instead of copying it to every agent production row.
+  // This prevents the campaign goal from being multiplied by agent count.
+  for (const [month, target] of goals) {
+    records.push({
+      worksheetSource: sheetName,
+      sourceRow: 0,
+      recordKind: 'ytd',
+      entityName: 'BPI PA INBOUND',
+      category: 'PA SIP Loans Inbound',
+      product: 'Volume',
+      metric: 'Booked Volume',
+      month,
+      year,
+      reportDate: new Date(year, month - 1, 1),
+      target,
+      remark: 'Campaign goal from MONTH / GOAL table',
+    });
   }
   if (!goals.size) warnings.push({ worksheet: sheetName, message: 'No MONTH / GOAL table was found; productivity was imported without agent targets.' });
   return {

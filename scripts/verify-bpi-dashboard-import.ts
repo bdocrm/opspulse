@@ -107,9 +107,16 @@ XLSX.utils.book_append_sheet(inboundWorkbook, inboundSheet, 'YTD');
 assert.equal(isBpiDashboardWorkbook(inboundWorkbook, 'INBOUND YTD REPORT.xlsx'), true);
 assert.equal(isBpiDashboardWorkbook(inboundWorkbook), false);
 const inboundParsed = parseBpiDashboardWorkbook(inboundWorkbook, new Date(2026, 0, 1), 'INBOUND YTD REPORT.xlsx');
-assert.equal(inboundParsed.records.length, 4);
+assert.equal(inboundParsed.records.length, 6);
 assert.deepEqual(new Set(inboundParsed.records.map((record) => record.metric)), new Set(['Transmitted Count', 'Booked Volume']));
-assert.deepEqual(inboundParsed.records.filter((record) => record.metric === 'Booked Volume').map((record) => record.target), [15_000_000, 20_000_000]);
+assert.deepEqual(
+  inboundParsed.records.filter((record) => record.recordKind === 'ytd').map((record) => record.target),
+  [15_000_000, 20_000_000]
+);
+assert.equal(
+  inboundParsed.records.filter((record) => record.recordKind === 'agent_monitoring').every((record) => record.target == null),
+  true
+);
 assert.equal(inboundParsed.records.every((record) => mapWorksheetCampaign(`${record.category} ${record.metric}`, campaigns).campaign.campaignName === 'BPI PA INBOUND'), true);
 
 const plWorkbook = XLSX.utils.book_new();

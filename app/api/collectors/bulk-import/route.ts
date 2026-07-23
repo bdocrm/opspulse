@@ -12,6 +12,7 @@ import { mapWorksheetCampaign } from '@/lib/campaign-import-selection';
 import { isMbPaMonthlyLayout, parseMbPaMonthlyRows } from '@/lib/mb-pa-import';
 import { isMbGoalAchievementLayout, parseMbGoalAchievementRows } from '@/lib/mb-goal-achievement-import';
 import { parseImportNumber } from '@/lib/import-number';
+import { parseCampaignSummaryWorksheet } from '@/lib/campaign-summary-import';
 
 type ParsedEntry = {
   name: string; count: number; volume: number;
@@ -47,6 +48,12 @@ type AssignedCampaign = { id: string; campaignName: string };
 type WorksheetCampaignMappings = Record<string, string[]>;
 type ReportPeriodType = 'daily' | 'monthly' | 'yearly';
 type DuplicateMode = 'skip' | 'update' | 'replace_period';
+
+function developmentImportLog(event: string, details: Record<string, unknown>) {
+  if (process.env.NODE_ENV !== 'production') {
+    console.info(`[bulk-import:${event}]`, details);
+  }
+}
 
 const MB_PA_DETAIL_KEYS = [
   'c2gTxn', 'c2gVol', 'btTxn', 'btVol', 'balconTxn', 'balconVol', 'grandTotalTxn', 'grandTotalVol',
@@ -1243,7 +1250,16 @@ async function buildWorkbookPreview({
         : defaultMapping;
     const reportDate = parseReportDateFromRows(rows, selectedReportDate, sheetName);
     const detectedMetric = detectMetricFromText(`${sheetName} ${rows.slice(0, 5).flat().join(' ')}`, metricType);
-    const parsed = parseDetectedRows(rows, detectedMetric, mapping.campaign.campaignName, sheetName, reportDate);
+    const campaignSummary = parseCampaignSummaryWorksheet(
+      rows,
+      sheetName,
+      selectedCampaigns,
+      reportDate
+    );
+    const parsed = campaignSummary?.entries.length
+      ? campaignSummary
+      : parseDetectedRows(rows, detectedMetric, mapping.campaign.campaignName, sheetName, reportDate);
+    const hasPerRecordCampaigns = parsed.format === 'Campaign Summary';
     const entries: ParsedEntry[] = [];
     let duplicateRows = 0;
     const warnings = [...parsed.warnings];
@@ -1254,7 +1270,14 @@ async function buildWorkbookPreview({
     for (const entry of parsed.entries) {
       const effectiveMetric = entry.metricType || detectedMetric;
       const entryDate = entry.reportDate || reportDate;
-      const key = [mapping.campaign.id, normalizeAgentName(entry.name), ymd(normalizePeriodDate(entryDate, reportPeriodType)), effectiveMetric].join('|');
+      const entryCampaign = entry.campaignId
+        ? selectedCampaigns.find((campaign) => campaign.id === entry.campaignId)
+        : mapping.campaign;
+      if (!entryCampaign) {
+        warnings.push(`Row ${entry.rowIdx}: campaign is not authorized for this import.`);
+        continue;
+      }
+      const key = [entryCampaign.id, normalizeAgentName(entry.name), ymd(normalizePeriodDate(entryDate, reportPeriodType)), effectiveMetric].join('|');
       if (sheetSeen.has(key) || allSeen.has(key)) {
         duplicateRows++;
         warnings.push(`Row ${entry.rowIdx}: duplicate ${sheetSeen.has(key) ? 'within this sheet' : 'already found in another sheet'}; it will be skipped.`);
@@ -1264,8 +1287,8 @@ async function buildWorkbookPreview({
       allSeen.add(key);
       entries.push({
         ...entry,
-        campaignId: mapping.campaign.id,
-        campaignName: mapping.source === 'unresolved' ? 'Campaign mapping required' : mapping.campaign.campaignName,
+        campaignId: entryCampaign.id,
+        campaignName: entryCampaign.campaignName,
         metricType: effectiveMetric,
         reportDate: entryDate,
       });
@@ -1275,8 +1298,9 @@ async function buildWorkbookPreview({
     const { matched, notFound } = classifyEntries(entries, agentsByCampaign);
     const errors = [...parsed.errors];
     if (hiddenByName.get(sheetName) && entries.length === 0) warnings.push('Hidden sheet skipped because no valid production data was found.');
-    if (mapping.source === 'selected') warnings.push(`No campaign alias matched this worksheet; using the only selected campaign, ${mapping.campaign.campaignName}.`);
-    if (mapping.source === 'unresolved') warnings.push('Some worksheets could not be matched to the selected campaigns. Please review the campaign mapping.');
+    if (!hasPerRecordCampaigns && mapping.source === 'selected') warnings.push(`No campaign alias matched this worksheet; using the only selected campaign, ${mapping.campaign.campaignName}.`);
+    if (!hasPerRecordCampaigns && mapping.source === 'unresolved') warnings.push('Some worksheets could not be matched to the selected campaigns. Please review the campaign mapping.');
+    const detectedCampaigns = [...new Set(entries.map((entry) => entry.campaignName).filter(Boolean))];
 
     return {
       key: `${index}:${sheetName}`,
@@ -1284,9 +1308,11 @@ async function buildWorkbookPreview({
       hidden: Boolean(hiddenByName.get(sheetName)),
       selected: entries.length > 0,
       format: entries.length > 0 ? parsed.format : 'Skipped',
-      campaignId: mapping.campaign.id,
-      campaignName: mapping.source === 'unresolved' ? 'Campaign mapping required' : mapping.campaign.campaignName,
-      campaignMapping: mapping.source,
+      campaignId: entries[0]?.campaignId || mapping.campaign.id,
+      campaignName: hasPerRecordCampaigns
+        ? `Detected per record (${detectedCampaigns.join(', ')})`
+        : mapping.source === 'unresolved' ? 'Campaign mapping required' : mapping.campaign.campaignName,
+      campaignMapping: hasPerRecordCampaigns ? 'record' : mapping.source,
       metricType: detectedMetric,
       metricSource: detectedMetric === metricType ? 'selected' : 'sheet',
       reportDate: ymd(entries[0]?.reportDate || reportDate),
@@ -1305,7 +1331,9 @@ async function buildWorkbookPreview({
   const accepted = sheets.filter((sheet) => sheet.validRows > 0);
   const candidateDates = sheets.flatMap((sheet) => sheet.entries.map((entry) => normalizePeriodDate(entry.reportDate || selectedReportDate, reportPeriodType)));
   const matchedAgentIds = campaignAgents.map((agent) => agent.id);
-  const campaignIdSet = [...new Set(sheets.map((sheet) => sheet.campaignId))];
+  const campaignIdSet = [...new Set(sheets.flatMap((sheet) =>
+    sheet.entries.map((entry) => entry.campaignId || sheet.campaignId)
+  ))];
   const minDate = candidateDates.length ? new Date(Math.min(...candidateDates.map((date) => date.getTime()))) : selectedReportDate;
   const maxDate = candidateDates.length ? new Date(Math.max(...candidateDates.map((date) => date.getTime()))) : selectedReportDate;
   const [existingMetrics, legacyDetails] = matchedAgentIds.length && candidateDates.length ? await Promise.all([
@@ -2212,6 +2240,22 @@ export async function POST(req: NextRequest) {
             worksheetPreviews: preview.sheets.map(({ entries, ...sheet }) => sheet),
           }, { status: 400 });
         }
+        developmentImportLog('preview', {
+          sourceWorkbook: file.name,
+          worksheets: preview.sheets.map((sheet) => ({
+            name: sheet.sheetName,
+            format: sheet.format,
+            rowsRead: sheet.totalRows,
+            validRows: sheet.validRows,
+            invalidRows: sheet.invalidRows,
+            duplicateRows: sheet.duplicateRows,
+            campaignMapping: sheet.campaignMapping,
+          })),
+          campaignsDetected: [...new Set(
+            preview.previewRecords.map((record) => record.campaignName)
+          )],
+          summary: preview.workbookSummary,
+        });
 
         return NextResponse.json({
           preview: true,
@@ -2514,6 +2558,15 @@ export async function POST(req: NextRequest) {
         ...results,
       };
       }, { timeout: 120000 });
+      developmentImportLog('persisted', {
+        sourceWorkbook: file.name,
+        worksheetsProcessed: importPayload.worksheetPreviews.map((sheet: any) => sheet.sheetName),
+        campaignsDetected: importPayload.importedCampaignIds,
+        insertedRecords: importPayload.inserted,
+        updatedRecords: importPayload.updated,
+        duplicateRecords: importPayload.skipped,
+        invalidRecords: importPayload.invalid,
+      });
       return NextResponse.json(importPayload);
     }
     if (!isExcel && !isCsv) {

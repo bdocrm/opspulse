@@ -86,9 +86,15 @@ interface CampaignBlock {
   id: string;
   campaignName: string;
   kpiMetric: string;
-  goal: number;
+  goal: number | null;
   actual?: number | null;
   achievement?: number | null;
+  campaignProduction?: number;
+  achievementPercent?: number | null;
+  goalStatus?: 'available' | 'missing';
+  dataStatus?: 'complete' | 'zero-production' | 'no-production-records' | 'missing-goal' | 'no-imported-data';
+  agentCount?: number;
+  recordCount?: number;
   supplementaryGoal?: number;
   agents: Agent[];
   production: Record<string, Production>;
@@ -115,6 +121,7 @@ function campaignDataPeriodLabel(period?: CampaignBlock['dataPeriod']): string |
 }
 
 const CAMPAIGN_GROUP_PREFIX = '__campaign_group__:';
+const ALL_CAMPAIGNS = '__all_campaigns__';
 const EXPORT_HEADERS = ['Campaign', 'Rank', 'Seat', 'Agent Name', 'Status', 'Transmittals', 'Approvals', 'Booked', 'Booked Volume (₱)', 'Target', 'Progress %'] as const;
 const BDO_EXPORT_HEADERS = ['Campaign', 'Rank', 'Seat', 'Agent Name', 'Status', 'Goal', 'Actual', 'Achievement %', 'Booked', 'Progress %'] as const;
 
@@ -482,7 +489,7 @@ export default function CollectorDashboard() {
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [agentSearch, setAgentSearch] = useState('');
   const [sortBy, setSortBy] = useState<'seat' | 'booked' | 'name'>('booked');
-  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string>(ALL_CAMPAIGNS);
   const [deletingCampaignData, setDeletingCampaignData] = useState(false);
   const [deletingAllAgents, setDeletingAllAgents] = useState(false);
 
@@ -545,7 +552,9 @@ export default function CollectorDashboard() {
     () => {
       const organization = selectedOrganization(selectedCampaignId);
       if (organization) return allCampaigns.filter((campaign) => campaignOrganization(campaign.campaignName) === organization);
-      return selectedCampaignId ? allCampaigns.filter((campaign) => campaign.id === selectedCampaignId) : allCampaigns;
+      return selectedCampaignId === ALL_CAMPAIGNS
+        ? allCampaigns
+        : allCampaigns.filter((campaign) => campaign.id === selectedCampaignId);
     },
     [allCampaigns, selectedCampaignId]
   );
@@ -557,12 +566,16 @@ export default function CollectorDashboard() {
     }
   }, [allCampaigns, addAgentCampaignId]);
 
-  // Default the selected campaign to the first one
+  // Keep "All Campaigns" as the stable default. If an assignment is removed
+  // while the page is open, reset the stale selection without hiding others.
   useEffect(() => {
-    if (allCampaigns.length > 0 && !selectedCampaignId) {
-      setSelectedCampaignId(allCampaigns[0].id);
+    const organization = selectedOrganization(selectedCampaignId);
+    const validGroup = organization && campaignGroups.some((group) => group.organization === organization);
+    const validCampaign = allCampaigns.some((campaign) => campaign.id === selectedCampaignId);
+    if (selectedCampaignId !== ALL_CAMPAIGNS && !validGroup && !validCampaign) {
+      setSelectedCampaignId(ALL_CAMPAIGNS);
     }
-  }, [allCampaigns, selectedCampaignId]);
+  }, [allCampaigns, campaignGroups, selectedCampaignId]);
 
   // Global KPI roll-up across every assigned campaign.
   const kpis = useMemo(() => {
@@ -573,7 +586,7 @@ export default function CollectorDashboard() {
 
     for (const c of campaigns) {
       totalAgents += c.agents.length;
-      totalGoal += c.goal || 0;
+      totalGoal += c.goal ?? 0;
       totalSuppGoal += c.supplementaryGoal || 0;
       entriesCount += c.entriesCount || 0;
       let campaignKpi = 0;
@@ -618,6 +631,34 @@ export default function CollectorDashboard() {
       totalSuppGoal, suppProgress, remainingSupp,
       goal, kpiValue, targetProgress, remainingGoal, totalTarget, entriesCount,
       mixedKpis, primaryKpi,
+    };
+  }, [campaigns]);
+
+  const campaignAchievementSummary = useMemo(() => {
+    const rows = campaigns.map((campaign) => {
+      const production = campaign.campaignProduction
+        ?? campaign.actual
+        ?? campaign.agents.reduce(
+          (sum, agent) => sum + kpiValueFor(campaign.kpiMetric, campaign.production[agent.id] || ZERO_PROD),
+          0
+        );
+      const achievement = campaign.achievementPercent
+        ?? campaign.achievement
+        ?? (campaign.goal != null && campaign.goal > 0 ? (production / campaign.goal) * 100 : null);
+      return { campaign, production, achievement };
+    });
+    const valid = rows
+      .filter((row) => row.achievement != null)
+      .sort((a, b) => Number(a.achievement) - Number(b.achievement));
+    const totalProduction = rows.reduce((sum, row) => sum + row.production, 0);
+    const totalGoal = rows.reduce((sum, row) => sum + Number(row.campaign.goal ?? 0), 0);
+    return {
+      highest: valid.at(-1) ?? null,
+      lowest: valid[0] ?? null,
+      average: valid.length
+        ? valid.reduce((sum, row) => sum + Number(row.achievement), 0) / valid.length
+        : null,
+      overall: totalGoal > 0 ? (totalProduction / totalGoal) * 100 : null,
     };
   }, [campaigns]);
 
@@ -939,7 +980,9 @@ export default function CollectorDashboard() {
     URL.revokeObjectURL(url);
   };
 
-  // Only campaigns that actually have collectors appear in the leaderboard.
+  // Campaign Achievement must include every authorized campaign, including
+  // zero-production and missing-goal states. The leaderboard still requires
+  // at least one collector row.
   const nonEmptyCampaigns = campaigns.filter((c) => c.agents.length > 0);
 
   if (status === 'loading') {
@@ -977,11 +1020,15 @@ export default function CollectorDashboard() {
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <label className="text-sm font-medium text-muted-foreground">Select Campaign:</label>
-                <Select value={selectedCampaignId || ''} onValueChange={setSelectedCampaignId}>
+                <Select value={selectedCampaignId} onValueChange={setSelectedCampaignId}>
                   <SelectTrigger className="w-72">
                     <SelectValue placeholder="Choose a campaign..." />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value={ALL_CAMPAIGNS} className="font-semibold">
+                      ALL CAMPAIGNS
+                    </SelectItem>
+                    <div className="my-1 border-t" aria-hidden="true" />
                     <SelectGroup>
                       {campaignGroups.map((group) => (
                         <SelectItem key={campaignGroupValue(group.organization)} value={campaignGroupValue(group.organization)} className="font-semibold">
@@ -1005,8 +1052,16 @@ export default function CollectorDashboard() {
                 variant="destructive"
                 size="sm"
                 onClick={handleDeleteCampaignData}
-                disabled={deletingCampaignData || Boolean(selectedOrganization(selectedCampaignId))}
-                title={selectedOrganization(selectedCampaignId) ? 'Select one campaign to delete its data.' : undefined}
+                disabled={
+                  deletingCampaignData ||
+                  selectedCampaignId === ALL_CAMPAIGNS ||
+                  Boolean(selectedOrganization(selectedCampaignId))
+                }
+                title={
+                  selectedCampaignId === ALL_CAMPAIGNS || selectedOrganization(selectedCampaignId)
+                    ? 'Select one campaign to delete its data.'
+                    : undefined
+                }
               >
                 {deletingCampaignData ? 'Deleting...' : 'Delete All Data'}
               </Button>
@@ -1320,16 +1375,51 @@ export default function CollectorDashboard() {
       )}
 
       {/* Per-Campaign Summary Cards */}
-      {nonEmptyCampaigns.length > 0 && (
+      {campaigns.length > 0 && (
         <div>
           <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
             <Target className="w-5 h-5 text-blue-500" />
-            Campaign Overview
+            Campaign Achievement
           </h2>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+            {[
+              {
+                label: 'Highest Campaign',
+                value: campaignAchievementSummary.highest
+                  ? `${campaignAchievementSummary.highest.campaign.campaignName} · ${Number(campaignAchievementSummary.highest.achievement).toFixed(1)}%`
+                  : 'Goal unavailable',
+              },
+              {
+                label: 'Lowest Campaign',
+                value: campaignAchievementSummary.lowest
+                  ? `${campaignAchievementSummary.lowest.campaign.campaignName} · ${Number(campaignAchievementSummary.lowest.achievement).toFixed(1)}%`
+                  : 'Goal unavailable',
+              },
+              {
+                label: 'Average',
+                value: campaignAchievementSummary.average == null
+                  ? 'Goal unavailable'
+                  : `${campaignAchievementSummary.average.toFixed(1)}%`,
+              },
+              {
+                label: 'Overall',
+                value: campaignAchievementSummary.overall == null
+                  ? 'Goal unavailable'
+                  : `${campaignAchievementSummary.overall.toFixed(1)}%`,
+              },
+            ].map((item) => (
+              <Card key={item.label}>
+                <CardContent className="py-3">
+                  <p className="text-xs text-muted-foreground">{item.label}</p>
+                  <p className="font-semibold text-sm mt-1 truncate" title={item.value}>{item.value}</p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {nonEmptyCampaigns.map((campaign) => {
+            {campaigns.map((campaign) => {
               const campaignAgents = campaign.agents;
-              const campaignGoal = campaign.goal;
+              const campaignGoal = campaign.goal ?? 0;
               const campaignKpi = campaign.kpiMetric;
               const presentCount = campaignAgents.filter(a => {
                 const record = campaign.attendance[a.id];
@@ -1339,7 +1429,7 @@ export default function CollectorDashboard() {
                 const prod = campaign.production[agent.id] || ZERO_PROD;
                 return sum + kpiValueFor(campaignKpi, prod);
               }, 0);
-              const totalKpiValue = campaign.actual ?? agentKpiValue;
+              const totalKpiValue = campaign.campaignProduction ?? campaign.actual ?? agentKpiValue;
               const metricLabel = kpiLabel(campaignKpi);
               const goalProgress = campaignGoal > 0 ? ((totalKpiValue / campaignGoal) * 100).toFixed(1) : '0';
               const acq = isAcqCampaign(campaign.campaignName);
@@ -1370,9 +1460,20 @@ export default function CollectorDashboard() {
               const totalSupplementary = campaignAgents.reduce((sum, agent) => sum + ((campaign.production[agent.id] || ZERO_PROD).supplementary || 0), 0);
               const ntbGoal = campaignGoal; // legacy monthly goal doubles as the NTB goal
               const ntbProgress = ntbGoal > 0 ? ((totalNtb / ntbGoal) * 100).toFixed(1) : '0';
-              const displayedProgress = mbpl && campaign.achievement != null
-                ? campaign.achievement.toFixed(1)
-                : acq ? ntbProgress : goalProgress;
+              const achievementPercent = campaign.achievementPercent
+                ?? campaign.achievement
+                ?? (campaignGoal > 0 ? Number(acq ? ntbProgress : goalProgress) : null);
+              const displayedProgress = achievementPercent == null
+                ? null
+                : achievementPercent.toFixed(1);
+              const statusLabel =
+                campaign.goalStatus === 'missing' || campaign.dataStatus === 'missing-goal'
+                  ? 'Goal unavailable'
+                  : campaign.dataStatus === 'no-imported-data'
+                    ? 'No data'
+                    : campaign.dataStatus === 'no-production-records'
+                      ? 'No production'
+                    : `${displayedProgress ?? '0.0'}%`;
               const fallbackPeriodLabel = campaignDataPeriodLabel(campaign.dataPeriod);
 
               return (
@@ -1395,23 +1496,27 @@ export default function CollectorDashboard() {
                         <div className="flex items-baseline justify-between">
                           <span className="text-xs text-muted-foreground uppercase tracking-wide">{acq ? 'NTB Goal' : 'Goal'}</span>
                           <span className="text-xl font-bold text-blue-600">
-                            {acq ? Number(ntbGoal).toLocaleString() : formatKpiValue(campaignKpi, campaignGoal)}
+                            {campaign.goalStatus === 'missing'
+                              ? 'Goal unavailable'
+                              : acq
+                                ? Number(ntbGoal).toLocaleString()
+                                : formatKpiValue(campaignKpi, campaignGoal)}
                           </span>
                         </div>
                         <div className="flex items-center gap-2">
                           <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                             <div
                               className={`h-full transition-all ${
-                                Number(displayedProgress) >= 100 ? 'bg-green-500' :
-                                Number(displayedProgress) >= 75 ? 'bg-blue-500' :
-                                Number(displayedProgress) >= 50 ? 'bg-yellow-500' :
+                                Number(displayedProgress ?? 0) >= 100 ? 'bg-green-500' :
+                                Number(displayedProgress ?? 0) >= 75 ? 'bg-blue-500' :
+                                Number(displayedProgress ?? 0) >= 50 ? 'bg-yellow-500' :
                                 'bg-red-500'
                               }`}
-                              style={{ width: `${Math.min(Number(displayedProgress), 100)}%` }}
+                              style={{ width: `${Math.min(Number(displayedProgress ?? 0), 100)}%` }}
                             />
                           </div>
-                          <span className="text-sm font-semibold text-foreground min-w-12 text-right">
-                            {campaign.entriesCount > 0 ? `${displayedProgress}%` : 'No data'}
+                          <span className="text-sm font-semibold text-foreground min-w-12 text-right whitespace-nowrap">
+                            {statusLabel}
                           </span>
                         </div>
                       </div>
@@ -1453,7 +1558,7 @@ export default function CollectorDashboard() {
                       )}
 
                       {/* Top KPI Performer */}
-                      {campaign.entriesCount > 0 && topPerformer && topKpiValue > 0 && (
+                      {(campaign.recordCount ?? campaign.entriesCount) > 0 && topPerformer && topKpiValue > 0 && (
                         <div className="pt-2 border-t bg-yellow-50/50 rounded-lg p-2 mx-[-0.75rem] px-3">
                           <p className="text-xs text-muted-foreground uppercase tracking-wide font-semibold">🥇 Top {metricLabel}</p>
                           <div className="flex items-center justify-between mt-1">
@@ -1469,7 +1574,7 @@ export default function CollectorDashboard() {
                       <div className="pt-2 border-t">
                         <div className="flex items-center justify-between">
                           <span className="text-xs text-muted-foreground">{fallbackPeriodLabel ? `Latest Import (${fallbackPeriodLabel})` : 'Records in Range'}</span>
-                          <span className="text-sm font-semibold text-orange-500">{campaign.entriesCount}</span>
+                          <span className="text-sm font-semibold text-orange-500">{campaign.recordCount ?? campaign.entriesCount}</span>
                         </div>
                       </div>
                     </div>
@@ -1537,9 +1642,11 @@ export default function CollectorDashboard() {
                   id={block.id}
                   campaignName={block.campaignName}
                   kpiMetric={block.kpiMetric}
-                  goal={block.goal}
+                  goal={block.goal ?? 0}
                   actual={block.actual}
                   achievement={block.achievement}
+                  goalStatus={block.goalStatus}
+                  dataStatus={block.dataStatus}
                   supplementaryGoal={block.supplementaryGoal || 0}
                   agents={block.agents}
                   production={block.production}
@@ -1548,7 +1655,7 @@ export default function CollectorDashboard() {
                   mbPlPerformance={block.mbPlPerformance}
                   mbPlTotals={block.mbPlTotals}
                   attendance={block.attendance}
-                  entriesCount={block.entriesCount}
+                  entriesCount={block.recordCount ?? block.entriesCount}
                   dataPeriod={block.dataPeriod}
                   agentDataPeriod={block.agentDataPeriod}
                   onDeleteAllAgents={block.agents.some((agent) => !agent.importedOnly) ? () => handleDeleteAllAgents(block.id) : undefined}

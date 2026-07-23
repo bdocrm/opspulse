@@ -39,6 +39,8 @@ export interface CampaignSummaryProps {
   goal: number;
   actual?: number | null;
   achievement?: number | null;
+  goalStatus?: 'available' | 'missing';
+  dataStatus?: 'complete' | 'zero-production' | 'no-production-records' | 'missing-goal' | 'no-imported-data';
   supplementaryGoal?: number;
   agents: Agent[];
   production: Record<string, Production>;
@@ -125,6 +127,8 @@ export function CampaignSummaryCard({
   goal,
   actual,
   achievement: importedAchievement,
+  goalStatus,
+  dataStatus,
   supplementaryGoal = 0,
   agents,
   production,
@@ -175,7 +179,16 @@ export function CampaignSummaryCard({
   const remainingGoal = Math.max(0, goal - (acq ? totalNtb : totalProduction));
   const metricLabel = mbpl ? 'Goal & Actual' : mbpa ? 'Billings' : kpiLabel(kpiMetric);
   const displayMetric = mbpa ? 'volume' : kpiMetric;
-  const hasRecordsInRange = entriesCount > 0;
+  const hasRecordsInRange = entriesCount > 0 &&
+    dataStatus !== 'no-imported-data' &&
+    dataStatus !== 'no-production-records';
+  const achievementLabel = goalStatus === 'missing' || dataStatus === 'missing-goal'
+    ? 'Goal unavailable'
+    : dataStatus === 'no-production-records'
+      ? 'No production'
+    : hasRecordsInRange
+      ? `${achievement}%`
+      : 'No data';
   const fallbackPeriodLabel = dataPeriod?.source === 'latest_import' && dataPeriod.month && dataPeriod.year
     ? new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(dataPeriod.year, dataPeriod.month - 1, 1)))
     : null;
@@ -267,7 +280,7 @@ export function CampaignSummaryCard({
             </div>
           </div>
           <div className="text-right flex-shrink-0 ml-4">
-            <p className="text-2xl font-bold text-primary">{hasRecordsInRange ? `${achievement}%` : 'No data'}</p>
+            <p className="text-2xl font-bold text-primary">{achievementLabel}</p>
             <p className="text-xs text-muted-foreground">{activeCollectors} collectors</p>
           </div>
         </div>
@@ -289,12 +302,17 @@ export function CampaignSummaryCard({
               No production records fall within the selected date range. Adjust the date filter to view this campaign&apos;s imported performance.
             </div>
           )}
+          {hasRecordsInRange && (goalStatus === 'missing' || dataStatus === 'missing-goal') && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              Production was imported for this period, but the workbook does not contain a valid campaign or agent goal.
+            </div>
+          )}
           {/* KPI Cards */}
           {acq ? (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
                 <p className="text-xs text-muted-foreground mb-1">Monthly Goal (NTB)</p>
-                <p className="text-xl font-bold text-blue-600">{goal.toLocaleString()}</p>
+                <p className="text-xl font-bold text-blue-600">{goalStatus === 'missing' ? 'Unavailable' : goal.toLocaleString()}</p>
               </div>
               <div className="bg-gradient-to-br from-indigo-50 to-indigo-100/50 rounded-lg p-3">
                 <p className="text-xs text-muted-foreground mb-1">Monthly Goal (Supplementary)</p>
@@ -332,7 +350,7 @@ export function CampaignSummaryCard({
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
                 <p className="text-xs text-muted-foreground mb-1">{mbpl ? 'Imported Goal' : `Goal (${metricLabel})`}</p>
-                <p className="text-xl font-bold text-blue-600">{formatKpiValue(displayMetric, goal)}</p>
+                <p className="text-xl font-bold text-blue-600">{goalStatus === 'missing' ? 'Unavailable' : formatKpiValue(displayMetric, goal)}</p>
               </div>
               <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
                 <p className="text-xs text-muted-foreground mb-1">{mbpl ? 'Imported Actual' : `Current ${metricLabel}`}</p>

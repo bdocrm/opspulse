@@ -4,6 +4,10 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getAssignedCampaignIds } from "@/lib/user-campaigns";
 import { ensureCampaignGoalTable } from "@/lib/campaign-goals";
+import {
+  calculateCampaignAchievement,
+  summarizeCampaignAchievements,
+} from "@/lib/campaign-achievement";
 
 const BUSINESS_TIME_ZONE = "Asia/Manila";
 const BUSINESS_TIME_ZONE_OFFSET = "+08:00";
@@ -98,11 +102,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const user = session.user as any;
+    if (user.role !== "COLLECTOR") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
 
     const { searchParams } = new URL(req.url);
     const dateFrom = searchParams.get("dateFrom");
     const dateTo = searchParams.get("dateTo");
     const attendanceDate = searchParams.get("attendanceDate") || dateTo;
+    const requestedCampaignId = searchParams.get("campaignId");
 
     if (!dateFrom || !dateTo) {
       return NextResponse.json({ error: "Date range required" }, { status: 400 });
@@ -124,7 +132,21 @@ export async function GET(req: NextRequest) {
     const { month: goalMonth, year: goalYear } = monthYearFromYmd(dateTo);
 
     // Resolve the collector's assigned campaigns (join table + legacy primary).
-    const assignedIds = await getAssignedCampaignIds(user.id);
+    const authorizedCampaignIds = await getAssignedCampaignIds(user.id);
+    if (
+      requestedCampaignId &&
+      requestedCampaignId !== "all" &&
+      !authorizedCampaignIds.includes(requestedCampaignId)
+    ) {
+      return NextResponse.json(
+        { error: "Campaign is not assigned to this collector" },
+        { status: 403 }
+      );
+    }
+    const assignedIds =
+      requestedCampaignId && requestedCampaignId !== "all"
+        ? [requestedCampaignId]
+        : authorizedCampaignIds;
     if (assignedIds.length === 0) {
       return NextResponse.json({ campaigns: [] });
     }
@@ -300,10 +322,6 @@ export async function GET(req: NextRequest) {
       if (record.target != null && record.achievement != null) return Math.round(Number(record.target) * Number(record.achievement));
       return null;
     };
-    const hasUsableImportedActual = (record: (typeof dashboardAgentRecords)[number]) => {
-      const actual = importedActual(record);
-      return actual != null && (actual !== 0 || Number(record.target || 0) > 0);
-    };
     const dashboardAgentImportPeriodKeys = new Set(
       usableDashboardAgentRecords
         .filter((record) => record.recordKind === "agent_monitoring" && importedActual(record) != null && record.month != null)
@@ -405,7 +423,6 @@ export async function GET(req: NextRequest) {
       importedRosterByCampaign.set(record.campaignId, list);
     }
 
-    const campaignsWithStandardProduction = new Set(details.map((detail) => detail.campaignId));
     const campaignsWithMonthlyProductionImport = new Set(
       details
         .filter((detail) => detail.productionEntry.importFileName
@@ -416,15 +433,40 @@ export async function GET(req: NextRequest) {
     const mbPaCampaignIds = new Set(campaigns.filter((campaign) => /\bMB\s*PA\b/i.test(campaign.campaignName)).map((campaign) => campaign.id));
     const mbPlCampaignIds = new Set(campaigns.filter((campaign) => /\bMB\s*PL\b/i.test(campaign.campaignName)).map((campaign) => campaign.id));
     const importedMetricGoalsByCampaign = new Map<string, Record<string, Record<string, number>>>();
+    const importedSummaryByCampaignPeriod = new Map<string, { goal: number; actual: number }>();
     for (const metric of rawMetricRecords) {
-      if (!metric.sourceFile || metric.goal == null || metric.reportMonth == null) continue;
+      if (!metric.sourceFile || metric.reportMonth == null) continue;
       const periodIndex = metric.reportYear * 12 + metric.reportMonth;
       if (periodIndex < selectedStartPeriodIndex || periodIndex > selectedEndPeriodIndex) continue;
-      const byAgent = importedMetricGoalsByCampaign.get(metric.campaignId) ?? {};
-      const goals = byAgent[metric.agentId] ?? {};
-      goals[metric.metricType] = (goals[metric.metricType] ?? 0) + Number(metric.goal);
-      byAgent[metric.agentId] = goals;
-      importedMetricGoalsByCampaign.set(metric.campaignId, byAgent);
+      if (metric.goal != null) {
+        const byAgent = importedMetricGoalsByCampaign.get(metric.campaignId) ?? {};
+        const goals = byAgent[metric.agentId] ?? {};
+        goals[metric.metricType] = (goals[metric.metricType] ?? 0) + Number(metric.goal);
+        byAgent[metric.agentId] = goals;
+        importedMetricGoalsByCampaign.set(metric.campaignId, byAgent);
+      }
+      if (metric.metricType === "actual" && metric.actual != null) {
+        const key = `${metric.campaignId}|${metric.reportYear}|${metric.reportMonth}`;
+        const current = importedSummaryByCampaignPeriod.get(key) ?? { goal: 0, actual: 0 };
+        current.actual += Number(metric.actual);
+        // A campaign/team goal repeated on several production rows is one
+        // period goal, never one goal per transaction or collector.
+        current.goal = Math.max(current.goal, Number(metric.goal ?? 0));
+        importedSummaryByCampaignPeriod.set(key, current);
+      }
+    }
+    const importedSummaryGoalByCampaign = new Map<string, number>();
+    const importedSummaryActualByCampaign = new Map<string, number>();
+    for (const [key, summary] of importedSummaryByCampaignPeriod) {
+      const campaignId = key.split("|")[0];
+      importedSummaryGoalByCampaign.set(
+        campaignId,
+        (importedSummaryGoalByCampaign.get(campaignId) ?? 0) + summary.goal
+      );
+      importedSummaryActualByCampaign.set(
+        campaignId,
+        (importedSummaryActualByCampaign.get(campaignId) ?? 0) + summary.actual
+      );
     }
     for (const record of usableDashboardAgentRecords) {
       if (record.recordKind !== "ytd") continue;
@@ -631,82 +673,12 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Dashboard workbooks often contain different latest months per campaign
-    // (for example CIE through May while NTH/VC/Supple end in March). If the
-    // selected range has no imported actuals for one campaign, show that
-    // campaign's latest imported month instead of returning misleading zeros.
-    const campaignsWithImportedActualsInRange = new Set(
-      [...preferredDashboardRecords.values()].filter(hasUsableImportedActual).map((record) => record.campaignId)
-    );
+    // Keep dashboard imports inside the requested reporting period. Pulling a
+    // campaign's latest record from another month made filters look populated
+    // while displaying data that did not belong to the selected month/year.
     const importedFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
-    for (const campaign of campaigns) {
-      if (campaignsWithStandardProduction.has(campaign.id) || campaignsWithImportedActualsInRange.has(campaign.id)) continue;
-      const candidates = [...allPreferredDashboardRecords.values()].filter(
-        (record) => record.campaignId === campaign.id && hasUsableImportedActual(record) && record.month != null
-      );
-      if (candidates.length === 0) continue;
-      const latest = candidates.reduce((current, record) => {
-        const currentPeriod = current.year * 12 + (current.month || 0);
-        const recordPeriod = record.year * 12 + (record.month || 0);
-        return recordPeriod > currentPeriod ? record : current;
-      });
-      const period = { year: latest.year, month: latest.month as number };
-      importedFallbackPeriodByCampaign.set(campaign.id, period);
-      for (const [key, record] of preferredDashboardRecords) {
-        if (record.campaignId === campaign.id) preferredDashboardRecords.delete(key);
-      }
-      for (const [key, record] of allPreferredDashboardRecords) {
-        if (record.campaignId === campaign.id && record.year === period.year && record.month === period.month) {
-          preferredDashboardRecords.set(key, record);
-        }
-      }
-    }
-
-    // Campaign summary (YTD) and collector monitoring worksheets do not
-    // always end in the same month. Select agent-level imports independently
-    // so a newer YTD row cannot hide the latest uploaded collector results.
     const preferredAgentDetailRecords = new Map(preferredDashboardRecords);
     const importedAgentFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
-    for (const campaign of campaigns) {
-      if (!/^BDO\b/i.test(campaign.campaignName)) continue;
-
-      const agentRecordsInRange = [...allPreferredDashboardRecords.entries()].filter(([, record]) =>
-        record.campaignId === campaign.id &&
-        record.recordKind === "agent_monitoring" &&
-        isImportedRecordInSelectedRange(record)
-      );
-      let selectedAgentRecords = agentRecordsInRange;
-
-      if (selectedAgentRecords.length === 0) {
-        const candidates = [...allPreferredDashboardRecords.entries()].filter(([, record]) =>
-          record.campaignId === campaign.id &&
-          record.recordKind === "agent_monitoring" &&
-          record.month != null &&
-          (hasUsableImportedActual(record) || record.target != null)
-        );
-        if (candidates.length > 0) {
-          const latestRecord = candidates.reduce((current, candidate) => {
-            const currentPeriod = current[1].year * 12 + (current[1].month || 0);
-            const candidatePeriod = candidate[1].year * 12 + (candidate[1].month || 0);
-            return candidatePeriod > currentPeriod ? candidate : current;
-          })[1];
-          const period = { year: latestRecord.year, month: latestRecord.month as number };
-          importedAgentFallbackPeriodByCampaign.set(campaign.id, period);
-          selectedAgentRecords = candidates.filter(([, record]) =>
-            record.year === period.year && record.month === period.month
-          );
-        }
-      }
-
-      for (const [key, record] of preferredAgentDetailRecords) {
-        if (record.campaignId === campaign.id && record.recordKind === "agent_monitoring") {
-          preferredAgentDetailRecords.delete(key);
-        }
-      }
-      for (const [key, record] of selectedAgentRecords) {
-        preferredAgentDetailRecords.set(key, record);
-      }
-    }
     const campaignsWithCashInstallment = new Set(
       usableDashboardAgentRecords.filter((record) => /cash installment/i.test(record.metric)).map((record) => record.campaignId)
     );
@@ -822,6 +794,35 @@ export async function GET(req: NextRequest) {
     const entryCountByCampaign = new Map<string, number>();
     for (const e of entries) {
       entryCountByCampaign.set(e.campaignId, (entryCountByCampaign.get(e.campaignId) ?? 0) + 1);
+    }
+    const detailCountByCampaign = new Map<string, number>();
+    for (const detail of details) {
+      detailCountByCampaign.set(
+        detail.campaignId,
+        (detailCountByCampaign.get(detail.campaignId) ?? 0) + 1
+      );
+    }
+    const metricCountByCampaign = new Map<string, number>();
+    for (const metric of rawMetricRecords) {
+      if (!metric.sourceFile || metric.reportMonth == null) continue;
+      const periodIndex = metric.reportYear * 12 + metric.reportMonth;
+      if (
+        periodIndex < selectedStartPeriodIndex ||
+        periodIndex > selectedEndPeriodIndex
+      ) {
+        continue;
+      }
+      metricCountByCampaign.set(
+        metric.campaignId,
+        (metricCountByCampaign.get(metric.campaignId) ?? 0) + 1
+      );
+    }
+    const dashboardRecordCountByCampaign = new Map<string, number>();
+    for (const record of preferredAgentDetailRecords.values()) {
+      dashboardRecordCountByCampaign.set(
+        record.campaignId,
+        (dashboardRecordCountByCampaign.get(record.campaignId) ?? 0) + 1
+      );
     }
 
     const result = campaigns.map((c) => {
@@ -995,36 +996,96 @@ export async function GET(req: NextRequest) {
         (sum, agent) => sum + Number(normalizedGoalsByAgent[agent.id]?.supplementary ?? 0),
         0
       );
+      const importedCampaignGoal = Number(
+        importedGoalByCampaign.get(c.id) ??
+        importedSummaryGoalByCampaign.get(c.id) ??
+        0
+      );
+      const fallbackGoal = isBdoCampaign
+        ? hasDashboardAgentTargetImport
+          ? normalizedPrimaryGoalTotal
+          : hasBdoAgentImport
+            ? importedTargetTotal
+            : ceoGoal
+        : isMbPaCampaign
+          ? hasCampaignAgentImport
+            ? normalizedPrimaryGoalTotal
+            : Number(mbPaGoalByCampaign.get(c.id) || ceoGoal)
+          : isMbPlCampaign && hasMbPlImport
+            ? mbPlImportedGoal
+            : hasCampaignAgentImport
+              ? normalizedPrimaryGoalTotal || importedAgentGoalByCampaign.get(c.id) || 0
+              : ceoGoal;
+      // Explicit campaign/team goals from the imported workbook always win.
+      // Otherwise use one goal per unique agent and reporting period; the
+      // maps above are keyed by agent and metric so transaction rows cannot
+      // multiply the same target.
+      const resolvedGoalValue = importedCampaignGoal || fallbackGoal;
+      const resolvedGoal = resolvedGoalValue > 0 ? resolvedGoalValue : null;
+      const resolvedActual = isBdoCampaign
+        ? hasBdoAgentImport
+          ? bdoActualFromAgents
+          : importedActualByCampaign.get(c.id) ??
+            importedSummaryActualByCampaign.get(c.id) ??
+            null
+        : isMbPaCampaign
+          ? mbPaActualByCampaign.get(c.id) ??
+            importedSummaryActualByCampaign.get(c.id) ??
+            null
+          : isMbPlCampaign && hasMbPlImport
+            ? mbPlImportedActual
+            : importedActualByCampaign.get(c.id) ??
+              importedSummaryActualByCampaign.get(c.id) ??
+              null;
+      const resolvedKpiMetric = isMbPlCampaign && hasMbPlImport
+        ? "actual"
+        : hasDashboardAgentImport || hasDashboardAgentTargetImport
+          ? campaignKpiById.get(c.id) || c.kpiMetric || "booked"
+          : effectiveBdoGoalConfig?.kpiMetric ||
+            savedGoal?.kpiMetric ||
+            campaignKpiById.get(c.id) ||
+            c.kpiMetric ||
+            "booked";
+      const productionFromAgents = Object.values(production).reduce(
+        (sum, row) => {
+          if (isAcqCampaign) return sum + Number(row.ntb || 0);
+          return sum + Number(row[resolvedKpiMetric] || 0);
+        },
+        0
+      );
+      const campaignProduction = Number(resolvedActual ?? productionFromAgents);
+      const recordCount =
+        (detailCountByCampaign.get(c.id) ?? 0) +
+        (dashboardRecordCountByCampaign.get(c.id) ?? 0) +
+        (metricCountByCampaign.get(c.id) ?? 0);
+      const campaignAchievement = calculateCampaignAchievement({
+        campaignId: c.id,
+        campaignName: c.campaignName,
+        production: campaignProduction,
+        goal: resolvedGoal,
+        agentCount: campaignAgents.length,
+        recordCount,
+        hasCampaignConfiguration: Boolean(
+          savedGoal ||
+          c.monthlyGoal ||
+          c.supplementaryGoal ||
+          campaignAgents.length
+        ),
+      });
 
       return {
         id: c.id,
         campaignName: c.campaignName,
-        kpiMetric: isMbPlCampaign && hasMbPlImport
-          ? "actual"
-          : hasDashboardAgentImport || hasDashboardAgentTargetImport
-            ? campaignKpiById.get(c.id) || c.kpiMetric || "booked"
-            : effectiveBdoGoalConfig?.kpiMetric || savedGoal?.kpiMetric || campaignKpiById.get(c.id) || c.kpiMetric || "booked",
-        goal: isBdoCampaign
-          ? (hasDashboardAgentTargetImport
-            ? normalizedPrimaryGoalTotal
-            : hasBdoAgentImport ? importedTargetTotal : importedGoalByCampaign.get(c.id) || ceoGoal)
-          : isMbPaCampaign
-            ? hasCampaignAgentImport
-              ? normalizedPrimaryGoalTotal
-              : mbPaGoalByCampaign.get(c.id) || ceoGoal
-            : isMbPlCampaign && hasMbPlImport
-              ? mbPlImportedGoal
-            : hasCampaignAgentImport
-              ? normalizedPrimaryGoalTotal || importedAgentGoalByCampaign.get(c.id) || 0
-              : importedGoalByCampaign.get(c.id) || ceoGoal,
-        actual: isBdoCampaign
-          ? (hasBdoAgentImport ? bdoActualFromAgents : importedActualByCampaign.get(c.id) ?? null)
-          : isMbPaCampaign
-            ? mbPaActualByCampaign.get(c.id) ?? null
-            : isMbPlCampaign && hasMbPlImport
-              ? mbPlImportedActual
-            : importedActualByCampaign.get(c.id) ?? null,
-        achievement: isMbPlCampaign && hasMbPlImport ? mbPlImportedAchievement : null,
+        kpiMetric: resolvedKpiMetric,
+        goal: campaignAchievement.goal,
+        actual: resolvedActual,
+        achievement: campaignAchievement.achievementPercent,
+        campaignProduction: campaignAchievement.production,
+        achievementPercent: campaignAchievement.achievementPercent,
+        goalStatus: campaignAchievement.goalStatus,
+        dataStatus: campaignAchievement.dataStatus,
+        agentCount: campaignAchievement.agentCount,
+        recordCount: campaignAchievement.recordCount,
         supplementaryGoal: hasCampaignAgentImport && isAcqCampaign
           ? normalizedSupplementaryGoalTotal
           : normalizedSupplementaryGoalTotal
@@ -1055,7 +1116,42 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    return NextResponse.json({ campaigns: result }, {
+    const summary = summarizeCampaignAchievements(
+      result.map((campaign) => ({
+        campaignId: campaign.id,
+        campaignName: campaign.campaignName,
+        production: campaign.campaignProduction,
+        goal: campaign.goal,
+        agentCount: campaign.agentCount,
+        recordCount: campaign.recordCount,
+        achievementPercent: campaign.achievementPercent,
+        goalStatus: campaign.goalStatus,
+        dataStatus: campaign.dataStatus,
+      }))
+    );
+    if (process.env.NODE_ENV !== "production") {
+      console.info("[collector-dashboard-aggregation]", {
+        dateFrom,
+        dateTo,
+        requestedCampaignId: requestedCampaignId || "all",
+        campaignCount: result.length,
+        campaignsWithProduction: summary.campaignsWithProduction,
+        campaignsWithoutProduction: summary.campaignsWithoutProduction,
+        campaignsWithoutGoal: summary.campaignsWithoutGoal,
+      });
+    }
+
+    return NextResponse.json({
+      filters: {
+        campaign: requestedCampaignId || "all",
+        month: selectedEndPeriod.month,
+        year: selectedEndPeriod.year,
+        dateFrom,
+        dateTo,
+      },
+      summary,
+      campaigns: result,
+    }, {
       headers: {
         "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
         Pragma: "no-cache",
