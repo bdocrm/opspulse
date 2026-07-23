@@ -8,7 +8,6 @@ import { PageTitle } from "@/components/layout/page-title";
 import { CampaignSelector } from "@/components/campaign-selector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { KpiCard } from "@/components/kpi-card";
 import { ExportButton } from "@/components/export-button";
 import { CampaignBarChart } from "@/components/charts/campaign-bar-chart";
 import { DailyLineChart } from "@/components/charts/daily-line-chart";
@@ -31,10 +30,14 @@ import {
   BarChart3,
   ChevronDown,
   CheckCircle2,
+  HelpCircle,
+  Minus,
   RefreshCw,
   Target,
   Table2,
+  TrendingDown,
   TrendingUp,
+  type LucideIcon,
 } from "lucide-react";
 
 interface Campaign {
@@ -113,6 +116,13 @@ interface ExecutiveRow {
   [key: string]: string | number | boolean | null | undefined;
 }
 
+interface PriorityAction {
+  campaign: string;
+  issue: string;
+  action: string;
+  tone: StatusTone;
+}
+
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
@@ -132,6 +142,11 @@ const fetcher = async (url: string) => {
 
 const numberFmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 const pctFmt = new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const currencyFmt = new Intl.NumberFormat("en-PH", {
+  style: "currency",
+  currency: "PHP",
+  maximumFractionDigits: 0,
+});
 
 function formatNumber(value: number | null | undefined) {
   return numberFmt.format(Number(value ?? 0));
@@ -141,18 +156,92 @@ function formatPct(value: number | null | undefined) {
   return `${pctFmt.format(Number(value ?? 0))}%`;
 }
 
+function formatCurrency(value: number | null | undefined) {
+  return currencyFmt.format(Number(value ?? 0));
+}
+
+function formatSignedCurrency(value: number) {
+  return `${value > 0 ? "+" : ""}${formatCurrency(value)}`;
+}
+
+function formatSignedPoints(value: number) {
+  return `${value > 0 ? "+" : ""}${pctFmt.format(value)} pts`;
+}
+
 function getStatus(achievement: number | null | undefined): { label: string; tone: StatusTone } {
-  if (achievement == null) return { label: "Information", tone: "info" };
-  if (achievement >= 100) return { label: "Good / Above target", tone: "good" };
-  if (achievement >= 80) return { label: "Needs attention", tone: "attention" };
-  return { label: "Critical / Below target", tone: "critical" };
+  if (achievement == null) return { label: "No data", tone: "info" };
+  if (achievement >= 100) return { label: "Above target", tone: "good" };
+  if (achievement >= 80) return { label: "Near target", tone: "attention" };
+  return { label: "Needs attention", tone: "critical" };
 }
 
 function statusBadgeClass(tone: StatusTone) {
   if (tone === "good") return "bg-green-500/10 text-green-600";
   if (tone === "attention") return "bg-yellow-500/10 text-yellow-600";
   if (tone === "critical") return "bg-red-500/10 text-red-600";
-  return "bg-blue-500/10 text-blue-600";
+  return "bg-muted text-muted-foreground";
+}
+
+function statusBarClass(tone: StatusTone) {
+  if (tone === "good") return "bg-green-500";
+  if (tone === "attention") return "bg-yellow-500";
+  if (tone === "critical") return "bg-red-500";
+  return "bg-muted-foreground/40";
+}
+
+function ExecutiveKpiCard({
+  title,
+  value,
+  goal,
+  difference,
+  status,
+  tooltip,
+  icon: Icon,
+}: {
+  title: string;
+  value: string;
+  goal: string;
+  difference: string;
+  status: { label: string; tone: StatusTone };
+  tooltip: string;
+  icon: LucideIcon;
+}) {
+  const TrendIcon = status.tone === "good"
+    ? TrendingUp
+    : status.tone === "critical"
+      ? TrendingDown
+      : Minus;
+
+  return (
+    <Card className="overflow-hidden">
+      <CardContent className="min-h-[172px] p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+              <span title={tooltip} aria-label={`${title} information`} tabIndex={0}>
+                <HelpCircle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              </span>
+            </div>
+            <p className="mt-3 truncate text-3xl font-bold tracking-tight text-foreground" title={value}>{value}</p>
+          </div>
+          <div className="rounded-xl bg-muted p-2.5">
+            <Icon className="h-5 w-5 text-muted-foreground" />
+          </div>
+        </div>
+        <div className="mt-5 flex items-end justify-between gap-3 border-t border-border/60 pt-3">
+          <div className="min-w-0 text-xs text-muted-foreground">
+            <p>Goal: <span className="font-medium text-foreground">{goal}</span></p>
+            <p className="mt-1 truncate" title={difference}>Difference: <span className="font-medium text-foreground">{difference}</span></p>
+          </div>
+          <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold", statusBadgeClass(status.tone))}>
+            <TrendIcon className="h-3.5 w-3.5" />
+            {status.label}
+          </span>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 function average(values: number[]) {
@@ -176,19 +265,6 @@ function buildStats(rows: ExecutiveRow[]) {
   }, null);
 
   return { total, average: average(values), highest, lowest };
-}
-
-function insightText(rows: ExecutiveRow[], emptyText = "No data available") {
-  const includedRows = rows.filter((row) => row.hasData !== false);
-  if (includedRows.length === 0) return emptyText;
-  const best = [...includedRows].sort((a, b) => Number(b.achievement ?? b.actual ?? b.value ?? 0) - Number(a.achievement ?? a.actual ?? a.value ?? 0))[0];
-  const lowest = [...includedRows].sort((a, b) => Number(a.achievement ?? a.actual ?? a.value ?? 0) - Number(b.achievement ?? b.actual ?? b.value ?? 0))[0];
-  const concern = includedRows.find((row) => row.statusTone === "critical") ?? includedRows.find((row) => row.statusTone === "attention");
-  return [
-    `Best: ${best.name}`,
-    `Lowest: ${lowest.name}`,
-    `Main Concern: ${concern ? `${concern.name} needs attention` : "No immediate concern"}`,
-  ].join(" | ");
 }
 
 function NoData({ message = "No data available" }: { message?: string }) {
@@ -377,11 +453,14 @@ export default function DashboardPage() {
   const router = useRouter();
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
   const [expandedTables, setExpandedTables] = useState<Record<string, boolean>>({
-    campaign: false,
     daily: false,
     distribution: false,
     leaderboard: false,
   });
+  const [showAllRecommendations, setShowAllRecommendations] = useState(false);
+  const [showAllCampaigns, setShowAllCampaigns] = useState(false);
+  const [showCampaignDetails, setShowCampaignDetails] = useState(false);
+  const [showDetailedAnalytics, setShowDetailedAnalytics] = useState(false);
 
   const now = new Date();
   const [year, setYear] = useState<number>(now.getFullYear());
@@ -553,18 +632,83 @@ export default function DashboardPage() {
     : kpis.avgAchievement == null ? "with a missing goal" : kpis.avgAchievement >= 100 ? "above target" : kpis.avgAchievement >= 80 ? "near target" : "below target";
 
   const ceoSummary = performanceCampaignRows.length > 0
-    ? `Total MTD is ${overallStatus} at ${formatPct(kpis.avgAchievement)}. ${bestCampaign?.name ?? "The leading campaign"} is currently the strongest campaign. ${weakestCampaign ? `${weakestCampaign.name} needs attention.` : "No campaign is in the critical range right now."}${campaignsWithoutData > 0 ? ` ${campaignsWithoutData} campaign${campaignsWithoutData === 1 ? "" : "s"} have no production data for this period.` : ""}`
-    : "No data available";
-
-  const recommendedActions = campaignRows.length > 0
     ? [
-        weakestCampaign ? `Monitor ${weakestCampaign.name} because it is ${weakestCampaign.status.toLowerCase()}.` : null,
-        bestCampaign ? `Maintain ${bestCampaign.name} performance because it is the top campaign.` : null,
-        lowestCampaign ? `Review ${lowestCampaign.name} for possible coaching, staffing, or volume issues.` : null,
-        campaignsWithoutData > 0 ? `Verify or import production data for ${campaignsWithoutData} campaign${campaignsWithoutData === 1 ? "" : "s"} with no records this period.` : null,
-        leaderboardRows.length > 0 ? "Review agents outside the top performers for low achievement patterns." : null,
-      ].filter(Boolean) as string[]
-    : ["No data available"];
+        `Total MTD is ${overallStatus} at ${formatPct(kpis.avgAchievement)} achievement.`,
+        `${bestCampaign?.name ?? "The leading campaign"} leads, while ${lowestCampaign?.name ?? "the lowest campaign"} is furthest from target.`,
+        weakestCampaign
+          ? `${weakestCampaign.name} is the immediate priority${campaignsWithoutData > 0 ? `, with ${campaignsWithoutData} campaign${campaignsWithoutData === 1 ? "" : "s"} also missing production data` : ""}.`
+          : campaignsWithoutData > 0
+            ? `${campaignsWithoutData} campaign${campaignsWithoutData === 1 ? " has" : "s have"} no production data and should be verified.`
+            : "No campaign currently requires urgent intervention.",
+      ]
+    : ["No production data is available for the selected period."];
+
+  const underTargetActions: PriorityAction[] = [...performanceCampaignRows]
+    .filter((row) => Number(row.achievement ?? 0) < 100)
+    .sort((a, b) => Number(a.achievement ?? 0) - Number(b.achievement ?? 0))
+    .map((row) => ({
+      campaign: row.name,
+      issue: `${row.status} · ${formatPct(row.achievement)}`,
+      action: row.recommendation,
+      tone: row.statusTone,
+    }));
+  const noDataActions: PriorityAction[] = campaignRows
+    .filter((row) => row.hasData === false)
+    .map((row) => ({
+      campaign: row.name,
+      issue: "No production data",
+      action: row.recommendation,
+      tone: "info",
+    }));
+  const priorityActions: PriorityAction[] = [...underTargetActions, ...noDataActions];
+  if (priorityActions.length === 0 && bestCampaign) {
+    priorityActions.push({
+      campaign: bestCampaign.name,
+      issue: "Performance is on or above target",
+      action: "Maintain momentum and protect current output.",
+      tone: "good",
+    });
+  }
+
+  const topCampaigns = performanceCampaignRows.slice(0, 5);
+  const bottomCampaigns = performanceCampaignRows.slice(-5);
+  const campaignPreviewRows = performanceCampaignRows.length > 0
+    ? Array.from(
+        new Map([...topCampaigns, ...bottomCampaigns].map((row) => [row.name, row])).values()
+      )
+    : campaignRows.slice(0, 10);
+  const visibleCampaignRows = showAllCampaigns ? campaignRows : campaignPreviewRows;
+  const campaignsBelowTarget = performanceCampaignRows.filter((row) => Number(row.achievement ?? 0) < 100).length;
+
+  const goalValues = campaignTable
+    .filter((campaign) => campaign.hasData)
+    .map((campaign) => campaign.goal)
+    .filter((goal): goal is number => goal != null);
+  const totalGoal = goalValues.length > 0
+    ? goalValues.reduce((sum, goal) => sum + goal, 0)
+    : null;
+  const totalMtdStatus = performanceCampaignRows.length > 0
+    ? getStatus(kpis.avgAchievement)
+    : { label: "No data", tone: "info" as const };
+  const runRateStatus = performanceCampaignRows.length > 0
+    ? getStatus(kpis.avgRRAchievement)
+    : { label: "No data", tone: "info" as const };
+  const loadingStatus = { label: "Loading", tone: "info" as const };
+  const totalMtdDifference = kpis.totalMTD != null && totalGoal != null
+    ? formatSignedCurrency(kpis.totalMTD - totalGoal)
+    : "Not available";
+  const runRateDifference = kpis.avgRunRate != null && totalGoal != null
+    ? formatSignedCurrency(kpis.avgRunRate - totalGoal)
+    : "Not available";
+  const achievementDifference = kpis.avgAchievement != null
+    ? formatSignedPoints(kpis.avgAchievement - 100)
+    : "Not available";
+  const runRateAchievementDifference = kpis.avgRRAchievement != null
+    ? formatSignedPoints(kpis.avgRRAchievement - 100)
+    : "Not available";
+  const visiblePriorityActions = showAllRecommendations
+    ? priorityActions
+    : priorityActions.slice(0, 3);
 
   const toggleTable = (key: string) => {
     setExpandedTables((current) => ({ ...current, [key]: !current[key] }));
@@ -628,93 +772,256 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          title="Total MTD"
-          value={kpis.totalMTD == null ? "No data" : `₱${kpis.totalMTD.toLocaleString()}`}
-          icon={Target}
-          pct={kpis.avgAchievement ?? undefined}
-        />
-        <KpiCard
-          title="Achievement %"
-          value={kpis.avgAchievement == null ? "Goal missing" : `${kpis.avgAchievement.toFixed(1)}%`}
-          icon={TrendingUp}
-          pct={kpis.avgAchievement ?? undefined}
-        />
-        <KpiCard
-          title="Run Rate"
-          value={kpis.avgRunRate == null ? "No data" : `₱${kpis.avgRunRate.toLocaleString()}`}
-          icon={Activity}
-          pct={kpis.avgRRAchievement ?? undefined}
-        />
-        <KpiCard
-          title="RR Achievement %"
-          value={kpis.avgRRAchievement == null ? "Goal missing" : `${kpis.avgRRAchievement.toFixed(1)}%`}
-          icon={BarChart3}
-          pct={kpis.avgRRAchievement ?? undefined}
-        />
+      <section className="mb-6" aria-labelledby="executive-kpis">
+        <h2 id="executive-kpis" className="sr-only">Executive KPI summary</h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <ExecutiveKpiCard
+            title="Total MTD"
+            value={isLoading ? "Loading..." : kpis.totalMTD == null ? "No data" : formatCurrency(kpis.totalMTD)}
+            goal={isLoading ? "Loading..." : totalGoal == null ? "Goal missing" : formatCurrency(totalGoal)}
+            difference={isLoading ? "Loading..." : totalMtdDifference}
+            status={isLoading ? loadingStatus : totalMtdStatus}
+            tooltip="Total month-to-date production for the selected campaign and period."
+            icon={Target}
+          />
+          <ExecutiveKpiCard
+            title="Achievement %"
+            value={isLoading ? "Loading..." : kpis.avgAchievement == null ? "Goal missing" : formatPct(kpis.avgAchievement)}
+            goal="100.0%"
+            difference={isLoading ? "Loading..." : achievementDifference}
+            status={isLoading ? loadingStatus : totalMtdStatus}
+            tooltip="Current achievement against the configured monthly goal."
+            icon={TrendingUp}
+          />
+          <ExecutiveKpiCard
+            title="Run Rate"
+            value={isLoading ? "Loading..." : kpis.avgRunRate == null ? "No data" : formatCurrency(kpis.avgRunRate)}
+            goal={isLoading ? "Loading..." : totalGoal == null ? "Goal missing" : formatCurrency(totalGoal)}
+            difference={isLoading ? "Loading..." : runRateDifference}
+            status={isLoading ? loadingStatus : runRateStatus}
+            tooltip="Projected end-of-period production using the existing run-rate calculation."
+            icon={Activity}
+          />
+          <ExecutiveKpiCard
+            title="Run Rate Achievement"
+            value={isLoading ? "Loading..." : kpis.avgRRAchievement == null ? "Goal missing" : formatPct(kpis.avgRRAchievement)}
+            goal="100.0%"
+            difference={isLoading ? "Loading..." : runRateAchievementDifference}
+            status={isLoading ? loadingStatus : runRateStatus}
+            tooltip="Projected run rate expressed as a percentage of the configured goal."
+            icon={BarChart3}
+          />
+        </div>
+      </section>
+
+      <div className="mb-6 grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader className="pb-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Operational Insights</p>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <CheckCircle2 className="h-4 w-4 text-green-500" />
+              Executive Summary
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2 text-sm leading-6 text-muted-foreground">
+              {ceoSummary.map((sentence) => <p key={sentence}>{sentence}</p>)}
+            </div>
+            <div className="mt-5 border-t border-border/60 pt-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Overall status</p>
+              <span className={cn("mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold", statusBadgeClass(overallStatusInfo.tone))}>
+                {overallStatusInfo.label}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <AlertTriangle className="h-4 w-4 text-yellow-500" />
+              Priority Actions
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">The three highest-priority campaign decisions for this period.</p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {visiblePriorityActions.length > 0 ? visiblePriorityActions.map((item) => (
+              <div key={`${item.campaign}-${item.issue}`} className="rounded-xl border border-border/60 bg-muted/20 p-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-foreground">{item.campaign}</p>
+                  <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", statusBadgeClass(item.tone))}>
+                    {item.issue}
+                  </span>
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">{item.action}</p>
+              </div>
+            )) : (
+              <NoData message="No campaign recommendations are available." />
+            )}
+            {priorityActions.length > 3 && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="w-full gap-1.5"
+                aria-expanded={showAllRecommendations}
+                onClick={() => setShowAllRecommendations((current) => !current)}
+              >
+                {showAllRecommendations ? "Show Top 3" : "View All Recommendations"}
+                <ChevronDown className={cn("h-4 w-4 transition-transform", showAllRecommendations && "rotate-180")} />
+              </Button>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
-      <Card className="mb-8">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <CheckCircle2 className="h-4 w-4 text-green-500" />
-            Operational Insights
-          </CardTitle>
-          <p className="text-sm text-muted-foreground">Executive summary and recommended next actions.</p>
+      <Card className="mb-6">
+        <CardHeader className="gap-3 pb-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle className="text-base">Campaign Performance</CardTitle>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {showAllCampaigns ? "Showing every campaign." : "Showing the top five and bottom five campaigns by achievement."}
+            </p>
+          </div>
+          {campaignRows.length > campaignPreviewRows.length && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              aria-expanded={showAllCampaigns}
+              onClick={() => setShowAllCampaigns((current) => !current)}
+            >
+              {showAllCampaigns ? "Show Top & Bottom" : "View All Campaigns"}
+              <ChevronDown className={cn("h-4 w-4 transition-transform", showAllCampaigns && "rotate-180")} />
+            </Button>
+          )}
         </CardHeader>
-        <CardContent className="grid gap-5 lg:grid-cols-[1fr_0.85fr]">
-          <div className="space-y-4">
-            <p className="text-sm leading-6 text-muted-foreground">{ceoSummary}</p>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div>
-                <p className="text-xs font-semibold uppercase text-muted-foreground">Top Performer</p>
-                <p className="mt-1 font-semibold">{bestCampaign?.name ?? "No data"}</p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase text-muted-foreground">Needs Attention</p>
-                <p className="mt-1 font-semibold">{weakestCampaign?.name ?? lowestCampaign?.name ?? "No data"}</p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase text-muted-foreground">Overall</p>
-                <span className={cn("mt-1 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold", statusBadgeClass(overallStatusInfo.tone))}>
-                  {overallStatusInfo.label}
-                </span>
-              </div>
+        <CardContent className="space-y-4">
+          {isLoading ? (
+            <NoData message="Loading campaign performance..." />
+          ) : visibleCampaignRows.length === 0 ? (
+            <NoData />
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2">
+              {visibleCampaignRows.map((row) => {
+                const achievement = Number(row.achievement ?? 0);
+                const barWidth = row.hasData === false ? 0 : Math.min(Math.max(achievement, 0), 100);
+                return (
+                  <div key={row.name} className="rounded-xl border border-border/60 p-3.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", statusBarClass(row.statusTone))} />
+                          <p className="truncate text-sm font-semibold text-foreground" title={row.name}>{row.name}</p>
+                        </div>
+                        <p className="mt-1 pl-[18px] text-xs text-muted-foreground">{row.status}</p>
+                      </div>
+                      <p className="shrink-0 text-sm font-bold text-foreground">
+                        {row.hasData === false || row.achievement == null ? "No data" : formatPct(row.achievement)}
+                      </p>
+                    </div>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className={cn("h-full rounded-full transition-[width]", statusBarClass(row.statusTone))}
+                        style={{ width: `${barWidth}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          </div>
-          <div className="rounded-xl border border-border/60 bg-muted/20 p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-yellow-500" />
-              <p className="text-sm font-semibold">Recommended Actions</p>
+          )}
+
+          {visibleCampaignRows.length > 0 && (
+            <div className="border-t border-border/60 pt-4">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                aria-expanded={showCampaignDetails}
+                onClick={() => setShowCampaignDetails((current) => !current)}
+              >
+                <BarChart3 className="h-4 w-4" />
+                {showCampaignDetails ? "Hide Campaign Chart & Data" : "View Campaign Chart & Data"}
+                <ChevronDown className={cn("h-4 w-4 transition-transform", showCampaignDetails && "rotate-180")} />
+              </Button>
+              {showCampaignDetails && (
+                <div className="mt-5 space-y-5">
+                  <CampaignBarChart data={visibleCampaignRows.map((row) => ({ ...row, achievement: Number(row.achievement ?? 0) }))} />
+                  <ChartTable rows={visibleCampaignRows} valueLabel="Actual" />
+                </div>
+              )}
             </div>
-            <ul className="space-y-2 text-sm text-muted-foreground">
-              {recommendedActions.map((action) => (
-                <li key={action} className="flex gap-2">
-                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
-                  <span>{action}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+          )}
         </CardContent>
       </Card>
 
-      <div className="mb-8 space-y-8">
-        <ExecutiveChartCard
-          title="Campaign Achievement"
-          insight={`${insightText(campaignRows)} | Overall Status: ${overallStatus}`}
-          explanation={performanceCampaignRows.length > 0 ? `This chart shows which campaign is closest to or above target this period. ${bestCampaign?.name ?? "The top campaign"} is currently strongest, while ${lowestCampaign?.name ?? "the lowest campaign"} is the lowest performer.${campaignsWithoutData > 0 ? ` Campaigns without production data remain visible and are labeled accordingly.` : ""}` : "No production data is available for the selected period."}
-          rows={campaignRows}
-          tableOpen={expandedTables.campaign}
-          onTableToggle={() => toggleTable("campaign")}
-          valueLabel="Actual"
-          tableTitle="Numerical Achievement by Campaign"
-          tableDescription="Achievement is Actual ÷ Goal × 100. Contribution is the campaign Actual ÷ combined Actual of all displayed campaigns × 100."
-          overallStatus={overallStatusInfo}
+      <section className="mb-6" aria-labelledby="executive-highlights">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 id="executive-highlights" className="text-base font-semibold text-foreground">Executive Highlights</h2>
+          <span className="text-xs text-muted-foreground">Selected period</span>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            {
+              label: "Best Campaign",
+              value: bestCampaign?.name ?? "No data",
+              detail: bestCampaign?.achievement == null ? "No achievement data" : formatPct(bestCampaign.achievement),
+              tone: bestCampaign?.statusTone ?? ("info" as StatusTone),
+            },
+            {
+              label: "Lowest Campaign",
+              value: lowestCampaign?.name ?? "No data",
+              detail: lowestCampaign?.achievement == null ? "No achievement data" : formatPct(lowestCampaign.achievement),
+              tone: lowestCampaign?.statusTone ?? ("info" as StatusTone),
+            },
+            {
+              label: "Campaigns Below Target",
+              value: String(campaignsBelowTarget),
+              detail: "Below 100% achievement",
+              tone: campaignsBelowTarget > 0 ? "critical" as StatusTone : "good" as StatusTone,
+            },
+            {
+              label: "Campaigns With No Data",
+              value: String(campaignsWithoutData),
+              detail: "Selected period",
+              tone: campaignsWithoutData > 0 ? "info" as StatusTone : "good" as StatusTone,
+            },
+          ].map((item) => (
+            <Card key={item.label}>
+              <CardContent className="p-4">
+                <div className="flex items-center gap-2">
+                  <span className={cn("h-2.5 w-2.5 rounded-full", statusBarClass(item.tone))} />
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{item.label}</p>
+                </div>
+                <p className="mt-3 truncate text-lg font-bold text-foreground" title={item.value}>{item.value}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      <div className="mb-6 rounded-xl border border-border/70 bg-card">
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-auto w-full justify-between rounded-xl px-5 py-4 text-left"
+          aria-expanded={showDetailedAnalytics}
+          onClick={() => setShowDetailedAnalytics((current) => !current)}
         >
-          <CampaignBarChart data={campaignRows.map((row) => ({ ...row, achievement: Number(row.achievement ?? 0) }))} />
-        </ExecutiveChartCard>
+          <span>
+            <span className="block font-semibold text-foreground">Detailed Analytics</span>
+            <span className="mt-1 block text-xs font-normal text-muted-foreground">Daily trends, agent performance, distribution, goals, and the complete campaign table.</span>
+          </span>
+          <ChevronDown className={cn("h-5 w-5 shrink-0 transition-transform", showDetailedAnalytics && "rotate-180")} />
+        </Button>
+      </div>
+
+      {showDetailedAnalytics && (
+        <div className="mb-8 space-y-8">
 
         <ExecutiveChartCard
           title="Daily Trend"
@@ -757,11 +1064,10 @@ export default function DashboardPage() {
             <DistributionPieChart data={distributionRows.map((row) => ({ ...row, value: Number(row.value ?? 0) }))} />
           </ExecutiveChartCard>
         </div>
-      </div>
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">Campaign Performance</CardTitle>
+          <CardTitle className="text-base">Complete Campaign Data</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -820,6 +1126,8 @@ export default function DashboardPage() {
           </div>
         </CardContent>
       </Card>
+        </div>
+      )}
     </>
   );
 }
