@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, ReactNode } from "react";
+import { useState, useEffect, useMemo, useRef, ReactNode } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
@@ -189,6 +189,13 @@ function statusBarClass(tone: StatusTone) {
   return "bg-muted-foreground/40";
 }
 
+function statusAccentClass(tone: StatusTone) {
+  if (tone === "good") return "border-t-green-500";
+  if (tone === "attention") return "border-t-yellow-500";
+  if (tone === "critical") return "border-t-red-500";
+  return "border-t-muted-foreground/40";
+}
+
 function ExecutiveKpiCard({
   title,
   value,
@@ -213,14 +220,26 @@ function ExecutiveKpiCard({
       : Minus;
 
   return (
-    <Card className="overflow-hidden">
+    <Card className={cn("overflow-hidden border-t-2", statusAccentClass(status.tone))}>
       <CardContent className="min-h-[172px] p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
-              <span title={tooltip} aria-label={`${title} information`} tabIndex={0}>
-                <HelpCircle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="group relative inline-flex">
+                <button
+                  type="button"
+                  className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  aria-label={`${title}: ${tooltip}`}
+                >
+                  <HelpCircle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                </button>
+                <span
+                  role="tooltip"
+                  className="pointer-events-none absolute left-1/2 top-6 z-20 hidden w-56 -translate-x-1/2 rounded-lg border border-border bg-popover px-3 py-2 text-left text-xs font-normal normal-case tracking-normal text-popover-foreground shadow-lg group-hover:block group-focus-within:block"
+                >
+                  {tooltip}
+                </span>
               </span>
             </div>
             <p className="mt-3 truncate text-3xl font-bold tracking-tight text-foreground" title={value}>{value}</p>
@@ -241,6 +260,41 @@ function ExecutiveKpiCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function CampaignPerformanceItem({ row }: { row: ExecutiveRow }) {
+  const achievement = Number(row.achievement ?? 0);
+  const barWidth = row.hasData === false ? 0 : Math.min(Math.max(achievement, 0), 100);
+
+  return (
+    <div className="rounded-xl border border-border/60 bg-card p-3.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", statusBarClass(row.statusTone))} />
+            <p className="truncate text-sm font-semibold text-foreground" title={row.name}>{row.name}</p>
+          </div>
+          <p className="mt-1 pl-[18px] text-xs text-muted-foreground">{row.status}</p>
+        </div>
+        <p className="shrink-0 text-sm font-bold tabular-nums text-foreground">
+          {row.hasData === false || row.achievement == null ? "No data" : formatPct(row.achievement)}
+        </p>
+      </div>
+      <div
+        className="mt-3 h-2 overflow-hidden rounded-full bg-muted"
+        role="progressbar"
+        aria-label={`${row.name} achievement`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={row.hasData === false ? undefined : Math.round(achievement)}
+      >
+        <div
+          className={cn("h-full rounded-full transition-[width]", statusBarClass(row.statusTone))}
+          style={{ width: `${barWidth}%` }}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -481,7 +535,8 @@ export default function DashboardPage() {
     refreshInterval: 30000,
     revalidateOnMount: true,
     revalidateOnFocus: true,
-    dedupingInterval: 0,
+    dedupingInterval: 5000,
+    keepPreviousData: true,
   });
 
   const hasUsableData = data && !data.error;
@@ -514,38 +569,42 @@ export default function DashboardPage() {
   const distribution = hasUsableData ? data.distribution ?? [] : [];
   const leaderboard = hasUsableData ? data.leaderboard ?? [] : [];
 
-  const campaignTotal = campaignTable.reduce((sum, campaign) => sum + Number(campaign.mtd || 0), 0);
-  const campaignRows: ExecutiveRow[] = [...campaignTable]
-    .sort((a, b) => {
-      if (a.hasData !== b.hasData) return a.hasData ? -1 : 1;
-      return a.hasData
-        ? Number(b.achievement ?? -Infinity) - Number(a.achievement ?? -Infinity)
-        : a.campaignName.localeCompare(b.campaignName);
-    })
-    .map((campaign, index) => {
-      const statusInfo = campaign.hasData
-        ? getStatus(campaign.achievement)
-        : { label: "No production data", tone: "info" as const };
-      return {
-        name: campaign.campaignName,
-        hasData: campaign.hasData,
-        achievement: campaign.hasData ? campaign.achievement : null,
-        value: campaign.achievement,
-        actual: campaign.hasData ? campaign.mtd ?? undefined : undefined,
-        goal: campaign.goal,
-        contribution: campaignTotal > 0 ? (Number(campaign.mtd || 0) / campaignTotal) * 100 : 0,
-        rank: index + 1,
-        status: statusInfo.label,
-        statusTone: statusInfo.tone,
-        recommendation: !campaign.hasData
-          ? "Import or verify production data for the selected period."
-          : statusInfo.tone === "good"
-          ? "Maintain momentum and protect current output."
-          : "Review blockers and focus management attention here.",
-      };
-    });
+  const { campaignTotal, campaignRows } = useMemo(() => {
+    const total = campaignTable.reduce((sum, campaign) => sum + Number(campaign.mtd || 0), 0);
+    const rows: ExecutiveRow[] = [...campaignTable]
+      .sort((a, b) => {
+        if (a.hasData !== b.hasData) return a.hasData ? -1 : 1;
+        return a.hasData
+          ? Number(b.achievement ?? -Infinity) - Number(a.achievement ?? -Infinity)
+          : a.campaignName.localeCompare(b.campaignName);
+      })
+      .map((campaign, index) => {
+        const statusInfo = campaign.hasData
+          ? getStatus(campaign.achievement)
+          : { label: "No production data", tone: "info" as const };
+        return {
+          name: campaign.campaignName,
+          hasData: campaign.hasData,
+          achievement: campaign.hasData ? campaign.achievement : null,
+          value: campaign.achievement,
+          actual: campaign.hasData ? campaign.mtd ?? undefined : undefined,
+          goal: campaign.goal,
+          contribution: total > 0 ? (Number(campaign.mtd || 0) / total) * 100 : 0,
+          rank: index + 1,
+          status: statusInfo.label,
+          statusTone: statusInfo.tone,
+          recommendation: !campaign.hasData
+            ? "Import or verify production data for the selected period."
+            : statusInfo.tone === "good"
+            ? "Maintain momentum and protect current output."
+            : "Review blockers and focus management attention here.",
+        };
+      });
 
-  const distributionRows: ExecutiveRow[] = distribution
+    return { campaignTotal: total, campaignRows: rows };
+  }, [campaignTable]);
+
+  const distributionRows = useMemo<ExecutiveRow[]>(() => distribution
     .map((item) => {
       const match = campaignTable.find((campaign) => campaign.campaignName === item.name);
       const statusInfo = getStatus(match?.achievement);
@@ -565,59 +624,65 @@ export default function DashboardPage() {
       };
     })
     .sort((a, b) => Number(b.value ?? 0) - Number(a.value ?? 0))
-    .map((row, index) => ({ ...row, rank: index + 1 }));
+    .map((row, index) => ({ ...row, rank: index + 1 })),
+  [campaignTable, campaignTotal, distribution]);
 
-  const dailyTotal = dailyTrend.reduce((sum, day) => sum + day.value, 0);
-  const dailyRows: ExecutiveRow[] = [...dailyTrend]
-    .sort((a, b) => b.value - a.value)
-    .map((day, index) => ({
-      name: day.date,
-      date: day.date,
-      value: day.value,
-      actual: day.value,
-      goal: null,
-      achievement: null,
-      contribution: dailyTotal > 0 ? (day.value / dailyTotal) * 100 : 0,
-      rank: index + 1,
-      status: "Information / Trend",
-      statusTone: "info",
-      recommendation: index === 0
-        ? "Use this high-output day as a reference point."
-        : "Compare staffing and activity against the strongest day.",
-    }));
+  const dailyRows = useMemo<ExecutiveRow[]>(() => {
+    const total = dailyTrend.reduce((sum, day) => sum + day.value, 0);
+    return [...dailyTrend]
+      .sort((a, b) => b.value - a.value)
+      .map((day, index) => ({
+        name: day.date,
+        date: day.date,
+        value: day.value,
+        actual: day.value,
+        goal: null,
+        achievement: null,
+        contribution: total > 0 ? (day.value / total) * 100 : 0,
+        rank: index + 1,
+        status: "Information / Trend",
+        statusTone: "info",
+        recommendation: index === 0
+          ? "Use this high-output day as a reference point."
+          : "Compare staffing and activity against the strongest day.",
+      }));
+  }, [dailyTrend]);
 
-  const topLeaderboard = [...leaderboard]
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 10);
-  const leaderboardTotal = topLeaderboard.reduce((sum, item) => sum + item.value, 0);
-  const leaderboardRows: ExecutiveRow[] = topLeaderboard.map((agent, index) => {
-    const agentGoal = Number(agent.goal ?? 0);
-    const agentAchievement = agent.achievement == null && agentGoal > 0
-      ? (agent.value / agentGoal) * 100
-      : agent.achievement;
-    const statusInfo = agentAchievement == null
-      ? { label: index < 3 ? "Good / Top performer" : "Information", tone: index < 3 ? "good" as const : "info" as const }
-      : getStatus(agentAchievement);
-    return {
-      name: agent.name,
-      displayName: `#${index + 1} ${agent.name}`,
-      value: agent.value,
-      actual: agent.value,
-      goal: agentGoal > 0 ? agentGoal : null,
-      achievement: agentAchievement,
-      contribution: leaderboardTotal > 0 ? (agent.value / leaderboardTotal) * 100 : 0,
-      rank: index + 1,
-      status: statusInfo.label,
-      statusTone: statusInfo.tone,
-      recommendation: agentAchievement == null
-        ? index < 3
-          ? "Maintain performance and share effective practices."
-          : "Review activity level and support consistent output."
-        : statusInfo.tone === "good"
-          ? "Maintain performance and share effective practices."
-          : "Review the agent target, activity level, and production blockers.",
-    };
-  });
+  const leaderboardRows = useMemo<ExecutiveRow[]>(() => {
+    const topLeaderboard = [...leaderboard]
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10);
+    const total = topLeaderboard.reduce((sum, item) => sum + item.value, 0);
+
+    return topLeaderboard.map((agent, index) => {
+      const agentGoal = Number(agent.goal ?? 0);
+      const agentAchievement = agent.achievement == null && agentGoal > 0
+        ? (agent.value / agentGoal) * 100
+        : agent.achievement;
+      const statusInfo = agentAchievement == null
+        ? { label: index < 3 ? "Good / Top performer" : "Information", tone: index < 3 ? "good" as const : "info" as const }
+        : getStatus(agentAchievement);
+      return {
+        name: agent.name,
+        displayName: `#${index + 1} ${agent.name}`,
+        value: agent.value,
+        actual: agent.value,
+        goal: agentGoal > 0 ? agentGoal : null,
+        achievement: agentAchievement,
+        contribution: total > 0 ? (agent.value / total) * 100 : 0,
+        rank: index + 1,
+        status: statusInfo.label,
+        statusTone: statusInfo.tone,
+        recommendation: agentAchievement == null
+          ? index < 3
+            ? "Maintain performance and share effective practices."
+            : "Review activity level and support consistent output."
+          : statusInfo.tone === "good"
+            ? "Maintain performance and share effective practices."
+            : "Review the agent target, activity level, and production blockers.",
+      };
+    });
+  }, [leaderboard]);
 
   const performanceCampaignRows = campaignRows.filter((row) => row.hasData !== false);
   const campaignsWithoutData = campaignRows.length - performanceCampaignRows.length;
@@ -671,7 +736,11 @@ export default function DashboardPage() {
   }
 
   const topCampaigns = performanceCampaignRows.slice(0, 5);
-  const bottomCampaigns = performanceCampaignRows.slice(-5);
+  const topCampaignNames = new Set(topCampaigns.map((row) => row.name));
+  const bottomCampaigns = performanceCampaignRows
+    .slice(-5)
+    .reverse()
+    .filter((row) => !topCampaignNames.has(row.name));
   const campaignPreviewRows = performanceCampaignRows.length > 0
     ? Array.from(
         new Map([...topCampaigns, ...bottomCampaigns].map((row) => [row.name, row])).values()
@@ -719,13 +788,13 @@ export default function DashboardPage() {
   return (
     <>
       <div className="mb-8 grid gap-4 xl:grid-cols-[minmax(260px,1fr)_auto] xl:items-center">
-        <PageTitle title="Dashboard" subtitle="Operational Performance Overview" className="mb-0" />
+        <PageTitle title="Executive Dashboard" subtitle="Company performance and leadership priorities at a glance" className="mb-0" />
         <div
           className={cn(
             "grid w-full items-center gap-2 rounded-2xl border border-border/70 bg-card p-2 shadow-sm xl:w-auto",
             campaigns.length > 0
-              ? "sm:grid-cols-[minmax(220px,1fr)_140px_100px_auto_auto]"
-              : "sm:grid-cols-[140px_100px_auto_auto]"
+              ? "sm:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_140px_100px_auto_auto]"
+              : "sm:grid-cols-2 xl:grid-cols-[140px_100px_auto_auto]"
           )}
         >
           {campaigns.length > 0 && (
@@ -817,15 +886,15 @@ export default function DashboardPage() {
       <div className="mb-6 grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader className="pb-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Operational Insights</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Leadership Brief</p>
             <CardTitle className="flex items-center gap-2 text-base">
               <CheckCircle2 className="h-4 w-4 text-green-500" />
               Executive Summary
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-2 text-sm leading-6 text-muted-foreground">
-              {ceoSummary.map((sentence) => <p key={sentence}>{sentence}</p>)}
+            <div className="space-y-1.5 text-sm leading-6 text-muted-foreground">
+              {ceoSummary.map((sentence) => <span key={sentence} className="block">{sentence}</span>)}
             </div>
             <div className="mt-5 border-t border-border/60 pt-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Overall status</p>
@@ -902,34 +971,32 @@ export default function DashboardPage() {
             <NoData message="Loading campaign performance..." />
           ) : visibleCampaignRows.length === 0 ? (
             <NoData />
-          ) : (
+          ) : showAllCampaigns || performanceCampaignRows.length === 0 ? (
             <div className="grid gap-3 md:grid-cols-2">
-              {visibleCampaignRows.map((row) => {
-                const achievement = Number(row.achievement ?? 0);
-                const barWidth = row.hasData === false ? 0 : Math.min(Math.max(achievement, 0), 100);
-                return (
-                  <div key={row.name} className="rounded-xl border border-border/60 p-3.5">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", statusBarClass(row.statusTone))} />
-                          <p className="truncate text-sm font-semibold text-foreground" title={row.name}>{row.name}</p>
-                        </div>
-                        <p className="mt-1 pl-[18px] text-xs text-muted-foreground">{row.status}</p>
-                      </div>
-                      <p className="shrink-0 text-sm font-bold text-foreground">
-                        {row.hasData === false || row.achievement == null ? "No data" : formatPct(row.achievement)}
-                      </p>
-                    </div>
-                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className={cn("h-full rounded-full transition-[width]", statusBarClass(row.statusTone))}
-                        style={{ width: `${barWidth}%` }}
-                      />
-                    </div>
+              {visibleCampaignRows.map((row) => <CampaignPerformanceItem key={row.name} row={row} />)}
+            </div>
+          ) : (
+            <div className="grid gap-5 lg:grid-cols-2">
+              <section aria-labelledby="top-campaigns">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 id="top-campaigns" className="text-sm font-semibold text-foreground">Top campaigns</h3>
+                  <span className="text-xs text-muted-foreground">Up to 5</span>
+                </div>
+                <div className="space-y-3">
+                  {topCampaigns.map((row) => <CampaignPerformanceItem key={row.name} row={row} />)}
+                </div>
+              </section>
+              {bottomCampaigns.length > 0 && (
+                <section aria-labelledby="bottom-campaigns">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 id="bottom-campaigns" className="text-sm font-semibold text-foreground">Bottom campaigns</h3>
+                    <span className="text-xs text-muted-foreground">Up to 5</span>
                   </div>
-                );
-              })}
+                  <div className="space-y-3">
+                    {bottomCampaigns.map((row) => <CampaignPerformanceItem key={row.name} row={row} />)}
+                  </div>
+                </section>
+              )}
             </div>
           )}
 
