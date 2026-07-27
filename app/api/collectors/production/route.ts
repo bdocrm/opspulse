@@ -224,7 +224,7 @@ export async function GET(req: Request) {
       ],
     };
 
-    const [rawEntries, availableEntryDates, latestDashboardImport] = await Promise.all([
+    const [rawEntries, availableEntryDates, latestProductionImport, latestDashboardImport] = await Promise.all([
       prisma.productionEntry.findMany({
         where: {
           ...where,
@@ -265,6 +265,15 @@ export async function GET(req: Request) {
         orderBy: { date: "desc" },
         take: 24,
       }),
+      prisma.productionEntry.findFirst({
+        where: {
+          campaignId: { in: campaignIds },
+          importFileName: { not: null },
+          details: { some: {} },
+        },
+        select: { date: true },
+        orderBy: { date: "desc" },
+      }),
       prisma.dashboardImportRecord.findFirst({
         where: {
           campaignId: { in: campaignIds },
@@ -291,6 +300,12 @@ export async function GET(req: Request) {
     const dashboardLatestDate = latestDashboardImport?.month
       ? `${latestDashboardImport.year}-${String(latestDashboardImport.month).padStart(2, "0")}-01`
       : null;
+    const productionImportLatestDate = latestProductionImport
+      ? toYmd(latestProductionImport.date)
+      : null;
+    const latestImportedDate = [productionImportLatestDate, dashboardLatestDate]
+      .filter((value): value is string => Boolean(value))
+      .sort((a, b) => b.localeCompare(a))[0] ?? null;
     const availableDates = [
       ...new Set([
         ...availableEntryDates.map((entry) => toYmd(entry.date)),
@@ -369,6 +384,7 @@ export async function GET(req: Request) {
       detailCount: serializedEntries.reduce((sum, entry) => sum + entry.details.length, 0),
       availableDates,
       latestDate,
+      latestImportedDate,
     }, {
       headers: {
         "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",

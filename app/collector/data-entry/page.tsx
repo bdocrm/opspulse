@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import useSWR from 'swr';
@@ -60,6 +60,31 @@ interface CampaignBlock {
 const AGENTS_PER_PAGE = 12;
 const EMPTY_TOTALS = { transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0 };
 
+const getCurrentMonth = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const getMonthDateRange = (month: string) => {
+  const [year, monthNumber] = month.split('-').map(Number);
+  const lastDay = new Date(year, monthNumber, 0).getDate();
+
+  return {
+    start: `${month}-01`,
+    end: `${month}-${String(lastDay).padStart(2, '0')}`,
+  };
+};
+
+const formatMonth = (month: string) => {
+  const [year, monthNumber] = month.split('-').map(Number);
+  if (!year || !monthNumber) return month;
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'long',
+    year: 'numeric',
+  }).format(new Date(year, monthNumber - 1, 1));
+};
+
 const createEmptyAgentDetail = (agentId: string): AgentDetail => ({
   agentId,
   transmittals: 0,
@@ -94,8 +119,7 @@ const fetcher = async (url: string) => {
 export default function DataEntryPage() {
   const { data: session } = useSession();
   const router = useRouter();
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-  const [autoDateAdjustedForCampaign, setAutoDateAdjustedForCampaign] = useState('');
+  const [month, setMonth] = useState(getCurrentMonth);
   const time = '00:00'; // Default time for entries
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -105,11 +129,14 @@ export default function DataEntryPage() {
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
   const [attendance, setAttendance] = useState<Record<string, boolean>>({});
   const [selectedCampaignId, setSelectedCampaignId] = useState('');
+  const monthWasChangedByUser = useRef(false);
+  const initialImportedMonthApplied = useRef(false);
+  const monthDateRange = useMemo(() => getMonthDateRange(month), [month]);
 
-  // Fetch assigned campaigns, agents, and selected-date production in one place.
+  // Fetch assigned campaigns, agents, and the full selected reporting month.
   const { data: collectorData, isLoading: loadingCampaigns, mutate: mutateCollectorData } = useSWR(
-    session?.user && date
-      ? `/api/collectors/dashboard?dateFrom=${date}&dateTo=${date}&attendanceDate=${date}&dataVersion=2`
+    session?.user && month
+      ? `/api/collectors/dashboard?dateFrom=${monthDateRange.start}&dateTo=${monthDateRange.end}&attendanceDate=${monthDateRange.start}&dataVersion=2`
       : null,
     fetcher,
     { revalidateOnMount: true, revalidateOnFocus: true, dedupingInterval: 0 }
@@ -136,19 +163,20 @@ export default function DataEntryPage() {
 
   const selectedCampaign = campaignBlocks.find((campaign) => campaign.id === selectedCampaignId);
 
-  // Fetch saved production data for selected date
+  // Fetch saved/imported production data for the full selected month.
   const { data: savedData, mutate: mutateSaved, isLoading: loadingSaved } = useSWR(
-    session?.user && date && selectedCampaignId
-      ? `/api/collectors/production?date=${date}&campaignId=${selectedCampaignId}&dataVersion=2`
+    session?.user && month && selectedCampaignId
+      ? `/api/collectors/production?dateFrom=${monthDateRange.start}&dateTo=${monthDateRange.end}&campaignId=${selectedCampaignId}&dataVersion=2`
       : null,
     fetcher,
     { refreshInterval: 0, revalidateOnMount: true, revalidateOnFocus: true, dedupingInterval: 0 }
   );
 
-  // Fetch attendance for selected date
+  // Monthly production has no single attendance day, so use the reporting
+  // month's canonical first day for the existing attendance controls.
   const { data: attendanceData, mutate: mutateAttendance } = useSWR(
-    session?.user && date && selectedCampaignId
-      ? `/api/collectors/attendance?date=${date}&campaignId=${selectedCampaignId}`
+    session?.user && month && selectedCampaignId
+      ? `/api/collectors/attendance?date=${monthDateRange.start}&campaignId=${selectedCampaignId}`
       : null,
     fetcher,
     { refreshInterval: 0 }
@@ -193,41 +221,27 @@ export default function DataEntryPage() {
     [importedAgentTotals]
   );
   const importedDetailCount = Object.keys(importedAgentTotals).length;
-  const fallbackImportPeriod = selectedCampaign?.agentDataPeriod?.source === 'latest_import'
-    ? selectedCampaign.agentDataPeriod
-    : selectedCampaign?.dataPeriod?.source === 'latest_import'
-      ? selectedCampaign.dataPeriod
-      : null;
-  const collectorLatestImportedDate = fallbackImportPeriod?.year && fallbackImportPeriod?.month
-    ? `${fallbackImportPeriod.year}-${String(fallbackImportPeriod.month).padStart(2, '0')}-01`
+  const latestImportedMonth = typeof savedData?.latestImportedDate === 'string'
+    ? savedData.latestImportedDate.slice(0, 7)
     : null;
-  const latestImportedDate: string | null = collectorLatestImportedDate || savedData?.latestDate || null;
 
+  // Start on the latest Excel import when the current month has no imported
+  // data. This runs only once and never overrides a collector's month choice.
   useEffect(() => {
-    setAutoDateAdjustedForCampaign('');
-  }, [selectedCampaignId]);
+    if (
+      initialImportedMonthApplied.current ||
+      monthWasChangedByUser.current ||
+      loadingSaved ||
+      !latestImportedMonth
+    ) {
+      return;
+    }
 
-  useEffect(() => {
-    if (!selectedCampaignId || loadingSaved) return;
-    if (savedEntries.length > 0) return;
-    if (!latestImportedDate || latestImportedDate === date) return;
-    if (autoDateAdjustedForCampaign === selectedCampaignId) return;
-
-    setAutoDateAdjustedForCampaign(selectedCampaignId);
-    setDate(latestImportedDate);
-    setMessage({
-      type: 'success',
-      text: `Showing latest imported data for ${selectedCampaign?.campaignName || 'this campaign'} on ${latestImportedDate}.`,
-    });
-  }, [
-    autoDateAdjustedForCampaign,
-    date,
-    latestImportedDate,
-    loadingSaved,
-    savedEntries.length,
-    selectedCampaign?.campaignName,
-    selectedCampaignId,
-  ]);
+    initialImportedMonthApplied.current = true;
+    if (importedDetailCount === 0 && savedEntries.length === 0 && latestImportedMonth !== month) {
+      setMonth(latestImportedMonth);
+    }
+  }, [importedDetailCount, latestImportedMonth, loadingSaved, month, savedEntries.length]);
 
   // Initialize/reset pending agent data when the selected campaign changes.
   useEffect(() => {
@@ -247,7 +261,7 @@ export default function DataEntryPage() {
   useEffect(() => {
     setCurrentPage(1);
     setMessage(null);
-  }, [selectedCampaignId, date]);
+  }, [selectedCampaignId, month]);
 
 
   // Load attendance from API when data arrives
@@ -281,7 +295,7 @@ export default function DataEntryPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          date,
+          date: monthDateRange.start,
           campaignId: selectedCampaignId,
           attendance: {
             [agentId]: { status: newStatus ? 'PRESENT' : 'ABSENT' }
@@ -312,8 +326,8 @@ export default function DataEntryPage() {
     return totals;
   }, [agentData]);
 
-  // Combined daily totals (saved + pending)
-  const dailyTotals = useMemo(() => ({
+  // Combined monthly totals (imported/saved + pending)
+  const monthlyTotals = useMemo(() => ({
     transmittals: importedSummaryTotals.transmittals + pendingTotals.transmittals,
     activations:  importedSummaryTotals.activations  + pendingTotals.activations,
     approvals:    importedSummaryTotals.approvals    + pendingTotals.approvals,
@@ -402,7 +416,8 @@ export default function DataEntryPage() {
 
     try {
       const payload = {
-        date,
+        // Manual additions use the same canonical date as monthly imports.
+        date: monthDateRange.start,
         campaignId: selectedCampaignId,
         entries: [{
           time,
@@ -520,11 +535,11 @@ export default function DataEntryPage() {
         </div>
       )}
 
-      {/* Daily Summary - Always visible at top */}
+      {/* Monthly Summary - Always visible at top */}
       <Card className="p-4 bg-gradient-to-r from-primary/10 to-primary/5 border-primary/20">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <h3 className="font-semibold">Daily Summary</h3>
+            <h3 className="font-semibold">Monthly Summary</h3>
             {loadingSaved && <RefreshCw className="w-4 h-4 animate-spin text-muted-foreground" />}
           </div>
           <div className="flex items-center gap-3 text-xs">
@@ -543,24 +558,24 @@ export default function DataEntryPage() {
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <div className="text-center p-3 bg-background/80 rounded-lg">
             <p className="text-xs text-muted-foreground mb-1">Transmittals</p>
-            <p className="text-2xl font-bold text-primary">{dailyTotals.transmittals}</p>
+            <p className="text-2xl font-bold text-primary">{monthlyTotals.transmittals}</p>
           </div>
           <div className="text-center p-3 bg-background/80 rounded-lg">
             <p className="text-xs text-muted-foreground mb-1">Activations</p>
-            <p className="text-2xl font-bold text-primary">{dailyTotals.activations}</p>
+            <p className="text-2xl font-bold text-primary">{monthlyTotals.activations}</p>
           </div>
           <div className="text-center p-3 bg-background/80 rounded-lg">
             <p className="text-xs text-muted-foreground mb-1">Approvals</p>
-            <p className="text-2xl font-bold text-primary">{dailyTotals.approvals}</p>
+            <p className="text-2xl font-bold text-primary">{monthlyTotals.approvals}</p>
           </div>
           <div className="text-center p-3 bg-background/80 rounded-lg">
             <p className="text-xs text-muted-foreground mb-1">Booked</p>
-            <p className="text-2xl font-bold text-primary">{dailyTotals.booked}</p>
+            <p className="text-2xl font-bold text-primary">{monthlyTotals.booked}</p>
           </div>
           <div className="text-center p-3 bg-background/80 rounded-lg col-span-2 sm:col-span-1">
             <p className="text-xs text-muted-foreground mb-1">Volume (₱)</p>
             <p className="text-xl font-bold text-primary">
-              {dailyTotals.volume > 0 ? `₱${dailyTotals.volume.toLocaleString()}` : '—'}
+              {monthlyTotals.volume > 0 ? `₱${monthlyTotals.volume.toLocaleString()}` : '—'}
             </p>
           </div>
         </div>
@@ -569,7 +584,7 @@ export default function DataEntryPage() {
       {!loadingSaved && selectedCampaignId && agents.length > 0 && importedDetailCount === 0 && (
         <div className="p-3 rounded-lg text-sm flex items-center gap-2 bg-yellow-500/10 text-yellow-600 border border-yellow-500/20">
           <AlertCircle className="w-4 h-4" />
-          No imported data found for {selectedCampaign?.campaignName || 'this campaign'} on {date}.
+          No imported data found for {selectedCampaign?.campaignName || 'this campaign'} in {formatMonth(month)}.
         </div>
       )}
 
@@ -618,7 +633,7 @@ export default function DataEntryPage() {
 
       {/* Entry Form */}
       <form onSubmit={handleSubmit} className="space-y-4">
-        {/* Date & Search Row */}
+        {/* Month & Search Row */}
         <Card className="p-4">
           <div className="flex flex-wrap gap-4 items-end">
             {campaignBlocks.length > 1 && (
@@ -639,12 +654,15 @@ export default function DataEntryPage() {
               </div>
             )}
             <div className="space-y-1.5">
-              <Label htmlFor="date" className="text-sm font-medium">Date</Label>
+              <Label htmlFor="month" className="text-sm font-medium">Month</Label>
               <Input
-                id="date"
-                type="date"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
+                id="month"
+                type="month"
+                value={month}
+                onChange={(e) => {
+                  monthWasChangedByUser.current = true;
+                  setMonth(e.target.value);
+                }}
                 className="w-40"
                 required
               />
