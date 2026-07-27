@@ -184,16 +184,61 @@ async function saveImportMetadata(entryId: string, fileName: string, metricType:
   `;
 }
 
+function selectedImportPeriod(row: any) {
+  const auditLog = row.importAuditLog && typeof row.importAuditLog === 'object'
+    ? row.importAuditLog
+    : null;
+  const selectedReportDate = typeof auditLog?.selectedReportDate === 'string'
+    && /^\d{4}-\d{2}-\d{2}$/.test(auditLog.selectedReportDate)
+    ? auditLog.selectedReportDate
+    : null;
+
+  if (!selectedReportDate) {
+    return {
+      reportDate: row.date,
+      periodStart: row.periodStart,
+      periodEnd: row.periodEnd,
+    };
+  }
+
+  const [year, month] = selectedReportDate.split('-').map(Number);
+  const atBusinessMidnight = (value: string) => `${value}T00:00:00.000+08:00`;
+
+  if (row.reportPeriodType === 'monthly') {
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    return {
+      reportDate: atBusinessMidnight(`${year}-${String(month).padStart(2, '0')}-01`),
+      periodStart: atBusinessMidnight(`${year}-${String(month).padStart(2, '0')}-01`),
+      periodEnd: atBusinessMidnight(`${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`),
+    };
+  }
+
+  if (row.reportPeriodType === 'yearly') {
+    return {
+      reportDate: atBusinessMidnight(`${year}-01-01`),
+      periodStart: atBusinessMidnight(`${year}-01-01`),
+      periodEnd: atBusinessMidnight(`${year}-12-31`),
+    };
+  }
+
+  return {
+    reportDate: atBusinessMidnight(selectedReportDate),
+    periodStart: row.periodStart,
+    periodEnd: row.periodEnd,
+  };
+}
+
 function formatImportSummary(row: any) {
+  const selectedPeriod = selectedImportPeriod(row);
   return {
     id: row.id,
     campaignId: row.campaignId,
     campaignName: row.campaignName,
     fileName: row.importFileName || 'Imported production data',
     metricType: row.importMetricType || 'unknown',
-    reportDate: row.date,
-    periodStart: row.periodStart,
-    periodEnd: row.periodEnd,
+    reportDate: selectedPeriod.reportDate,
+    periodStart: selectedPeriod.periodStart,
+    periodEnd: selectedPeriod.periodEnd,
     importedAt: row.createdAt,
     entryTime: row.time,
     detailCount: Number(row.detailCount || 0),
@@ -217,6 +262,8 @@ async function getImportSummary(entryId: string, collectorId: string) {
            pe.time,
            pe."periodStart",
            pe."periodEnd",
+           pe."reportPeriodType",
+           pe."importAuditLog",
            pe."createdAt",
            pe."importFileName",
            pe."importMetricType",
@@ -1878,6 +1925,8 @@ export async function GET(req: NextRequest) {
              pe.time,
              pe."periodStart",
              pe."periodEnd",
+             pe."reportPeriodType",
+             pe."importAuditLog",
              pe."createdAt",
              pe."importFileName",
              pe."importMetricType",
