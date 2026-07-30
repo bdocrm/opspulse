@@ -15,6 +15,8 @@
     "prisma:studio": "prisma studio",
     "test:run-rate": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-run-rate-analytics.ts",
     "test:bdo-sgm-import": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-bdo-sgm-ranking-import.ts",
+    "test:bdo-sgm-consolidated": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-bdo-sgm-consolidated-import.ts",
+    "test:bdo-sgm-consolidated:api": "node scripts/verify-bdo-sgm-consolidated-preview.js",
     "test:campaign-achievement": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-campaign-achievement.ts && ts-node scripts/verify-bpi-dashboard-import.ts && ts-node scripts/verify-actual-multi-campaign-workbook.ts",
     "test:campaign-achievement:api": "node scripts/verify-collector-campaign-achievement-api.js",
     "vercel-env": "echo \"Checking environment...\" && node -e \"console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'SET (length: ' + process.env.DATABASE_URL.length + ')' : 'NOT SET'); console.log('NEXTAUTH_URL:', process.env.NEXTAUTH_URL || 'NOT SET'); console.log('NEXTAUTH_SECRET:', process.env.NEXTAUTH_SECRET ? 'SET' : 'NOT SET');\""

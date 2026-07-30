@@ -210,6 +210,10 @@ export async function GET(req: NextRequest) {
           supplementary: true,
           cardLevel: true,
           cardLevelLabel: true,
+          cardLevelGrandTotal: true,
+          sourceNickname: true,
+          cardLevelFinalTotal: true,
+          cardLevelRanking: true,
           bauPayrollTxn: true,
           bauPayrollVol: true,
           bauDepositorTxn: true,
@@ -368,6 +372,10 @@ export async function GET(req: NextRequest) {
             supplementary: true,
             cardLevel: true,
             cardLevelLabel: true,
+            cardLevelGrandTotal: true,
+            sourceNickname: true,
+            cardLevelFinalTotal: true,
+            cardLevelRanking: true,
             bauPayrollTxn: true,
             bauPayrollVol: true,
             bauDepositorTxn: true,
@@ -409,6 +417,29 @@ export async function GET(req: NextRequest) {
         }
       }
     }
+
+    const bdoSgmYearDetails = bdoSgmCampaignIds.length > 0
+      ? await prisma.productionDetail.findMany({
+          where: {
+            campaignId: { in: bdoSgmCampaignIds },
+            productionEntry: {
+              importFileName: { not: null },
+              date: {
+                gte: new Date(selectedEndPeriod.year, 0, 1),
+                lte: new Date(selectedEndPeriod.year, 11, 31, 23, 59, 59, 999),
+              },
+            },
+          },
+          select: {
+            agentId: true,
+            campaignId: true,
+            cardLevel: true,
+            cardLevelGrandTotal: true,
+            sourceNickname: true,
+            cardLevelRanking: true,
+          },
+        })
+      : [];
 
     const usableDashboardAgentRecords = dashboardAgentRecords.filter(
       (record) => !isImportedClassificationRow(record)
@@ -591,6 +622,9 @@ export async function GET(req: NextRequest) {
     const emptyProduction = () => ({
       transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0,
       firstCardTransmittals: 0, bundleCardTransmittals: 0,
+      firstCardFinalTotal: 0, bundleCardFinalTotal: 0,
+      firstCardWholeYearTotal: 0, bundleCardWholeYearTotal: 0,
+      sourceNickname: '', cardLevelRanking: null as number | null,
       transmittedVolume: 0, approvalsVolume: 0, bookedVolume: 0,
       bauPayrollTxn: 0, bauPayrollVol: 0, bauDepositorTxn: 0, bauDepositorVol: 0,
       topupPayrollTxn: 0, topupPayrollVol: 0, topupDepositorTxn: 0, topupDepositorVol: 0,
@@ -598,13 +632,29 @@ export async function GET(req: NextRequest) {
       c2gTxn: 0, c2gVol: 0, btTxn: 0, btVol: 0, balconTxn: 0, balconVol: 0, grandTotalTxn: 0, grandTotalVol: 0,
     });
 
-    const prodByCampaign = new Map<string, Record<string, Record<string, number>>>();
+    const prodByCampaign = new Map<string, Record<string, Record<string, any>>>();
     for (const d of details) {
       const byAgent = prodByCampaign.get(d.campaignId) ?? {};
       const cur = byAgent[d.agentId] ?? emptyProduction();
       cur.transmittals += Number(d.transmittals);
-      if (d.cardLevel === "FIRST_CARD") cur.firstCardTransmittals += Number(d.transmittals);
-      if (d.cardLevel === "BUNDLE_CARD") cur.bundleCardTransmittals += Number(d.transmittals);
+      const cardFinalTotal = Number(d.cardLevelFinalTotal ?? d.transmittals);
+      const cardWholeYearTotal = Number(d.cardLevelGrandTotal ?? cardFinalTotal);
+      if (d.cardLevel === "FIRST_CARD") {
+        cur.firstCardTransmittals += Number(d.transmittals);
+        cur.firstCardFinalTotal += cardFinalTotal;
+        cur.firstCardWholeYearTotal = Math.max(cur.firstCardWholeYearTotal, cardWholeYearTotal);
+      }
+      if (d.cardLevel === "BUNDLE_CARD") {
+        cur.bundleCardTransmittals += Number(d.transmittals);
+        cur.bundleCardFinalTotal += cardFinalTotal;
+        cur.bundleCardWholeYearTotal = Math.max(cur.bundleCardWholeYearTotal, cardWholeYearTotal);
+      }
+      if (d.sourceNickname && !cur.sourceNickname) cur.sourceNickname = d.sourceNickname;
+      if (d.cardLevelRanking != null) {
+        cur.cardLevelRanking = cur.cardLevelRanking == null
+          ? d.cardLevelRanking
+          : Math.min(cur.cardLevelRanking, d.cardLevelRanking);
+      }
       cur.activations += Number(d.activations);
       cur.approvals += Number(d.approvals);
       cur.booked += Number(d.booked);
@@ -612,6 +662,28 @@ export async function GET(req: NextRequest) {
       cur.ntb += Number(d.ntb);
       cur.supplementary += Number(d.supplementary);
       for (const k of CATEGORY_KEYS) cur[k] += Number((d as any)[k] ?? 0);
+      byAgent[d.agentId] = cur;
+      prodByCampaign.set(d.campaignId, byAgent);
+    }
+    // Whole-year totals and source identity are annual metadata. Merge them
+    // independently of the active month so an agent with a blank latest month
+    // is still included in the annual campaign totals.
+    for (const d of bdoSgmYearDetails) {
+      const byAgent = prodByCampaign.get(d.campaignId) ?? {};
+      const cur = byAgent[d.agentId] ?? emptyProduction();
+      const wholeYearTotal = Number(d.cardLevelGrandTotal ?? 0);
+      if (d.cardLevel === "FIRST_CARD") {
+        cur.firstCardWholeYearTotal = Math.max(cur.firstCardWholeYearTotal, wholeYearTotal);
+      }
+      if (d.cardLevel === "BUNDLE_CARD") {
+        cur.bundleCardWholeYearTotal = Math.max(cur.bundleCardWholeYearTotal, wholeYearTotal);
+      }
+      if (d.sourceNickname && !cur.sourceNickname) cur.sourceNickname = d.sourceNickname;
+      if (d.cardLevelRanking != null) {
+        cur.cardLevelRanking = cur.cardLevelRanking == null
+          ? d.cardLevelRanking
+          : Math.min(cur.cardLevelRanking, d.cardLevelRanking);
+      }
       byAgent[d.agentId] = cur;
       prodByCampaign.set(d.campaignId, byAgent);
     }

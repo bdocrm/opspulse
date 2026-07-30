@@ -20,6 +20,13 @@ import {
   parseBdoSgmWorksheet,
   type BdoSgmWorksheetParseResult,
 } from '@/lib/bdo-sgm-ranking-import';
+import {
+  parseBdoSgmConsolidatedWorksheet,
+  type BdoSgmConsolidatedAgent,
+  type BdoSgmConsolidatedParseResult,
+} from '@/lib/bdo-sgm-consolidated-import';
+
+type BdoSgmParseResult = BdoSgmWorksheetParseResult | BdoSgmConsolidatedParseResult;
 
 type ParsedEntry = {
   name: string; count: number; volume: number;
@@ -34,6 +41,20 @@ type ParsedEntry = {
   cardLevel?: string;
   cardLevelLabel?: string;
   grandTotal?: number;
+  nickname?: string;
+  finalTotal?: number;
+  wholeYearTotal?: number;
+  firstPeriodTotal?: number;
+  secondPeriodTotal?: number;
+  workbookGrandTotal?: number;
+  ranking?: number;
+  monthValues?: Array<{
+    month: number;
+    label: string;
+    value: number;
+    available: boolean;
+    originalValue: string | number | null;
+  }>;
   sourceSheet?: string;
   campaignId?: string;
   campaignName?: string;
@@ -148,6 +169,7 @@ type SheetPreview = {
   detectedMonths?: string[];
   detectedCardLevels?: string[];
   validationIssues?: Array<{ worksheet: string; row: number; reason: string; warning: boolean }>;
+  consolidatedAgents?: BdoSgmConsolidatedAgent[];
   warnings: string[];
   errors: string[];
   matched: any[];
@@ -189,13 +211,27 @@ async function ensureImportMetadataColumns() {
       ADD COLUMN IF NOT EXISTS "overallAchievement" DOUBLE PRECISION,
       ADD COLUMN IF NOT EXISTS "cardLevel" TEXT NOT NULL DEFAULT '',
       ADD COLUMN IF NOT EXISTS "cardLevelLabel" TEXT,
-      ADD COLUMN IF NOT EXISTS "cardLevelGrandTotal" BIGINT;
+      ADD COLUMN IF NOT EXISTS "cardLevelGrandTotal" BIGINT,
+      ADD COLUMN IF NOT EXISTS "sourceNickname" TEXT,
+      ADD COLUMN IF NOT EXISTS "cardLevelFinalTotal" BIGINT,
+      ADD COLUMN IF NOT EXISTS "cardLevelFirstPeriodTotal" BIGINT,
+      ADD COLUMN IF NOT EXISTS "cardLevelSecondPeriodTotal" BIGINT,
+      ADD COLUMN IF NOT EXISTS "cardLevelWorkbookGrandTotal" BIGINT,
+      ADD COLUMN IF NOT EXISTS "cardLevelRanking" INTEGER,
+      ADD COLUMN IF NOT EXISTS "cardLevelMonthValues" JSONB;
   `);
   await prisma.$executeRawUnsafe(`
     ALTER TABLE "ProductionMetricRecord"
       ADD COLUMN IF NOT EXISTS "cardLevel" TEXT NOT NULL DEFAULT '',
       ADD COLUMN IF NOT EXISTS "cardLevelLabel" TEXT,
-      ADD COLUMN IF NOT EXISTS "grandTotal" BIGINT;
+      ADD COLUMN IF NOT EXISTS "grandTotal" BIGINT,
+      ADD COLUMN IF NOT EXISTS "sourceNickname" TEXT,
+      ADD COLUMN IF NOT EXISTS "finalTotal" BIGINT,
+      ADD COLUMN IF NOT EXISTS "firstPeriodTotal" BIGINT,
+      ADD COLUMN IF NOT EXISTS "secondPeriodTotal" BIGINT,
+      ADD COLUMN IF NOT EXISTS "workbookGrandTotal" BIGINT,
+      ADD COLUMN IF NOT EXISTS "ranking" INTEGER,
+      ADD COLUMN IF NOT EXISTS "monthValues" JSONB;
   `);
   await prisma.$executeRawUnsafe('DROP INDEX IF EXISTS "ProductionMetricRecord_campaignId_agentId_metricType_reportPeriodType_reportDate_key"');
   await prisma.$executeRawUnsafe('DROP INDEX IF EXISTS "ProductionMetricRecord_campaignId_agentId_metricType_reportDate_key"');
@@ -1020,6 +1056,13 @@ function buildDetailData(row: ParsedEntry, metricType: string): Record<string, a
   if (row.cardLevel) data.cardLevel = row.cardLevel;
   if (row.cardLevelLabel) data.cardLevelLabel = row.cardLevelLabel;
   if (row.grandTotal !== undefined) data.cardLevelGrandTotal = BigInt(Math.round(row.grandTotal));
+  if (row.nickname !== undefined) data.sourceNickname = row.nickname;
+  if (row.finalTotal !== undefined) data.cardLevelFinalTotal = BigInt(Math.round(row.finalTotal));
+  if (row.firstPeriodTotal !== undefined) data.cardLevelFirstPeriodTotal = BigInt(Math.round(row.firstPeriodTotal));
+  if (row.secondPeriodTotal !== undefined) data.cardLevelSecondPeriodTotal = BigInt(Math.round(row.secondPeriodTotal));
+  if (row.workbookGrandTotal !== undefined) data.cardLevelWorkbookGrandTotal = BigInt(Math.round(row.workbookGrandTotal));
+  if (row.ranking !== undefined) data.cardLevelRanking = Math.round(row.ranking);
+  if (row.monthValues !== undefined) data.cardLevelMonthValues = row.monthValues;
   if (row.sourceSheet) data.sourceSheet = row.sourceSheet;
   if (row.agentCode) data.agentCode = row.agentCode;
   if (row.agentLevel) data.agentLevel = row.agentLevel;
@@ -1087,6 +1130,13 @@ function buildDetailDataForWrite(row: ParsedEntry, metricType: string, partial =
   if (row.cardLevel) data.cardLevel = row.cardLevel;
   if (row.cardLevelLabel) data.cardLevelLabel = row.cardLevelLabel;
   if (row.grandTotal !== undefined) data.cardLevelGrandTotal = BigInt(Math.round(row.grandTotal));
+  if (row.nickname !== undefined) data.sourceNickname = row.nickname;
+  if (row.finalTotal !== undefined) data.cardLevelFinalTotal = BigInt(Math.round(row.finalTotal));
+  if (row.firstPeriodTotal !== undefined) data.cardLevelFirstPeriodTotal = BigInt(Math.round(row.firstPeriodTotal));
+  if (row.secondPeriodTotal !== undefined) data.cardLevelSecondPeriodTotal = BigInt(Math.round(row.secondPeriodTotal));
+  if (row.workbookGrandTotal !== undefined) data.cardLevelWorkbookGrandTotal = BigInt(Math.round(row.workbookGrandTotal));
+  if (row.ranking !== undefined) data.cardLevelRanking = Math.round(row.ranking);
+  if (row.monthValues !== undefined) data.cardLevelMonthValues = row.monthValues;
   if (row.sourceSheet) data.sourceSheet = row.sourceSheet;
   if (row.agentCode) data.agentCode = row.agentCode;
   if (row.agentLevel) data.agentLevel = row.agentLevel;
@@ -1122,6 +1172,10 @@ function detailResponse(row: ParsedEntry, agentName: string, metricType: string)
     cardLevel: row.cardLevel,
     cardLevelLabel: row.cardLevelLabel,
     grandTotal: row.grandTotal,
+    nickname: row.nickname,
+    finalTotal: row.finalTotal,
+    wholeYearTotal: row.wholeYearTotal,
+    ranking: row.ranking,
   };
   if (effectiveMetric === 'all_metrics') {
     detail.transmittals = row.transmittals;
@@ -1153,7 +1207,11 @@ async function getAssignedCampaigns(userId: string, primaryCampaignId?: string |
 function classifyEntries(entries: ParsedEntry[], agentsByCampaign: Map<string, { id: string; name: string }[]>) {
   const matched: any[] = [];
   const notFound: any[] = [];
+  const reviewSeen = new Set<string>();
   for (const entry of entries) {
+    const reviewKey = `${entry.campaignId || ''}|${normalizeAgentName(entry.name)}`;
+    if (reviewSeen.has(reviewKey)) continue;
+    reviewSeen.add(reviewKey);
     const agent = (agentsByCampaign.get(entry.campaignId || '') || []).find((candidate) => agentNameMatches(candidate.name, entry.name));
     const baseData: any = {
       name: entry.name,
@@ -1317,7 +1375,7 @@ async function buildWorkbookPreview({
   selectedReportDate: Date;
   reportPeriodType: ReportPeriodType;
   preloadedWorksheetRows?: Map<string, any[][]>;
-  preparsedBdoSgm?: Map<string, BdoSgmWorksheetParseResult>;
+  preparsedBdoSgm?: Map<string, BdoSgmParseResult>;
 }) {
   const campaignIds = selectedCampaigns.map((campaign) => campaign.id);
   const campaignAgents = await prisma.user.findMany({
@@ -1341,12 +1399,22 @@ async function buildWorkbookPreview({
     XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: true, defval: null } as any),
   ]));
   const bdoSgmMode = selectedCampaigns.length === 1 && isBdoSgmCampaign(selectedCampaigns[0].campaignName);
-  const bdoSgmBySheet = preparsedBdoSgm || new Map<string, BdoSgmWorksheetParseResult>(
+  const bdoSgmBySheet = preparsedBdoSgm || new Map<string, BdoSgmParseResult>(
     bdoSgmMode
-      ? workbook.SheetNames.map((sheetName) => [
-          sheetName,
-          parseBdoSgmWorksheet(worksheetRows.get(sheetName) || [], sheetName, selectedReportDate),
-        ])
+      ? workbook.SheetNames.map((sheetName) => {
+          const consolidated = parseBdoSgmConsolidatedWorksheet(
+            workbook.Sheets[sheetName],
+            sheetName,
+            selectedReportDate,
+            reportPeriodType,
+          );
+          return [
+            sheetName,
+            consolidated.detected
+              ? consolidated
+              : parseBdoSgmWorksheet(worksheetRows.get(sheetName) || [], sheetName, selectedReportDate),
+          ];
+        })
       : []
   );
   const hasBdoSgmRanking = [...bdoSgmBySheet.values()].some((result) => result.detected);
@@ -1464,6 +1532,7 @@ async function buildWorkbookPreview({
       detectedMonths: bdoSgm?.detectedMonths,
       detectedCardLevels: bdoSgm?.detectedCardLevels,
       validationIssues: bdoSgm?.issues,
+      consolidatedAgents: bdoSgm && 'agents' in bdoSgm ? bdoSgm.agents : undefined,
       warnings,
       errors,
       matched,
@@ -1524,6 +1593,13 @@ async function buildWorkbookPreview({
       cardLevel: entry.cardLevel || '',
       cardLevelLabel: entry.cardLevelLabel || '',
       grandTotal: entry.grandTotal ?? null,
+      nickname: entry.nickname || '',
+      finalTotal: entry.finalTotal ?? null,
+      wholeYearTotal: entry.wholeYearTotal ?? entry.grandTotal ?? null,
+      firstPeriodTotal: entry.firstPeriodTotal ?? null,
+      secondPeriodTotal: entry.secondPeriodTotal ?? null,
+      ranking: entry.ranking ?? null,
+      monthValues: entry.monthValues,
       ...(entry.c2gTxn !== undefined && metric.metricType === 'transmittals' ? {
         c2gTxn: entry.c2gTxn, btTxn: entry.btTxn, balconTxn: entry.balconTxn, grandTotalTxn: entry.grandTotalTxn,
         c2gVol: entry.c2gVol, btVol: entry.btVol, balconVol: entry.balconVol, grandTotalVol: entry.grandTotalVol,
@@ -1539,6 +1615,15 @@ async function buildWorkbookPreview({
     });
   })).sort((a, b) => a.reportDate.localeCompare(b.reportDate) || a.campaignName.localeCompare(b.campaignName) || a.agent.localeCompare(b.agent));
   const monthSummary = monthSummaryFromRecords(previewRecords, sheets);
+  const consolidatedResults = [...bdoSgmBySheet.values()].filter(
+    (result): result is BdoSgmConsolidatedParseResult => result.format === 'BDO SGM Consolidated'
+  );
+  const consolidatedTotals = consolidatedResults.reduce((totals, result) => ({
+    finalFcTotal: totals.finalFcTotal + result.periodTotals.finalFcTotal,
+    finalBcTotal: totals.finalBcTotal + result.periodTotals.finalBcTotal,
+    wholeYearTotalFc: totals.wholeYearTotalFc + result.periodTotals.wholeYearTotalFc,
+    wholeYearTotalBc: totals.wholeYearTotalBc + result.periodTotals.wholeYearTotalBc,
+  }), { finalFcTotal: 0, finalBcTotal: 0, wholeYearTotalFc: 0, wholeYearTotalBc: 0 });
   return {
     workbookSummary: {
       totalWorksheets: sheets.length,
@@ -1556,16 +1641,22 @@ async function buildWorkbookPreview({
         skippedBlankCells: [...bdoSgmBySheet.values()].reduce((sum, result) => sum + result.skippedBlankCells, 0),
         warningCount: [...bdoSgmBySheet.values()].reduce((sum, result) => sum + result.warningCount, 0),
         detectedMonths: [...new Set([...bdoSgmBySheet.values()].flatMap((result) => result.detectedMonths))].sort(),
-        supportedWorksheets: sheets.filter((sheet) => sheet.format === 'BDO SGM Ranking').map((sheet) => sheet.sheetName),
-        unsupportedWorksheets: sheets.filter((sheet) => sheet.format !== 'BDO SGM Ranking').map((sheet) => sheet.sheetName),
+        bdoSgmConsolidated: [...bdoSgmBySheet.values()].some((result) => result.format === 'BDO SGM Consolidated'),
+        supportedWorksheets: sheets.filter((sheet) => sheet.format.startsWith('BDO SGM')).map((sheet) => sheet.sheetName),
+        unsupportedWorksheets: sheets.filter((sheet) => !sheet.format.startsWith('BDO SGM')).map((sheet) => sheet.sheetName),
         detectedMetrics: [BDO_SGM_METRIC_TYPE],
         detectedCardLevels: [...new Set([...bdoSgmBySheet.values()].flatMap((result) => result.detectedCardLevels))].sort(),
         agentCount: [...bdoSgmBySheet.values()].reduce((sum, result) => sum + result.validAgentRows, 0),
+        ...(consolidatedResults.length ? {
+          detectedWorksheet: consolidatedResults[0].agents[0]?.sourceSheet || 'HOH',
+          ...consolidatedTotals,
+        } : {}),
       } : {}),
     },
     sheets,
     matched: sheets.flatMap((sheet) => sheet.matched),
     notFound: sheets.flatMap((sheet) => sheet.notFound),
+    consolidatedAgents: sheets.flatMap((sheet) => sheet.consolidatedAgents || []),
     previewRecords,
     monthSummary,
     detectedRange: monthSummary.length ? { earliestMonth: monthSummary[0].month, latestMonth: monthSummary[monthSummary.length - 1].month } : null,
@@ -2262,21 +2353,33 @@ export async function POST(req: NextRequest) {
       }
 
       let preloadedWorksheetRows: Map<string, any[][]> | undefined;
-      let preparsedBdoSgm: Map<string, BdoSgmWorksheetParseResult> | undefined;
+      let preparsedBdoSgm: Map<string, BdoSgmParseResult> | undefined;
       let bdoSgmRankingDetected = false;
       if (selectedCampaigns.length === 1 && isBdoSgmCampaign(selectedCampaigns[0].campaignName)) {
         preloadedWorksheetRows = new Map(workbook.SheetNames.map((sheetName) => [
           sheetName,
           XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: true, defval: null } as any) as any[][],
         ]));
-        preparsedBdoSgm = new Map(workbook.SheetNames.map((sheetName) => [
-          sheetName,
-          parseBdoSgmWorksheet(preloadedWorksheetRows!.get(sheetName) || [], sheetName, reportDate),
-        ]));
+        preparsedBdoSgm = new Map(workbook.SheetNames.map((sheetName) => {
+          const consolidated = parseBdoSgmConsolidatedWorksheet(
+            workbook.Sheets[sheetName],
+            sheetName,
+            reportDate,
+            reportPeriodType,
+          );
+          return [
+            sheetName,
+            consolidated.detected
+              ? consolidated
+              : parseBdoSgmWorksheet(preloadedWorksheetRows!.get(sheetName) || [], sheetName, reportDate),
+          ];
+        }));
         const visibleCardLevels = new Set(
           [...preparsedBdoSgm.values()].flatMap((result) => result.detectedCardLevels)
         );
-        const rankingSheet = workbook.SheetNames.find((sheetName) => preparsedBdoSgm!.get(sheetName)?.detected);
+        const rankingSheet = workbook.SheetNames.find(
+          (sheetName) => preparsedBdoSgm!.get(sheetName)?.format === 'BDO SGM Ranking'
+        );
         if (rankingSheet) {
           const pivotCacheResult = parseBdoSgmPivotCache(bytes, rankingSheet, reportDate);
           const containsAdditionalCardLevel = pivotCacheResult?.detectedCardLevels.some(
@@ -2287,7 +2390,10 @@ export async function POST(req: NextRequest) {
           }
         }
         bdoSgmRankingDetected = [...preparsedBdoSgm.values()].some((result) => result.detected);
-        if (bdoSgmRankingDetected) reportPeriodType = 'monthly';
+        const consolidatedDetected = [...preparsedBdoSgm.values()].some(
+          (result) => result.format === 'BDO SGM Consolidated'
+        );
+        if (bdoSgmRankingDetected && !consolidatedDetected) reportPeriodType = 'monthly';
       }
 
       if (!bdoSgmRankingDetected && isBpiDashboardWorkbook(workbook, file.name)) {
@@ -2476,6 +2582,7 @@ export async function POST(req: NextRequest) {
           reportMonth: reportDate.getMonth() + 1,
           reportYear: reportDate.getFullYear(),
           previewRecords: preview.previewRecords,
+          consolidatedAgents: preview.consolidatedAgents,
           monthSummary: preview.monthSummary,
           detectedRange: preview.detectedRange,
           workbookSummary: preview.workbookSummary,
@@ -2577,7 +2684,12 @@ export async function POST(req: NextRequest) {
       const [storedMetrics, storedDetails] = await Promise.all([
         tx.productionMetricRecord.findMany({
           where: { campaignId: { in: targetCampaignIds }, agentId: { in: importAgentIds }, reportPeriodType, reportDate: { gte: earliestDate, lte: latestDate } },
-          select: { id: true, productionEntryId: true, campaignId: true, agentId: true, metricType: true, reportDate: true, cardLevel: true, count: true, volume: true, goal: true, actual: true, achievement: true },
+          select: {
+            id: true, productionEntryId: true, campaignId: true, agentId: true, metricType: true, reportDate: true,
+            cardLevel: true, count: true, volume: true, goal: true, actual: true, achievement: true,
+            sourceNickname: true, finalTotal: true, firstPeriodTotal: true, secondPeriodTotal: true,
+            workbookGrandTotal: true, ranking: true, monthValues: true,
+          },
         }),
         tx.productionDetail.findMany({
           where: {
@@ -2589,6 +2701,9 @@ export async function POST(req: NextRequest) {
             transmittals: true, approvals: true, booked: true, activations: true, ntb: true, supplementary: true,
             monthlyGoal: true, monthlyActual: true, monthlyAchievement: true,
             agentLevel: true,
+            sourceNickname: true, cardLevelFinalTotal: true, cardLevelFirstPeriodTotal: true,
+            cardLevelSecondPeriodTotal: true, cardLevelWorkbookGrandTotal: true,
+            cardLevelRanking: true, cardLevelMonthValues: true,
             c2gTxn: true, c2gVol: true, btTxn: true, btVol: true, balconTxn: true, balconVol: true,
             grandTotalTxn: true, grandTotalVol: true,
             productionEntry: { select: { date: true, reportPeriodType: true, importMetricType: true } },
@@ -2631,6 +2746,13 @@ export async function POST(req: NextRequest) {
               if ((duplicateMode !== 'skip' || existing.goal == null) && metric.goal != null) enrichment.goal = metric.goal;
               if ((duplicateMode !== 'skip' || existing.actual == null) && metric.actual != null) enrichment.actual = metric.actual;
               if ((duplicateMode !== 'skip' || existing.achievement == null) && metric.achievement != null) enrichment.achievement = metric.achievement;
+              if ((duplicateMode !== 'skip' || existing.sourceNickname == null) && row.nickname !== undefined) enrichment.sourceNickname = row.nickname;
+              if ((duplicateMode !== 'skip' || existing.finalTotal == null) && row.finalTotal !== undefined) enrichment.finalTotal = BigInt(Math.round(row.finalTotal));
+              if ((duplicateMode !== 'skip' || existing.firstPeriodTotal == null) && row.firstPeriodTotal !== undefined) enrichment.firstPeriodTotal = BigInt(Math.round(row.firstPeriodTotal));
+              if ((duplicateMode !== 'skip' || existing.secondPeriodTotal == null) && row.secondPeriodTotal !== undefined) enrichment.secondPeriodTotal = BigInt(Math.round(row.secondPeriodTotal));
+              if ((duplicateMode !== 'skip' || existing.workbookGrandTotal == null) && row.workbookGrandTotal !== undefined) enrichment.workbookGrandTotal = BigInt(Math.round(row.workbookGrandTotal));
+              if ((duplicateMode !== 'skip' || existing.ranking == null) && row.ranking !== undefined) enrichment.ranking = Math.round(row.ranking);
+              if ((duplicateMode !== 'skip' || existing.monthValues == null) && row.monthValues !== undefined) enrichment.monthValues = row.monthValues;
             }
             if (Object.keys(enrichment).length) {
               await tx.productionMetricRecord.update({ where: { id: existing.id }, data: enrichment });
@@ -2696,6 +2818,22 @@ export async function POST(req: NextRequest) {
               rowChanged = true;
             }
           }
+          if (existingDetail && row.nickname !== undefined) {
+            const metadata: Record<string, any> = {};
+            if (duplicateMode !== 'skip' || existingDetail.sourceNickname == null) metadata.sourceNickname = row.nickname;
+            if ((duplicateMode !== 'skip' || existingDetail.cardLevelFinalTotal == null) && row.finalTotal !== undefined) metadata.cardLevelFinalTotal = BigInt(Math.round(row.finalTotal));
+            if ((duplicateMode !== 'skip' || existingDetail.cardLevelFirstPeriodTotal == null) && row.firstPeriodTotal !== undefined) metadata.cardLevelFirstPeriodTotal = BigInt(Math.round(row.firstPeriodTotal));
+            if ((duplicateMode !== 'skip' || existingDetail.cardLevelSecondPeriodTotal == null) && row.secondPeriodTotal !== undefined) metadata.cardLevelSecondPeriodTotal = BigInt(Math.round(row.secondPeriodTotal));
+            if ((duplicateMode !== 'skip' || existingDetail.cardLevelWorkbookGrandTotal == null) && row.workbookGrandTotal !== undefined) metadata.cardLevelWorkbookGrandTotal = BigInt(Math.round(row.workbookGrandTotal));
+            if ((duplicateMode !== 'skip' || existingDetail.cardLevelRanking == null) && row.ranking !== undefined) metadata.cardLevelRanking = Math.round(row.ranking);
+            if ((duplicateMode !== 'skip' || existingDetail.cardLevelMonthValues == null) && row.monthValues !== undefined) metadata.cardLevelMonthValues = row.monthValues;
+            if (Object.keys(metadata).length) {
+              await tx.productionDetail.update({ where: { id: existingDetail.id }, data: metadata });
+              Object.assign(existingDetail, metadata);
+              enrichedRecords++;
+              rowChanged = true;
+            }
+          }
           for (const metric of missingMetrics) {
             const key = normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType, row.cardLevel);
             normalizedRecords.push({
@@ -2710,6 +2848,13 @@ export async function POST(req: NextRequest) {
               cardLevel: row.cardLevel || '',
               cardLevelLabel: row.cardLevelLabel || null,
               grandTotal: row.grandTotal == null ? null : BigInt(Math.round(row.grandTotal)),
+              sourceNickname: row.nickname || null,
+              finalTotal: row.finalTotal == null ? null : BigInt(Math.round(row.finalTotal)),
+              firstPeriodTotal: row.firstPeriodTotal == null ? null : BigInt(Math.round(row.firstPeriodTotal)),
+              secondPeriodTotal: row.secondPeriodTotal == null ? null : BigInt(Math.round(row.secondPeriodTotal)),
+              workbookGrandTotal: row.workbookGrandTotal == null ? null : BigInt(Math.round(row.workbookGrandTotal)),
+              ranking: row.ranking == null ? null : Math.round(row.ranking),
+              monthValues: row.monthValues || Prisma.JsonNull,
               count: metric.count == null ? null : BigInt(Math.round(metric.count)),
               volume: metric.volume == null ? null : BigInt(Math.round(metric.volume)),
               goal: metric.goal ?? null,
@@ -2766,6 +2911,7 @@ export async function POST(req: NextRequest) {
         importedCampaignIds: targetCampaignIds,
         importedCampaigns: targetCampaignIds.length,
         workbookSummary: preview.workbookSummary,
+        consolidatedAgents: preview.consolidatedAgents,
         worksheetPreviews: selectedSheets.map(({ entries: _entries, matched: _matched, notFound: _notFound, ...sheet }) => sheet),
         inserted: normalizedInsert.count,
         updated: enrichedRecords,

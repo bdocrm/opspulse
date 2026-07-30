@@ -41,6 +41,12 @@ interface Production {
   transmittals: number;
   firstCardTransmittals?: number;
   bundleCardTransmittals?: number;
+  firstCardFinalTotal?: number;
+  bundleCardFinalTotal?: number;
+  firstCardWholeYearTotal?: number;
+  bundleCardWholeYearTotal?: number;
+  sourceNickname?: string;
+  cardLevelRanking?: number | null;
   activations: number;
   approvals: number;
   booked: number;
@@ -585,6 +591,7 @@ export default function CollectorDashboard() {
     let totalAgents = 0, presentCount = 0, absentCount = 0;
     let totalTransmittals = 0, totalActivations = 0, totalApprovals = 0, totalBooked = 0, totalVolume = 0;
     let totalFirstCardTransmittals = 0, totalBundleCardTransmittals = 0;
+    let totalFirstCardWholeYear = 0, totalBundleCardWholeYear = 0;
     let totalNtb = 0, totalSupplementary = 0;
     let totalGoal = 0, totalSuppGoal = 0, kpiValue = 0, totalTarget = 0, entriesCount = 0;
 
@@ -599,8 +606,10 @@ export default function CollectorDashboard() {
       for (const a of c.agents) {
         const p = c.production[a.id] || ZERO_PROD;
         totalTransmittals += p.transmittals;
-        totalFirstCardTransmittals += p.firstCardTransmittals || 0;
-        totalBundleCardTransmittals += p.bundleCardTransmittals || 0;
+        totalFirstCardTransmittals += p.firstCardFinalTotal ?? p.firstCardTransmittals ?? 0;
+        totalBundleCardTransmittals += p.bundleCardFinalTotal ?? p.bundleCardTransmittals ?? 0;
+        totalFirstCardWholeYear += p.firstCardWholeYearTotal ?? p.firstCardTransmittals ?? 0;
+        totalBundleCardWholeYear += p.bundleCardWholeYearTotal ?? p.bundleCardTransmittals ?? 0;
         totalActivations += p.activations;
         totalApprovals += p.approvals;
         totalBooked += p.booked;
@@ -638,6 +647,7 @@ export default function CollectorDashboard() {
       totalAgents, presentCount, absentCount,
       totalTransmittals, totalActivations, totalApprovals, totalBooked, totalVolume,
       totalFirstCardTransmittals, totalBundleCardTransmittals, allBdoSgm,
+      totalFirstCardWholeYear, totalBundleCardWholeYear,
       latestImportView,
       totalNtb, totalSupplementary, allAcq,
       totalSuppGoal, suppProgress, remainingSupp,
@@ -1186,12 +1196,14 @@ export default function CollectorDashboard() {
           <CardContent className="pt-4">
             <div className="flex flex-col gap-2">
               <p className="text-xs text-muted-foreground uppercase tracking-wide">
-                {kpis.mixedKpis ? 'Campaign KPI Goals' : `Total Goal (${kpis.allAcq ? 'NTB' : kpiLabel(kpis.primaryKpi)})`}
+                {kpis.allBdoSgm ? 'Final FC Total' : kpis.mixedKpis ? 'Campaign KPI Goals' : `Total Goal (${kpis.allAcq ? 'NTB' : kpiLabel(kpis.primaryKpi)})`}
               </p>
               <p className="text-3xl font-bold text-indigo-500">
-                {kpis.mixedKpis ? '—' : (kpis.allAcq ? kpis.goal.toLocaleString() : formatKpiValue(kpis.primaryKpi, kpis.goal))}
+                {kpis.allBdoSgm ? kpis.totalFirstCardTransmittals.toLocaleString() : kpis.mixedKpis ? '—' : (kpis.allAcq ? kpis.goal.toLocaleString() : formatKpiValue(kpis.primaryKpi, kpis.goal))}
               </p>
-              {kpis.mixedKpis ? (
+              {kpis.allBdoSgm ? (
+                <p className="text-xs text-muted-foreground">Selected reporting period</p>
+              ) : kpis.mixedKpis ? (
                 <p className="text-xs text-muted-foreground">Mixed KPIs are shown per campaign below.</p>
               ) : (
                 <div className="flex items-center justify-between text-xs">
@@ -1201,7 +1213,7 @@ export default function CollectorDashboard() {
                   <span className="font-semibold text-indigo-500">{kpis.targetProgress}%</span>
                 </div>
               )}
-              {!kpis.mixedKpis && kpis.remainingGoal > 0 && (
+              {!kpis.allBdoSgm && !kpis.mixedKpis && kpis.remainingGoal > 0 && (
                 <p className="text-xs text-orange-500 font-semibold">
                   To Go: {kpis.allAcq ? kpis.remainingGoal.toLocaleString() : formatKpiValue(kpis.primaryKpi, kpis.remainingGoal)}
                 </p>
@@ -1213,8 +1225,8 @@ export default function CollectorDashboard() {
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Total Agents</p>
-                <p className="text-3xl font-bold mt-1">{kpis.totalAgents}</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">{kpis.allBdoSgm ? 'Final BC Total' : 'Total Agents'}</p>
+                <p className="text-3xl font-bold mt-1">{kpis.allBdoSgm ? kpis.totalBundleCardTransmittals.toLocaleString() : kpis.totalAgents}</p>
               </div>
               <Users className="w-8 h-8 text-blue-500 opacity-80" />
             </div>
@@ -1225,19 +1237,10 @@ export default function CollectorDashboard() {
             <div className="flex items-center justify-between">
               <div className="flex-1 min-w-0">
                 <p className="text-xs text-muted-foreground uppercase tracking-wide">
-                  {kpis.allBdoSgm ? 'Imported Card Transmittals' : kpis.allAcq ? 'Total Supplementary' : kpis.mixedKpis ? 'Imported Volume' : `Current ${kpiLabel(kpis.primaryKpi)}`}
+                  {kpis.allBdoSgm ? 'Whole-Year Total FC' : kpis.allAcq ? 'Total Supplementary' : kpis.mixedKpis ? 'Imported Volume' : `Current ${kpiLabel(kpis.primaryKpi)}`}
                 </p>
                 {kpis.allBdoSgm ? (
-                  <div className="mt-2 grid grid-cols-2 gap-4">
-                    <div>
-                      <p className="text-2xl font-bold text-blue-600">{kpis.totalFirstCardTransmittals.toLocaleString()}</p>
-                      <p className="text-xs text-blue-700">1st Card</p>
-                    </div>
-                    <div>
-                      <p className="text-2xl font-bold text-violet-600">{kpis.totalBundleCardTransmittals.toLocaleString()}</p>
-                      <p className="text-xs text-violet-700">Bundle Card</p>
-                    </div>
-                  </div>
+                  <p className="mt-1 text-3xl font-bold text-purple-500">{kpis.totalFirstCardWholeYear.toLocaleString()}</p>
                 ) : (
                   <p className="text-3xl font-bold mt-1 text-purple-500">
                     {kpis.allAcq
@@ -1269,8 +1272,8 @@ export default function CollectorDashboard() {
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">{kpis.latestImportView ? 'Latest Imported Records' : 'Records in Range'}</p>
-                <p className="text-3xl font-bold mt-1 text-orange-500">{kpis.entriesCount}</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">{kpis.allBdoSgm ? 'Whole-Year Total BC' : kpis.latestImportView ? 'Latest Imported Records' : 'Records in Range'}</p>
+                <p className="text-3xl font-bold mt-1 text-orange-500">{kpis.allBdoSgm ? kpis.totalBundleCardWholeYear.toLocaleString() : kpis.entriesCount}</p>
               </div>
               <ClipboardList className="w-8 h-8 text-orange-500 opacity-80" />
             </div>
@@ -1799,8 +1802,8 @@ export default function CollectorDashboard() {
                           ) : (
                             <TableRow>
                               <TableHead className="w-12">Rank</TableHead>
-                              <TableHead className="w-12">Seat</TableHead>
-                              <TableHead>Collector</TableHead>
+                              <TableHead className={bdoSgm ? 'min-w-24' : 'w-12'}>{bdoSgm ? 'Nickname' : 'Seat'}</TableHead>
+                              <TableHead>{bdoSgm ? 'Full Name' : 'Collector'}</TableHead>
                               {acq ? (
                                 <>
                                   <TableHead className="text-center">NTB Actual</TableHead>
@@ -1811,8 +1814,11 @@ export default function CollectorDashboard() {
                               ) : bdoSgm ? (
                                 <>
                                   <TableHead className="text-center w-20">Attendance</TableHead>
-                                  <TableHead className="text-right text-blue-700 dark:text-blue-300">1st Card</TableHead>
-                                  <TableHead className="text-right text-violet-700 dark:text-violet-300">Bundle Card</TableHead>
+                                  <TableHead className="text-right text-blue-700 dark:text-blue-300">Final FC</TableHead>
+                                  <TableHead className="text-right text-violet-700 dark:text-violet-300">Final BC</TableHead>
+                                  <TableHead className="text-right text-sky-700 dark:text-sky-300">Whole-Year FC</TableHead>
+                                  <TableHead className="text-right text-purple-700 dark:text-purple-300">Whole-Year BC</TableHead>
+                                  <TableHead className="text-right">Workbook Ranking</TableHead>
                                   <TableHead className="text-right">Goal</TableHead>
                                 </>
                               ) : bdo || hasImportedDashboardPerformance ? (
@@ -1878,7 +1884,7 @@ export default function CollectorDashboard() {
                                 <TableCell className="text-center">
                                   {sortBy === 'booked' && block.entriesCount > 0 ? getRankBadge(index) : <span className="text-muted-foreground text-sm">-</span>}
                                 </TableCell>
-                                <TableCell className="font-semibold text-muted-foreground">{agent.seatNumber}</TableCell>
+                                <TableCell className="font-semibold text-muted-foreground">{bdoSgm ? (prod.sourceNickname || '-') : agent.seatNumber}</TableCell>
                                 <TableCell className="font-medium">{agent.name}</TableCell>
                                 {hasImportedMbPlPerformance ? (
                                   <>
@@ -1940,8 +1946,11 @@ export default function CollectorDashboard() {
                                         <span>{isPresent ? 'P' : 'A'}</span>
                                       </button>
                                     </TableCell>
-                                    <TableCell className="text-right font-semibold text-blue-600">{Number(prod.firstCardTransmittals || 0).toLocaleString()}</TableCell>
-                                    <TableCell className="text-right font-semibold text-violet-600">{Number(prod.bundleCardTransmittals || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-right font-semibold text-blue-600">{Number(prod.firstCardFinalTotal ?? prod.firstCardTransmittals ?? 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-right font-semibold text-violet-600">{Number(prod.bundleCardFinalTotal ?? prod.bundleCardTransmittals ?? 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-right font-semibold text-sky-600">{Number(prod.firstCardWholeYearTotal ?? prod.firstCardTransmittals ?? 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-right font-semibold text-purple-600">{Number(prod.bundleCardWholeYearTotal ?? prod.bundleCardTransmittals ?? 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-right font-semibold">{prod.cardLevelRanking ?? '-'}</TableCell>
                                     <TableCell className="text-right font-semibold text-slate-600 dark:text-slate-300">{formatKpiValue(block.kpiMetric, Number(agent.monthlyTarget || 0))}</TableCell>
                                   </>
                                 ) : bdo || hasImportedDashboardPerformance ? (

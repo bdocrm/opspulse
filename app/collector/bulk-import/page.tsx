@@ -200,6 +200,11 @@ interface WorkbookSummary {
   agentCount?: number;
   teamLeaderCount?: number;
   manpowerRecordCount?: number;
+  detectedWorksheet?: string;
+  finalFcTotal?: number;
+  finalBcTotal?: number;
+  wholeYearTotalFc?: number;
+  wholeYearTotalBc?: number;
   campaignDistribution?: Array<{
     campaignId: string;
     campaignName: string;
@@ -209,6 +214,24 @@ interface WorkbookSummary {
     records: number;
     months: string[];
   }>;
+}
+
+interface ConsolidatedAgentPreview {
+  fileName?: string;
+  nickname: string;
+  fullName: string;
+  reportYear: number;
+  sourceSheet: string;
+  sourceRow: number;
+  fcMonths: Array<{ month: number; label: string; value: number; available: boolean; originalValue: string | number | null }>;
+  bcMonths: Array<{ month: number; label: string; value: number; available: boolean; originalValue: string | number | null }>;
+  finalFcTotal: number;
+  finalBcTotal: number;
+  wholeYearTotalFc: number;
+  wholeYearTotalBc: number;
+  ranking: number | null;
+  validationStatus: 'Valid' | 'Warning';
+  warnings: string[];
 }
 
 interface MonthImportSummary {
@@ -351,6 +374,7 @@ export default function BulkImportPage() {
   const [previewFiles, setPreviewFiles] = useState<Array<{ file: File; index: number }>>([]);
   const [previewFilter, setPreviewFilter] = useState({ file: '', sheet: '', campaign: '', month: '', cardLevel: '', metric: '', status: '' });
   const [normalizedPreviewRecords, setNormalizedPreviewRecords] = useState<NormalizedPreviewRecord[]>([]);
+  const [consolidatedAgentPreviews, setConsolidatedAgentPreviews] = useState<ConsolidatedAgentPreview[]>([]);
   const [monthSummaries, setMonthSummaries] = useState<MonthImportSummary[]>([]);
   const previewInFlight = useRef(false);
   const campaignAccessRefreshed = useRef(false);
@@ -515,6 +539,7 @@ export default function BulkImportPage() {
     setMatched([]);
     setNewAgents([]);
     setNormalizedPreviewRecords([]);
+    setConsolidatedAgentPreviews([]);
     setMonthSummaries([]);
     setStep('previewing');
     setError(null);
@@ -543,6 +568,9 @@ export default function BulkImportPage() {
       setMatched(responses.flatMap(({ data, file: previewFile }) => (data.matched || []).map((row: any) => ({ ...row, fileName: previewFile.name }))));
       setNewAgents(responses.flatMap(({ data, file: previewFile }) => (data.notFound || []).map((row: any) => ({ ...row, fileName: previewFile.name }))).map((a: any) => ({ ...a, volume: a.volume ?? 0, approved: true })));
       setNormalizedPreviewRecords(responses.flatMap(({ data, file: previewFile }) => (data.previewRecords || []).map((row: NormalizedPreviewRecord) => ({ ...row, fileName: previewFile.name }))));
+      setConsolidatedAgentPreviews(responses.flatMap(({ data, file: previewFile }) =>
+        (data.consolidatedAgents || []).map((row: ConsolidatedAgentPreview) => ({ ...row, fileName: previewFile.name }))
+      ));
       const combinedMonths = new Map<string, MonthImportSummary>();
       for (const { data } of responses) {
         for (const month of (data.monthSummary || []) as MonthImportSummary[]) {
@@ -572,6 +600,11 @@ export default function BulkImportPage() {
         agentCount: summaries.reduce((n, s) => n + (s.agentCount || 0), 0),
         teamLeaderCount: summaries.reduce((n, s) => n + (s.teamLeaderCount || 0), 0),
         manpowerRecordCount: summaries.reduce((n, s) => n + (s.manpowerRecordCount || 0), 0),
+        detectedWorksheet: summaries.map((s) => s.detectedWorksheet).find(Boolean),
+        finalFcTotal: summaries.reduce((n, s) => n + (s.finalFcTotal || 0), 0),
+        finalBcTotal: summaries.reduce((n, s) => n + (s.finalBcTotal || 0), 0),
+        wholeYearTotalFc: summaries.reduce((n, s) => n + (s.wholeYearTotalFc || 0), 0),
+        wholeYearTotalBc: summaries.reduce((n, s) => n + (s.wholeYearTotalBc || 0), 0),
         campaignDistribution: summaries.flatMap((s) => s.campaignDistribution || []),
       } : null);
       const sheets = responses.flatMap(({ data, file: previewFile, index }) =>
@@ -743,8 +776,15 @@ export default function BulkImportPage() {
         skipped: skippedTotal,
         invalid: invalidTotal,
         errors: results.flatMap((r) => r.errors || []),
+        warnings: results.flatMap((r) => r.warnings || []),
         details: results.flatMap((r) => r.details || []),
         importedFiles: previewFiles.map((item) => item.file.name),
+        detectedWorksheets: [...new Set(results.flatMap((r) => r.workbookSummary?.supportedWorksheets || []))],
+        agentRows: results.reduce((n, r) => n + (r.workbookSummary?.agentCount || 0), 0),
+        finalFcTotal: results.reduce((n, r) => n + (r.workbookSummary?.finalFcTotal || 0), 0),
+        finalBcTotal: results.reduce((n, r) => n + (r.workbookSummary?.finalBcTotal || 0), 0),
+        wholeYearTotalFc: results.reduce((n, r) => n + (r.workbookSummary?.wholeYearTotalFc || 0), 0),
+        wholeYearTotalBc: results.reduce((n, r) => n + (r.workbookSummary?.wholeYearTotalBc || 0), 0),
       });
       setStep('done');
       mutateImportHistory();
@@ -765,6 +805,7 @@ export default function BulkImportPage() {
     setSelectedFileNames([]);
     setPreviewFiles([]);
     setNormalizedPreviewRecords([]);
+    setConsolidatedAgentPreviews([]);
     setMonthSummaries([]);
     setMatched([]);
     setNewAgents([]);
@@ -1362,6 +1403,32 @@ export default function BulkImportPage() {
                 </div>
               </div>
 
+              {workbookSummary.detectedWorksheet && (
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold text-slate-800">
+                    Consolidated card totals · {workbookSummary.detectedWorksheet}
+                  </p>
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                      <p className="text-xs text-blue-700">Final FC Total</p>
+                      <p className="text-xl font-bold text-blue-800">{Number(workbookSummary.finalFcTotal || 0).toLocaleString()}</p>
+                    </div>
+                    <div className="rounded-lg border border-violet-200 bg-violet-50 p-3">
+                      <p className="text-xs text-violet-700">Final BC Total</p>
+                      <p className="text-xl font-bold text-violet-800">{Number(workbookSummary.finalBcTotal || 0).toLocaleString()}</p>
+                    </div>
+                    <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
+                      <p className="text-xs text-sky-700">Whole-Year Total FC</p>
+                      <p className="text-xl font-bold text-sky-800">{Number(workbookSummary.wholeYearTotalFc || 0).toLocaleString()}</p>
+                    </div>
+                    <div className="rounded-lg border border-purple-200 bg-purple-50 p-3">
+                      <p className="text-xs text-purple-700">Whole-Year Total BC</p>
+                      <p className="text-xl font-bold text-purple-800">{Number(workbookSummary.wholeYearTotalBc || 0).toLocaleString()}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {workbookSummary.supportedWorksheets && (
                 <div className="grid gap-3 rounded-lg border bg-slate-50 p-4 text-sm md:grid-cols-2 xl:grid-cols-4">
                   <div><p className="font-medium text-slate-700">Workbook Year</p><p className="text-slate-600">{workbookSummary.workbookYear || 'Default report year'}</p></div>
@@ -1489,6 +1556,62 @@ export default function BulkImportPage() {
                     {month.invalid > 0 && <p className="text-red-700">{month.invalid.toLocaleString()} invalid</p>}
                   </div>
                 ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {consolidatedAgentPreviews.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">HOH Agent Card Preview</CardTitle>
+              <CardDescription>
+                Monthly FC and BC values remain separate. A dash marks a blank or unavailable workbook cell; zero remains a true numeric zero.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="max-h-[32rem] overflow-auto rounded-lg border">
+                <table className="min-w-[2600px] text-xs">
+                  <thead className="sticky top-0 bg-slate-100 text-left">
+                    <tr>
+                      <th className="p-2">Nickname</th>
+                      <th className="p-2">Full Name</th>
+                      {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].flatMap((month) => [
+                        <th key={`${month}-fc`} className="p-2 text-right text-blue-700">{month} FC</th>,
+                        <th key={`${month}-bc`} className="p-2 text-right text-violet-700">{month} BC</th>,
+                      ])}
+                      <th className="p-2 text-right">Final FC Total</th>
+                      <th className="p-2 text-right">Final BC Total</th>
+                      <th className="p-2 text-right">Whole-Year FC</th>
+                      <th className="p-2 text-right">Whole-Year BC</th>
+                      <th className="p-2 text-right">Ranking</th>
+                      <th className="p-2">Validation</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {consolidatedAgentPreviews.map((agent) => (
+                      <tr key={`${agent.fileName}-${agent.sourceSheet}-${agent.sourceRow}`} className="border-t">
+                        <td className="p-2 font-medium">{agent.nickname || '-'}</td>
+                        <td className="whitespace-nowrap p-2 font-medium">{agent.fullName}</td>
+                        {agent.fcMonths.flatMap((fc, index) => {
+                          const bc = agent.bcMonths[index];
+                          return [
+                            <td key={`${index}-fc`} className="p-2 text-right text-blue-700">{fc.available ? fc.value.toLocaleString() : '-'}</td>,
+                            <td key={`${index}-bc`} className="p-2 text-right text-violet-700">{bc?.available ? bc.value.toLocaleString() : '-'}</td>,
+                          ];
+                        })}
+                        <td className="p-2 text-right font-semibold text-blue-700">{agent.finalFcTotal.toLocaleString()}</td>
+                        <td className="p-2 text-right font-semibold text-violet-700">{agent.finalBcTotal.toLocaleString()}</td>
+                        <td className="p-2 text-right font-semibold">{agent.wholeYearTotalFc.toLocaleString()}</td>
+                        <td className="p-2 text-right font-semibold">{agent.wholeYearTotalBc.toLocaleString()}</td>
+                        <td className="p-2 text-right">{agent.ranking ?? '-'}</td>
+                        <td className={agent.validationStatus === 'Warning' ? 'p-2 text-amber-700' : 'p-2 text-green-700'}>
+                          {agent.warnings.length ? agent.warnings.join(' ') : agent.validationStatus}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </CardContent>
           </Card>
@@ -1725,6 +1848,38 @@ export default function BulkImportPage() {
               </div>
             )}
           </div>
+
+          {importResult?.detectedWorksheets?.length > 0 && (
+            <div className="space-y-3 rounded-lg border p-4">
+              <div className="grid gap-2 text-sm sm:grid-cols-3">
+                <p><span className="font-medium">File:</span> {importResult.importedFiles?.join(', ')}</p>
+                <p><span className="font-medium">Worksheet:</span> {importResult.detectedWorksheets.join(', ')}</p>
+                <p><span className="font-medium">Agent rows:</span> {Number(importResult.agentRows || 0).toLocaleString()}</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {[
+                  ['Final FC Total', importResult.finalFcTotal, 'text-blue-700'],
+                  ['Final BC Total', importResult.finalBcTotal, 'text-violet-700'],
+                  ['Whole-Year Total FC', importResult.wholeYearTotalFc, 'text-sky-700'],
+                  ['Whole-Year Total BC', importResult.wholeYearTotalBc, 'text-purple-700'],
+                ].map(([label, value, color]) => (
+                  <div key={String(label)} className="rounded-md border bg-slate-50 p-3">
+                    <p className="text-xs text-slate-500">{label}</p>
+                    <p className={`text-lg font-bold ${color}`}>{Number(value || 0).toLocaleString()}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {importResult?.warnings?.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="mb-2 text-sm font-medium text-amber-900">Warnings ({importResult.warnings.length})</p>
+              <ul className="max-h-40 space-y-1 overflow-y-auto text-sm text-amber-800">
+                {importResult.warnings.slice(0, 200).map((warning: string, index: number) => <li key={index}>• {warning}</li>)}
+              </ul>
+            </div>
+          )}
 
           {importResult?.errors?.length > 0 && (
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">

@@ -175,6 +175,13 @@ model ProductionMetricRecord {
   cardLevel         String          @default("")
   cardLevelLabel    String?
   grandTotal        BigInt?
+  sourceNickname    String?
+  finalTotal        BigInt?
+  firstPeriodTotal  BigInt?
+  secondPeriodTotal BigInt?
+  workbookGrandTotal BigInt?
+  ranking           Int?
+  monthValues       Json?
   count             BigInt?
   volume            BigInt?
   goal              Float?
@@ -306,6 +313,13 @@ model ProductionDetail {
   cardLevel           String          @default("") // BDO SGM: FIRST_CARD / BUNDLE_CARD
   cardLevelLabel      String?
   cardLevelGrandTotal BigInt?
+  sourceNickname      String?
+  cardLevelFinalTotal BigInt?
+  cardLevelFirstPeriodTotal BigInt?
+  cardLevelSecondPeriodTotal BigInt?
+  cardLevelWorkbookGrandTotal BigInt?
+  cardLevelRanking    Int?
+  cardLevelMonthValues Json?
   // MB PL wide-format: per-category transaction counts + volume
   bauPayrollTxn      BigInt          @default(0)
   bauPayrollVol      BigInt          @default(0)
