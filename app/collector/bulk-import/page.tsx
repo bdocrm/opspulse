@@ -29,6 +29,9 @@ interface NormalizedPreviewRecord {
   sheet: string;
   campaignName: string;
   agent: string;
+  cardLevel?: string;
+  cardLevelLabel?: string;
+  grandTotal?: number | null;
   reportPeriodType: ReportPeriodType;
   reportDate: string;
   metricType: string;
@@ -54,6 +57,9 @@ interface MatchedAgent {
   name: string;
   count: number;
   volume: number;
+  cardLevel?: string;
+  cardLevelLabel?: string;
+  grandTotal?: number | null;
   agentId: string;
   agentName: string;
   transmittals?: number;
@@ -85,6 +91,9 @@ interface NewAgent {
   name: string;
   count: number;
   volume: number;
+  cardLevel?: string;
+  cardLevelLabel?: string;
+  grandTotal?: number | null;
   approved: boolean;
   transmittals?: number;
   approvals?: number;
@@ -141,6 +150,9 @@ interface ImportFileSummary {
     ntb: number;
     supplementary: number;
     seatCategory?: string | null;
+    cardLevel?: string;
+    cardLevelLabel?: string | null;
+    grandTotal?: number | null;
   }>;
 }
 
@@ -164,6 +176,7 @@ interface WorksheetPreview {
   detectedMonths?: string[];
   detectedCampaigns?: string[];
   detectedMetrics?: string[];
+  detectedCardLevels?: string[];
   warnings: string[];
   errors: string[];
   fileName?: string;
@@ -183,6 +196,7 @@ interface WorkbookSummary {
   detectedMonths?: string[];
   detectedCategories?: string[];
   detectedMetrics?: string[];
+  detectedCardLevels?: string[];
   agentCount?: number;
   teamLeaderCount?: number;
   manpowerRecordCount?: number;
@@ -247,6 +261,15 @@ const formatDate = (value?: string | null) =>
     : '-';
 
 const metricLabel = (value: string) => METRIC_LABELS[value] || value.replace(/_/g, ' ');
+
+const cardLevelLabel = (value?: string | null, originalLabel?: string | null) => {
+  if (value === 'FIRST_CARD') return '1st Card';
+  if (value === 'BUNDLE_CARD') return 'Bundle Card';
+  return originalLabel || value?.replace(/_/g, ' ') || '-';
+};
+
+const cardLevelRank = (value?: string | null) =>
+  value === 'FIRST_CARD' ? 0 : value === 'BUNDLE_CARD' ? 1 : 2;
 
 const mbPaBreakdown = (row: NormalizedPreviewRecord, type: 'trans' | 'billings') => {
   const values = type === 'trans'
@@ -326,7 +349,7 @@ export default function BulkImportPage() {
   const [deleteTarget, setDeleteTarget] = useState<ImportFileSummary | null>(null);
   const [deletingImport, setDeletingImport] = useState(false);
   const [previewFiles, setPreviewFiles] = useState<Array<{ file: File; index: number }>>([]);
-  const [previewFilter, setPreviewFilter] = useState({ file: '', sheet: '', campaign: '', month: '', metric: '', status: '' });
+  const [previewFilter, setPreviewFilter] = useState({ file: '', sheet: '', campaign: '', month: '', cardLevel: '', metric: '', status: '' });
   const [normalizedPreviewRecords, setNormalizedPreviewRecords] = useState<NormalizedPreviewRecord[]>([]);
   const [monthSummaries, setMonthSummaries] = useState<MonthImportSummary[]>([]);
   const previewInFlight = useRef(false);
@@ -1132,6 +1155,7 @@ export default function BulkImportPage() {
                     <thead className="bg-muted/60 text-left text-muted-foreground">
                       <tr>
                         <th className="p-2">Agent</th>
+                        <th className="p-2">Card Level</th>
                         <th className="p-2 text-right">Transmitted</th>
                         <th className="p-2 text-right">Approvals</th>
                         <th className="p-2 text-right">Booked</th>
@@ -1141,7 +1165,12 @@ export default function BulkImportPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(selectedImport.details ?? []).map((detail, index) => (
+                      {[...(selectedImport.details ?? [])]
+                        .sort((a, b) =>
+                          cardLevelRank(a.cardLevel) - cardLevelRank(b.cardLevel) ||
+                          a.agent.localeCompare(b.agent)
+                        )
+                        .map((detail, index) => (
                         <tr key={detail.id} className={index % 2 === 0 ? 'bg-card' : 'bg-muted/30'}>
                           <td className="p-2">
                             <p className="font-medium">{detail.agent}</p>
@@ -1149,6 +1178,17 @@ export default function BulkImportPage() {
                               {detail.seatNumber ? `Seat ${detail.seatNumber}` : 'No seat'}
                               {detail.seatCategory ? ` - ${detail.seatCategory}` : ''}
                             </p>
+                          </td>
+                          <td className="p-2">
+                            {detail.cardLevel ? (
+                              <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 text-xs font-medium ${
+                                detail.cardLevel === 'FIRST_CARD'
+                                  ? 'bg-blue-100 text-blue-800'
+                                  : 'bg-violet-100 text-violet-800'
+                              }`}>
+                                {cardLevelLabel(detail.cardLevel, detail.cardLevelLabel)}
+                              </span>
+                            ) : '-'}
                           </td>
                           <td className="p-2 text-right">{detail.transmittals.toLocaleString()}</td>
                           <td className="p-2 text-right">{detail.approvals.toLocaleString()}</td>
@@ -1204,23 +1244,30 @@ export default function BulkImportPage() {
       ...matched.map((row) => ({ ...row, previewStatus: 'Valid', validationMessage: '' })),
       ...newAgents.map((row) => ({ ...row, previewStatus: 'Mapping Required', validationMessage: 'Agent not found; approve creation or deselect it.' })),
     ];
-    const previewOptions = (key: 'fileName' | 'sheet' | 'campaignName' | 'reportDate' | 'metricType') =>
+    const previewOptions = (key: 'fileName' | 'sheet' | 'campaignName' | 'reportDate' | 'cardLevel' | 'metricType') =>
       [...new Set(previewRows.map((row) => row[key]).filter(Boolean) as string[])].sort();
-    const filteredPreviewRows = previewRows.filter((row) =>
-      (!previewFilter.file || row.fileName === previewFilter.file) &&
-      (!previewFilter.sheet || row.sheet === previewFilter.sheet) &&
-      (!previewFilter.campaign || row.campaignName === previewFilter.campaign) &&
-      (!previewFilter.month || row.reportDate?.slice(0, 7) === previewFilter.month) &&
-      (!previewFilter.metric || row.metricType === previewFilter.metric) &&
-      (!previewFilter.status || row.previewStatus === previewFilter.status)
-    );
+    const filteredPreviewRows = previewRows
+      .filter((row) =>
+        (!previewFilter.file || row.fileName === previewFilter.file) &&
+        (!previewFilter.sheet || row.sheet === previewFilter.sheet) &&
+        (!previewFilter.campaign || row.campaignName === previewFilter.campaign) &&
+        (!previewFilter.month || row.reportDate?.slice(0, 7) === previewFilter.month) &&
+        (!previewFilter.cardLevel || row.cardLevel === previewFilter.cardLevel) &&
+        (!previewFilter.metric || row.metricType === previewFilter.metric) &&
+        (!previewFilter.status || row.previewStatus === previewFilter.status)
+      )
+      .sort((a, b) => cardLevelRank(a.cardLevel) - cardLevelRank(b.cardLevel));
+    const cardLevelCounts = previewRows.reduce<Record<string, number>>((counts, row) => {
+      if (row.cardLevel) counts[row.cardLevel] = (counts[row.cardLevel] || 0) + 1;
+      return counts;
+    }, {});
     const showMbPaBreakdown = filteredPreviewRows.some((row) =>
       /\bMB\s*PA\b/i.test(row.campaignName || '') ||
       [row.c2gTxn, row.btTxn, row.balconTxn, row.grandTotalTxn, row.c2gVol, row.btVol, row.balconVol, row.grandTotalVol].some((value) => value != null)
     );
     const previewHeaders = [
       'File', 'Worksheet', 'Campaign', 'Agent', 'Detected Month', 'Report Period', 'Report Date',
-      'Metric', 'Count', 'Volume',
+      'Card Level', 'Metric', 'Count', 'Volume',
       ...(showMbPaBreakdown ? ['TRANS (C2G / BT / BalCon / Total)', 'BILLINGS (C2G / BT / BalCon / Total)'] : []),
       'Goal', 'Actual', 'Achievement', 'Status', 'Validation Message',
     ];
@@ -1400,6 +1447,7 @@ export default function BulkImportPage() {
                           </p>
                           {Boolean(sheet.detectedMonths?.length) && <p className="mt-1 text-xs text-slate-500">Months: {sheet.detectedMonths!.join(', ')}</p>}
                           {Boolean(sheet.detectedMetrics?.length) && <p className="mt-1 text-xs text-slate-500">Metrics: {sheet.detectedMetrics!.join(', ')}</p>}
+                          {Boolean(sheet.detectedCardLevels?.length) && <p className="mt-1 text-xs text-slate-500">Card Levels: {sheet.detectedCardLevels!.map((level) => cardLevelLabel(level)).join(', ')}</p>}
                           {[...sheet.errors, ...sheet.warnings].slice(0, 3).map((message, i) => (
                             <p key={i} className={`mt-1 text-xs ${sheet.errors.includes(message) ? 'text-red-600' : 'text-amber-700'}`}>
                               {message}
@@ -1458,16 +1506,29 @@ export default function BulkImportPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+            {Object.keys(cardLevelCounts).length > 0 && (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                  <p className="text-xs font-medium text-blue-700">1st Card records</p>
+                  <p className="text-lg font-semibold text-blue-900">{(cardLevelCounts.FIRST_CARD || 0).toLocaleString()}</p>
+                </div>
+                <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2">
+                  <p className="text-xs font-medium text-violet-700">Bundle Card records</p>
+                  <p className="text-lg font-semibold text-violet-900">{(cardLevelCounts.BUNDLE_CARD || 0).toLocaleString()}</p>
+                </div>
+              </div>
+            )}
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-7">
               {[
                 ['file', 'File', previewOptions('fileName')], ['sheet', 'Worksheet', previewOptions('sheet')],
                 ['campaign', 'Campaign', previewOptions('campaignName')],
                 ['month', 'Month', [...new Set(previewOptions('reportDate').map((value) => value.slice(0, 7)))]],
+                ['cardLevel', 'Card Level', previewOptions('cardLevel')],
                 ['metric', 'Metric', previewOptions('metricType')], ['status', 'Status', [...new Set(previewRows.map((row) => row.previewStatus).filter(Boolean))].sort()],
               ].map(([key, label, values]) => (
                 <select key={key as string} value={previewFilter[key as keyof typeof previewFilter]} onChange={(event) => setPreviewFilter((current) => ({ ...current, [key as string]: event.target.value }))} className="rounded-md border px-2 py-2 text-xs">
                   <option value="">All {label as string}s</option>
-                  {(values as string[]).map((value) => <option key={value} value={value}>{value}</option>)}
+                  {(values as string[]).map((value) => <option key={value} value={value}>{key === 'cardLevel' ? cardLevelLabel(value) : value}</option>)}
                 </select>
               ))}
             </div>
@@ -1477,7 +1538,19 @@ export default function BulkImportPage() {
                 <tbody>{filteredPreviewRows.slice(0, 500).map((row, index) => (
                   <tr key={`${row.fileName}-${row.sheet}-${row.row}-${index}`} className="border-t">
                     <td className="max-w-40 truncate p-2">{row.fileName}</td><td className="p-2">{row.sheet}</td><td className="p-2">{row.campaignName}</td><td className="p-2 font-medium">{'agentName' in row ? row.agentName : row.name}</td><td className="p-2">{monthSummaries.find((month) => month.month === row.reportDate?.slice(0, 7))?.label || row.reportDate?.slice(0, 7) || '-'}</td>
-                    <td className="p-2 capitalize">{row.reportPeriodType || reportPeriodType}</td><td className="p-2">{row.reportDate || '-'}</td><td className="p-2">{metricLabel(row.metricType || metricType)}</td><td className="p-2 text-right">{row.count == null ? '-' : row.count.toLocaleString()}</td><td className="p-2 text-right">{row.volume == null ? '-' : row.volume.toLocaleString()}</td>{showMbPaBreakdown && <><td className="whitespace-nowrap p-2 text-right">{mbPaBreakdown(row, 'trans')}</td><td className="whitespace-nowrap p-2 text-right">{mbPaBreakdown(row, 'billings')}</td></>}<td className="p-2 text-right">{row.goal == null ? '-' : row.goal.toLocaleString()}</td><td className="p-2 text-right">{row.actual == null ? '-' : row.actual.toLocaleString()}</td><td className="p-2 text-right">{row.achievement == null ? '-' : `${(row.achievement * (row.achievement <= 2 ? 100 : 1)).toFixed(1)}%`}</td>
+                    <td className="p-2 capitalize">{row.reportPeriodType || reportPeriodType}</td><td className="p-2">{row.reportDate || '-'}</td>
+                    <td className="p-2">
+                      {row.cardLevel ? (
+                        <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 font-medium ${
+                          row.cardLevel === 'FIRST_CARD'
+                            ? 'bg-blue-100 text-blue-800'
+                            : 'bg-violet-100 text-violet-800'
+                        }`}>
+                          {cardLevelLabel(row.cardLevel, row.cardLevelLabel)}
+                        </span>
+                      ) : '-'}
+                    </td>
+                    <td className="p-2">{metricLabel(row.metricType || metricType)}</td><td className="p-2 text-right">{row.count == null ? '-' : row.count.toLocaleString()}</td><td className="p-2 text-right">{row.volume == null ? '-' : row.volume.toLocaleString()}</td>{showMbPaBreakdown && <><td className="whitespace-nowrap p-2 text-right">{mbPaBreakdown(row, 'trans')}</td><td className="whitespace-nowrap p-2 text-right">{mbPaBreakdown(row, 'billings')}</td></>}<td className="p-2 text-right">{row.goal == null ? '-' : row.goal.toLocaleString()}</td><td className="p-2 text-right">{row.actual == null ? '-' : row.actual.toLocaleString()}</td><td className="p-2 text-right">{row.achievement == null ? '-' : `${(row.achievement * (row.achievement <= 2 ? 100 : 1)).toFixed(1)}%`}</td>
                     <td className={`p-2 font-medium ${row.previewStatus === 'Existing' ? 'text-blue-700' : row.previewStatus === 'Unmapped' ? 'text-orange-700' : 'text-green-700'}`}>{row.previewStatus}</td><td className="p-2 text-slate-500">{row.validationMessage || '-'}</td>
                   </tr>
                 ))}</tbody>

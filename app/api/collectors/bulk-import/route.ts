@@ -1530,7 +1530,6 @@ async function buildWorkbookPreview({
       status: agent && existingKeys.has(key) ? 'Existing' : 'New',
       validationMessage: [
         agent ? '' : 'Agent not found; approve creation before import.',
-        entry.cardLevelLabel ? `Card Level: ${entry.cardLevelLabel}.` : '',
         entry.grandTotal !== undefined ? `Grand Total: ${entry.grandTotal}.` : '',
         ...(entry.validationErrors || []),
       ].filter(Boolean).join(' '),
