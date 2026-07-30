@@ -172,6 +172,9 @@ model ProductionMetricRecord {
   reportMonth       Int?
   reportYear        Int
   metricType        String
+  cardLevel         String          @default("")
+  cardLevelLabel    String?
+  grandTotal        BigInt?
   count             BigInt?
   volume            BigInt?
   goal              Float?
@@ -182,7 +185,7 @@ model ProductionMetricRecord {
   sourceRow         Int?
   createdAt         DateTime        @default(now())
 
-  @@unique([campaignId, agentId, metricType, reportPeriodType, reportDate])
+  @@unique([campaignId, agentId, metricType, reportPeriodType, reportDate, cardLevel])
   @@index([productionEntryId])
   @@index([campaignId, reportYear, reportMonth])
   @@index([agentId])
@@ -300,6 +303,9 @@ model ProductionDetail {
   ntb                BigInt          @default(0) // ACQ: New-To-Bank accounts
   supplementary      BigInt          @default(0) // ACQ: supplementary accounts
   seatCategory       String? // ACQ: BILLABLE / BUFFER
+  cardLevel           String          @default("") // BDO SGM: FIRST_CARD / BUNDLE_CARD
+  cardLevelLabel      String?
+  cardLevelGrandTotal BigInt?
   // MB PL wide-format: per-category transaction counts + volume
   bauPayrollTxn      BigInt          @default(0)
   bauPayrollVol      BigInt          @default(0)
@@ -322,7 +328,7 @@ model ProductionDetail {
   grandTotalVol      BigInt          @default(0)
   createdAt          DateTime        @default(now())
 
-  @@unique([productionEntryId, agentId])
+  @@unique([productionEntryId, agentId, cardLevel])
   @@index([productionEntryId])
   @@index([agentId])
   @@index([campaignId])

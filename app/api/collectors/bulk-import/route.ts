@@ -30,6 +30,9 @@ type ParsedEntry = {
   overallGoal?: number; overallActual?: number; overallAchievement?: number;
   teamGoal?: number; elapsedWorkingDays?: number; totalWorkingDays?: number;
   metricType?: string;
+  cardLevel?: string;
+  cardLevelLabel?: string;
+  grandTotal?: number;
   sourceSheet?: string;
   campaignId?: string;
   campaignName?: string;
@@ -142,6 +145,7 @@ type SheetPreview = {
   skippedBlankCells?: number;
   warningCount?: number;
   detectedMonths?: string[];
+  detectedCardLevels?: string[];
   validationIssues?: Array<{ worksheet: string; row: number; reason: string; warning: boolean }>;
   warnings: string[];
   errors: string[];
@@ -181,8 +185,23 @@ async function ensureImportMetadataColumns() {
       ADD COLUMN IF NOT EXISTS "monthlyAchievement" DOUBLE PRECISION,
       ADD COLUMN IF NOT EXISTS "overallGoal" DOUBLE PRECISION,
       ADD COLUMN IF NOT EXISTS "overallActual" DOUBLE PRECISION,
-      ADD COLUMN IF NOT EXISTS "overallAchievement" DOUBLE PRECISION;
+      ADD COLUMN IF NOT EXISTS "overallAchievement" DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS "cardLevel" TEXT NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS "cardLevelLabel" TEXT,
+      ADD COLUMN IF NOT EXISTS "cardLevelGrandTotal" BIGINT;
   `);
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE "ProductionMetricRecord"
+      ADD COLUMN IF NOT EXISTS "cardLevel" TEXT NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS "cardLevelLabel" TEXT,
+      ADD COLUMN IF NOT EXISTS "grandTotal" BIGINT;
+  `);
+  await prisma.$executeRawUnsafe('DROP INDEX IF EXISTS "ProductionMetricRecord_campaignId_agentId_metricType_reportPeriodType_reportDate_key"');
+  await prisma.$executeRawUnsafe('DROP INDEX IF EXISTS "ProductionMetricRecord_campaignId_agentId_metricType_reportDate_key"');
+  await prisma.$executeRawUnsafe('DROP INDEX IF EXISTS "ProductionMetricRecord_campaignId_agentId_metricType_reportDate"');
+  await prisma.$executeRawUnsafe('CREATE UNIQUE INDEX IF NOT EXISTS "ProductionMetricRecord_campaignId_agentId_metricType_reportPeriodType_reportDate_cardLevel_key" ON "ProductionMetricRecord"("campaignId", "agentId", "metricType", "reportPeriodType", "reportDate", "cardLevel")');
+  await prisma.$executeRawUnsafe('DROP INDEX IF EXISTS "ProductionDetail_productionEntryId_agentId_key"');
+  await prisma.$executeRawUnsafe('CREATE UNIQUE INDEX IF NOT EXISTS "ProductionDetail_productionEntryId_agentId_cardLevel_key" ON "ProductionDetail"("productionEntryId", "agentId", "cardLevel")');
 }
 
 async function saveImportMetadata(entryId: string, fileName: string, metricType: string, sheetNames?: string[], auditLog?: any, db: any = prisma) {
@@ -997,6 +1016,9 @@ function buildDetailData(row: ParsedEntry, metricType: string): Record<string, a
   if (row.ntb !== undefined) data.ntb = BigInt(row.ntb || 0);
   if (row.supplementary !== undefined) data.supplementary = BigInt(row.supplementary || 0);
   if (row.seatCategory) data.seatCategory = row.seatCategory;
+  if (row.cardLevel) data.cardLevel = row.cardLevel;
+  if (row.cardLevelLabel) data.cardLevelLabel = row.cardLevelLabel;
+  if (row.grandTotal !== undefined) data.cardLevelGrandTotal = BigInt(Math.round(row.grandTotal));
   if (row.sourceSheet) data.sourceSheet = row.sourceSheet;
   if (row.agentCode) data.agentCode = row.agentCode;
   if (row.agentLevel) data.agentLevel = row.agentLevel;
@@ -1061,6 +1083,9 @@ function buildDetailDataForWrite(row: ParsedEntry, metricType: string, partial =
   if (row.ntb !== undefined) data.ntb = BigInt(row.ntb || 0);
   if (row.supplementary !== undefined) data.supplementary = BigInt(row.supplementary || 0);
   if (row.seatCategory) data.seatCategory = row.seatCategory;
+  if (row.cardLevel) data.cardLevel = row.cardLevel;
+  if (row.cardLevelLabel) data.cardLevelLabel = row.cardLevelLabel;
+  if (row.grandTotal !== undefined) data.cardLevelGrandTotal = BigInt(Math.round(row.grandTotal));
   if (row.sourceSheet) data.sourceSheet = row.sourceSheet;
   if (row.agentCode) data.agentCode = row.agentCode;
   if (row.agentLevel) data.agentLevel = row.agentLevel;
@@ -1093,6 +1118,9 @@ function detailResponse(row: ParsedEntry, agentName: string, metricType: string)
     agent: agentName,
     date: row.reportDate ? ymd(row.reportDate) : '',
     volume: row.volume,
+    cardLevel: row.cardLevel,
+    cardLevelLabel: row.cardLevelLabel,
+    grandTotal: row.grandTotal,
   };
   if (effectiveMetric === 'all_metrics') {
     detail.transmittals = row.transmittals;
@@ -1139,6 +1167,9 @@ function classifyEntries(entries: ParsedEntry[], agentsByCampaign: Map<string, {
       goal: entry.monthlyGoal,
       actual: entry.monthlyActual,
       achievement: entry.monthlyAchievement,
+      cardLevel: entry.cardLevel,
+      cardLevelLabel: entry.cardLevelLabel,
+      grandTotal: entry.grandTotal,
     };
     if (entry.metricType === 'all_metrics') {
       baseData.transmittals = entry.transmittals;
@@ -1163,8 +1194,15 @@ function classifyEntries(entries: ParsedEntry[], agentsByCampaign: Map<string, {
   return { matched, notFound };
 }
 
-function normalizedMetricKey(campaignId: string, agentId: string, metricType: string, reportDate: Date, reportPeriodType: ReportPeriodType) {
-  return `${campaignId}|${agentId}|${metricType}|${reportPeriodType}|${ymd(reportDate)}`;
+function normalizedMetricKey(
+  campaignId: string,
+  agentId: string,
+  metricType: string,
+  reportDate: Date,
+  reportPeriodType: ReportPeriodType,
+  cardLevel = ''
+) {
+  return `${campaignId}|${agentId}|${metricType}|${reportPeriodType}|${ymd(reportDate)}|${cardLevel}`;
 }
 
 async function persistImportedCampaignSettings(tx: Prisma.TransactionClient, entries: ParsedEntry[]) {
@@ -1365,7 +1403,7 @@ async function buildWorkbookPreview({
     if (detectedMbGoalLayout) warnings.unshift('MB monthly TARGET, ACTUAL, %, SCORE, and ACHIEVEMENT blocks were detected automatically.');
     const sheetSeen = new Set<string>();
 
-    for (const entry of parsed.entries) {
+    for (const entry of parsed.entries as ParsedEntry[]) {
       const effectiveMetric = entry.metricType || detectedMetric;
       const entryDate = entry.reportDate || reportDate;
       const entryCampaign = entry.campaignId
@@ -1375,7 +1413,7 @@ async function buildWorkbookPreview({
         warnings.push(`Row ${entry.rowIdx}: campaign is not authorized for this import.`);
         continue;
       }
-      const key = [entryCampaign.id, normalizeAgentName(entry.name), ymd(normalizePeriodDate(entryDate, reportPeriodType)), effectiveMetric].join('|');
+      const key = [entryCampaign.id, normalizeAgentName(entry.name), ymd(normalizePeriodDate(entryDate, reportPeriodType)), effectiveMetric, entry.cardLevel || ''].join('|');
       if (sheetSeen.has(key) || allSeen.has(key)) {
         duplicateRows++;
         warnings.push(`Row ${entry.rowIdx}: duplicate ${sheetSeen.has(key) ? 'within this sheet' : 'already found in another sheet'}; it will be skipped.`);
@@ -1423,6 +1461,7 @@ async function buildWorkbookPreview({
       skippedBlankCells: bdoSgm?.skippedBlankCells,
       warningCount: bdoSgm?.warningCount,
       detectedMonths: bdoSgm?.detectedMonths,
+      detectedCardLevels: bdoSgm?.detectedCardLevels,
       validationIssues: bdoSgm?.issues,
       warnings,
       errors,
@@ -1443,22 +1482,22 @@ async function buildWorkbookPreview({
   const [existingMetrics, legacyDetails] = matchedAgentIds.length && candidateDates.length ? await Promise.all([
     prisma.productionMetricRecord.findMany({
       where: { campaignId: { in: campaignIdSet }, agentId: { in: matchedAgentIds }, reportPeriodType, reportDate: { gte: minDate, lte: maxDate } },
-      select: { campaignId: true, agentId: true, metricType: true, reportDate: true },
+      select: { campaignId: true, agentId: true, metricType: true, reportDate: true, cardLevel: true },
     }),
     prisma.productionDetail.findMany({
       where: { campaignId: { in: campaignIdSet }, agentId: { in: matchedAgentIds }, productionEntry: { date: { gte: new Date(minDate.getFullYear(), minDate.getMonth(), 1), lte: new Date(maxDate.getFullYear(), maxDate.getMonth() + 1, 0) } } },
       select: {
-        campaignId: true, agentId: true, transmittals: true, approvals: true, booked: true, activations: true, ntb: true, supplementary: true,
+        campaignId: true, agentId: true, cardLevel: true, transmittals: true, approvals: true, booked: true, activations: true, ntb: true, supplementary: true,
         monthlyGoal: true, monthlyActual: true, monthlyAchievement: true,
         productionEntry: { select: { date: true, reportPeriodType: true, importMetricType: true } },
       },
     }),
   ]) : [[], []];
-  const existingKeys = new Set(existingMetrics.map((record) => normalizedMetricKey(record.campaignId, record.agentId, record.metricType, record.reportDate, reportPeriodType)));
+  const existingKeys = new Set(existingMetrics.map((record) => normalizedMetricKey(record.campaignId, record.agentId, record.metricType, record.reportDate, reportPeriodType, record.cardLevel)));
   for (const detail of legacyDetails) {
     if (detail.productionEntry.reportPeriodType !== reportPeriodType) continue;
     const normalizedDate = normalizePeriodDate(detail.productionEntry.date, reportPeriodType);
-    for (const type of legacyMetricTypes(detail)) existingKeys.add(normalizedMetricKey(detail.campaignId, detail.agentId, type, normalizedDate, reportPeriodType));
+    for (const type of legacyMetricTypes(detail)) existingKeys.add(normalizedMetricKey(detail.campaignId, detail.agentId, type, normalizedDate, reportPeriodType, detail.cardLevel));
   }
 
   const previewSeen = new Set<string>();
@@ -1466,7 +1505,7 @@ async function buildWorkbookPreview({
     const agent = (agentsByCampaign.get(entry.campaignId || '') || []).find((candidate) => agentNameMatches(candidate.name, entry.name));
     const normalizedDate = normalizePeriodDate(entry.reportDate || selectedReportDate, reportPeriodType);
     return expandEntryMetrics(entry).flatMap((metric) => {
-      const key = normalizedMetricKey(entry.campaignId || sheet.campaignId, agent?.id || normalizeAgentName(entry.name), metric.metricType, normalizedDate, reportPeriodType);
+      const key = normalizedMetricKey(entry.campaignId || sheet.campaignId, agent?.id || normalizeAgentName(entry.name), metric.metricType, normalizedDate, reportPeriodType, entry.cardLevel);
       if (previewSeen.has(key)) return [];
       previewSeen.add(key);
       return [{
@@ -1481,6 +1520,9 @@ async function buildWorkbookPreview({
       goal: metric.goal ?? null,
       actual: metric.actual ?? null,
       achievement: metric.achievement ?? null,
+      cardLevel: entry.cardLevel || '',
+      cardLevelLabel: entry.cardLevelLabel || '',
+      grandTotal: entry.grandTotal ?? null,
       ...(entry.c2gTxn !== undefined && metric.metricType === 'transmittals' ? {
         c2gTxn: entry.c2gTxn, btTxn: entry.btTxn, balconTxn: entry.balconTxn, grandTotalTxn: entry.grandTotalTxn,
         c2gVol: entry.c2gVol, btVol: entry.btVol, balconVol: entry.balconVol, grandTotalVol: entry.grandTotalVol,
@@ -1488,6 +1530,8 @@ async function buildWorkbookPreview({
       status: agent && existingKeys.has(key) ? 'Existing' : 'New',
       validationMessage: [
         agent ? '' : 'Agent not found; approve creation before import.',
+        entry.cardLevelLabel ? `Card Level: ${entry.cardLevelLabel}.` : '',
+        entry.grandTotal !== undefined ? `Grand Total: ${entry.grandTotal}.` : '',
         ...(entry.validationErrors || []),
       ].filter(Boolean).join(' '),
       row: entry.rowIdx,
@@ -1515,6 +1559,7 @@ async function buildWorkbookPreview({
         supportedWorksheets: sheets.filter((sheet) => sheet.format === 'BDO SGM Ranking').map((sheet) => sheet.sheetName),
         unsupportedWorksheets: sheets.filter((sheet) => sheet.format !== 'BDO SGM Ranking').map((sheet) => sheet.sheetName),
         detectedMetrics: [BDO_SGM_METRIC_TYPE],
+        detectedCardLevels: [...new Set([...bdoSgmBySheet.values()].flatMap((result) => result.detectedCardLevels))].sort(),
         agentCount: [...bdoSgmBySheet.values()].reduce((sum, result) => sum + result.validAgentRows, 0),
       } : {}),
     },
@@ -1967,6 +2012,9 @@ export async function GET(req: NextRequest) {
           ntb: true,
           supplementary: true,
           seatCategory: true,
+          cardLevel: true,
+          cardLevelLabel: true,
+          cardLevelGrandTotal: true,
           agent: { select: { name: true, seatNumber: true } },
         },
         orderBy: { agent: { name: 'asc' } },
@@ -1986,6 +2034,9 @@ export async function GET(req: NextRequest) {
             ntb: Number(detail.ntb || 0),
             supplementary: Number(detail.supplementary || 0),
             seatCategory: detail.seatCategory,
+            cardLevel: detail.cardLevel,
+            cardLevelLabel: detail.cardLevelLabel,
+            grandTotal: detail.cardLevelGrandTotal == null ? null : Number(detail.cardLevelGrandTotal),
           })),
         },
       });
@@ -2377,8 +2428,9 @@ export async function POST(req: NextRequest) {
 
       if (mode === 'preview') {
         if (preview.workbookSummary.totalValidRecords === 0) {
+          const specificValidationError = preview.sheets.flatMap((sheet) => sheet.errors)[0];
           return NextResponse.json({
-            error: 'No valid production rows found in any worksheet.',
+            error: specificValidationError || 'No valid production rows found in any worksheet.',
             workbookSummary: preview.workbookSummary,
             worksheetPreviews: preview.sheets.map(({ entries, ...sheet }) => sheet),
           }, { status: 400 });
@@ -2512,7 +2564,7 @@ export async function POST(req: NextRequest) {
       const [storedMetrics, storedDetails] = await Promise.all([
         tx.productionMetricRecord.findMany({
           where: { campaignId: { in: targetCampaignIds }, agentId: { in: importAgentIds }, reportPeriodType, reportDate: { gte: earliestDate, lte: latestDate } },
-          select: { id: true, productionEntryId: true, campaignId: true, agentId: true, metricType: true, reportDate: true, count: true, volume: true, goal: true, actual: true, achievement: true },
+          select: { id: true, productionEntryId: true, campaignId: true, agentId: true, metricType: true, reportDate: true, cardLevel: true, count: true, volume: true, goal: true, actual: true, achievement: true },
         }),
         tx.productionDetail.findMany({
           where: {
@@ -2520,7 +2572,7 @@ export async function POST(req: NextRequest) {
             productionEntry: { date: { gte: new Date(earliestDate.getFullYear(), earliestDate.getMonth(), 1), lte: new Date(latestDate.getFullYear(), latestDate.getMonth() + 1, 0) } },
           },
           select: {
-            id: true, productionEntryId: true, campaignId: true, agentId: true,
+            id: true, productionEntryId: true, campaignId: true, agentId: true, cardLevel: true,
             transmittals: true, approvals: true, booked: true, activations: true, ntb: true, supplementary: true,
             monthlyGoal: true, monthlyActual: true, monthlyAchievement: true,
             agentLevel: true,
@@ -2530,15 +2582,15 @@ export async function POST(req: NextRequest) {
           },
         }),
       ]);
-      const storedMetricByKey = new Map<string, any>(storedMetrics.map((record) => [normalizedMetricKey(record.campaignId, record.agentId, record.metricType, record.reportDate, reportPeriodType), record]));
+      const storedMetricByKey = new Map<string, any>(storedMetrics.map((record) => [normalizedMetricKey(record.campaignId, record.agentId, record.metricType, record.reportDate, reportPeriodType, record.cardLevel), record]));
       const storedDetailByKey = new Map<string, any>();
       for (const detail of storedDetails) {
         if (detail.productionEntry.reportPeriodType !== reportPeriodType) continue;
         const normalizedDate = normalizePeriodDate(detail.productionEntry.date, reportPeriodType);
-        const detailKey = `${detail.campaignId}|${detail.agentId}|${ymd(normalizedDate)}`;
+        const detailKey = `${detail.campaignId}|${detail.agentId}|${ymd(normalizedDate)}|${detail.cardLevel || ''}`;
         if (!storedDetailByKey.has(detailKey)) storedDetailByKey.set(detailKey, detail);
         for (const type of legacyMetricTypes(detail)) {
-          const key = normalizedMetricKey(detail.campaignId, detail.agentId, type, normalizedDate, reportPeriodType);
+          const key = normalizedMetricKey(detail.campaignId, detail.agentId, type, normalizedDate, reportPeriodType, detail.cardLevel);
           if (!storedMetricByKey.has(key)) storedMetricByKey.set(key, { productionEntryId: detail.productionEntryId, legacy: true });
         }
       }
@@ -2553,10 +2605,10 @@ export async function POST(req: NextRequest) {
           }
           const normalizedDate = normalizePeriodDate(row.reportDate || reportDate, reportPeriodType);
           const metrics = expandEntryMetrics(row);
-          const existingForRow = metrics.map((metric) => storedMetricByKey.get(normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType))).filter(Boolean);
+          const existingForRow = metrics.map((metric) => storedMetricByKey.get(normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType, row.cardLevel))).filter(Boolean);
           let rowChanged = false;
           for (const metric of metrics) {
-            const key = normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType);
+            const key = normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType, row.cardLevel);
             const existing = storedMetricByKey.get(key);
             if (!existing) continue;
             const enrichment: Record<string, any> = {};
@@ -2577,9 +2629,9 @@ export async function POST(req: NextRequest) {
             }
           }
 
-          const missingMetrics = metrics.filter((metric) => !storedMetricByKey.has(normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType)));
+          const missingMetrics = metrics.filter((metric) => !storedMetricByKey.has(normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType, row.cardLevel)));
           let savedEntryId = existingForRow.find((record) => record.productionEntryId)?.productionEntryId as string | undefined;
-          const detailKey = `${targetCampaignId}|${agent.id}|${ymd(normalizedDate)}`;
+          const detailKey = `${targetCampaignId}|${agent.id}|${ymd(normalizedDate)}|${row.cardLevel || ''}`;
           const existingDetail = storedDetailByKey.get(detailKey);
           if (!savedEntryId) savedEntryId = existingDetail?.productionEntryId;
           const entryKey = `${targetCampaignId}|${ymd(normalizedDate)}`;
@@ -2632,7 +2684,7 @@ export async function POST(req: NextRequest) {
             }
           }
           for (const metric of missingMetrics) {
-            const key = normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType);
+            const key = normalizedMetricKey(targetCampaignId, agent.id, metric.metricType, normalizedDate, reportPeriodType, row.cardLevel);
             normalizedRecords.push({
               productionEntryId: savedEntryId!,
               campaignId: targetCampaignId,
@@ -2642,6 +2694,9 @@ export async function POST(req: NextRequest) {
               reportMonth: reportPeriodType === 'yearly' ? null : normalizedDate.getMonth() + 1,
               reportYear: normalizedDate.getFullYear(),
               metricType: metric.metricType,
+              cardLevel: row.cardLevel || '',
+              cardLevelLabel: row.cardLevelLabel || null,
+              grandTotal: row.grandTotal == null ? null : BigInt(Math.round(row.grandTotal)),
               count: metric.count == null ? null : BigInt(Math.round(metric.count)),
               volume: metric.volume == null ? null : BigInt(Math.round(metric.volume)),
               goal: metric.goal ?? null,
@@ -2875,9 +2930,10 @@ export async function POST(req: NextRequest) {
 
           const existingDetail = await prisma.productionDetail.findUnique({
             where: {
-              productionEntryId_agentId: {
+              productionEntryId_agentId_cardLevel: {
                 productionEntryId: entry.id,
                 agentId: agent.id,
+                cardLevel: row.cardLevel || '',
               },
             },
           });

@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import * as XLSX from 'xlsx';
 import {
   BDO_SGM_METRIC_TYPE,
+  detectBdoSgmCardLevels,
   detectBdoSgmMonth,
   isBdoSgmCampaign,
+  normalizeBdoSgmCardLevel,
   parseBdoSgmWorksheet,
 } from '../lib/bdo-sgm-ranking-import';
 
@@ -12,7 +14,7 @@ function rankingRows() {
     ['ONLINE RANKING HOH'],
     ['Report Year', 2026],
     [],
-    [],
+    ['Card Level', 'BUNDLE CARD'],
     [],
     ['Count of Card Level', 'Column Labels'],
     [null, 'Row Labels', '01-JAN', '02-FEB', 'Mar-2026', '04/2026', new Date(2026, 4, 1), '07-JUL', 'Grand Total'],
@@ -35,6 +37,7 @@ function roundTripWorkbook() {
     ['NOT A BDO RANKING ROW', 9],
   ]), 'Unrelated');
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    ['CARDLEVEL', 'first card'],
     [],
     ['Name', '01/2027', 'Grand Total'],
     ['FUTURE, AGENT', '7', 7],
@@ -45,8 +48,14 @@ function roundTripWorkbook() {
 
 assert.equal(isBdoSgmCampaign('BDO SGM'), true);
 assert.equal(isBdoSgmCampaign('  bdo sgm  '), true);
+assert.equal(isBdoSgmCampaign(' bdo   sgm '), true);
 assert.equal(isBdoSgmCampaign('BDO CIE'), false);
 assert.equal(isBdoSgmCampaign('BDO SGM Online'), false);
+assert.equal(normalizeBdoSgmCardLevel('1st CARD'), 'FIRST_CARD');
+assert.equal(normalizeBdoSgmCardLevel('FIRST CARD'), 'FIRST_CARD');
+assert.equal(normalizeBdoSgmCardLevel('bundle'), 'BUNDLE_CARD');
+assert.equal(normalizeBdoSgmCardLevel('Supplementary Card'), null);
+assert.deepEqual(detectBdoSgmCardLevels([['cArD lEvEl', 'bundle card']]).map((item) => item.normalized), ['BUNDLE_CARD']);
 
 assert.deepEqual(detectBdoSgmMonth('JAN', 2026), { month: 0, year: 2026, label: 'JAN' });
 assert.deepEqual(detectBdoSgmMonth('January', 2026), { month: 0, year: 2026, label: 'January' });
@@ -72,6 +81,8 @@ assert.equal(ranking.monthlyRecordsDetected, 9);
 assert.equal(ranking.invalidRows, 1);
 assert.equal(ranking.records.filter((record) => record.name === 'Grand Total').length, 0);
 assert.equal(ranking.records.every((record) => record.metricType === BDO_SGM_METRIC_TYPE), true);
+assert.equal(ranking.records.every((record) => record.cardLevel === 'BUNDLE_CARD'), true);
+assert.equal(ranking.records.every((record) => record.cardLevelLabel === 'BUNDLE CARD'), true);
 assert.equal(ranking.records.every((record) => record.sourceSheet === 'Ranking - Renamed'), true);
 assert.equal(ranking.records.some((record) => record.count === 0), true);
 assert.equal(ranking.records.some((record) => record.name === 'DELA CRUZ, JUAN SANTOS' && record.reportDate.getMonth() === 4 && record.count === 2), true);
@@ -89,9 +100,59 @@ assert.equal(results[3].detected, true);
 assert.equal(results[3].records.length, 1);
 assert.equal(results[3].records[0].reportDate.getFullYear(), 2027);
 assert.equal(results[3].records[0].reportDate.getMonth(), 0);
+assert.equal(results[3].records[0].cardLevel, 'FIRST_CARD');
 
 const sameAgentMonths = ranking.records.filter((record) => record.name === 'DELA CRUZ, JUAN SANTOS');
 assert.equal(new Set(sameAgentMonths.map((record) => record.reportDate.toISOString().slice(0, 7))).size, 5);
+
+const bothSections = parseBdoSgmWorksheet([
+  ['Card Level', 'BUNDLE CARD'],
+  ['Row Labels', 'JAN', 'Grand Total'],
+  ['SAME, COLLECTOR', 4, 4],
+  [],
+  ['CardLevel', '1ST CARD'],
+  ['Row Labels', 'JAN', 'Grand Total'],
+  ['SAME, COLLECTOR', '6', 6],
+], 'Both Sections', new Date(2026, 0, 1));
+assert.equal(bothSections.records.length, 2);
+assert.deepEqual(bothSections.detectedCardLevels, ['BUNDLE_CARD', 'FIRST_CARD']);
+assert.deepEqual(bothSections.records.map((record) => record.cardLevel).sort(), ['BUNDLE_CARD', 'FIRST_CARD']);
+assert.equal(bothSections.records.some((record) => record.count === 4), true);
+assert.equal(bothSections.records.some((record) => record.count === 6), true);
+
+const missingCardLevel = parseBdoSgmWorksheet([
+  ['Count of Card Level'],
+  ['Row Labels', 'JAN', 'Grand Total'],
+  ['VALID, NAME', 1, 1],
+], 'Missing Card', new Date(2026, 0, 1));
+assert.equal(missingCardLevel.detected, true);
+assert.equal(missingCardLevel.records.length, 0);
+assert.equal(missingCardLevel.errors.some((message) => /No supported Card Level/.test(message)), true);
+
+const unsupportedCardLevel = parseBdoSgmWorksheet([
+  ['Card Level', 'PLATINUM'],
+  ['Row Labels', 'JAN', 'Grand Total'],
+  ['VALID, NAME', 1, 1],
+], 'Unsupported Card', new Date(2026, 0, 1));
+assert.equal(unsupportedCardLevel.records.length, 0);
+assert.equal(unsupportedCardLevel.errors.some((message) => /No supported Card Level|matched to a supported/.test(message)), true);
+
+const missingHeader = parseBdoSgmWorksheet([
+  ['Card Level', 'BUNDLE CARD'],
+  ['Count of Card Level'],
+], 'Missing Header', new Date(2026, 0, 1));
+assert.equal(missingHeader.errors.some((message) => /table could not be located/.test(message)), true);
+
+const missingCollector = parseBdoSgmWorksheet([
+  ['Card Level', 'BUNDLE'],
+  ['Row Labels', 'JAN', 'Grand Total'],
+  ['', 2, 2],
+  ['PRESENT, COLLECTOR', 0, 0],
+], 'Missing Collector', new Date(2026, 0, 1));
+assert.equal(missingCollector.records.length, 1);
+assert.equal(missingCollector.records[0].count, 0);
+assert.equal(missingCollector.invalidRows, 1);
+assert.equal(missingCollector.issues.some((item) => /name is missing/.test(item.reason)), true);
 
 console.log(JSON.stringify({
   worksheetsScanned: results.length,
