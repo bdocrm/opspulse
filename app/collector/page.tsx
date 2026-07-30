@@ -39,6 +39,8 @@ interface Agent {
 
 interface Production {
   transmittals: number;
+  firstCardTransmittals?: number;
+  bundleCardTransmittals?: number;
   activations: number;
   approvals: number;
   booked: number;
@@ -163,6 +165,7 @@ const isAcqCampaign = (name?: string | null) => /\bacq\b/i.test(name || '');
 // BDO campaigns use the Goal / Actual / Achievement triplet imported from the
 // BDO workbook, with Goal tied back to CEO Goals Management.
 const isBdoCampaign = (name?: string | null) => /^bdo\b/i.test((name || '').trim());
+const isBdoSgmCampaign = (name?: string | null) => /^bdo\s+sgm$/i.test((name || '').trim());
 
 // MB PL reports a BAU / Top Up transaction + volume breakdown.
 const isMbPlCampaign = (name?: string | null) => /\bmb pl\b/i.test(name || '');
@@ -581,6 +584,7 @@ export default function CollectorDashboard() {
   const kpis = useMemo(() => {
     let totalAgents = 0, presentCount = 0, absentCount = 0;
     let totalTransmittals = 0, totalActivations = 0, totalApprovals = 0, totalBooked = 0, totalVolume = 0;
+    let totalFirstCardTransmittals = 0, totalBundleCardTransmittals = 0;
     let totalNtb = 0, totalSupplementary = 0;
     let totalGoal = 0, totalSuppGoal = 0, kpiValue = 0, totalTarget = 0, entriesCount = 0;
 
@@ -588,11 +592,15 @@ export default function CollectorDashboard() {
       totalAgents += c.agents.length;
       totalGoal += c.goal ?? 0;
       totalSuppGoal += c.supplementaryGoal || 0;
-      entriesCount += c.entriesCount || 0;
+      entriesCount += c.dataPeriod?.source === 'latest_import'
+        ? (c.recordCount ?? c.entriesCount ?? 0)
+        : c.entriesCount || 0;
       let campaignKpi = 0;
       for (const a of c.agents) {
         const p = c.production[a.id] || ZERO_PROD;
         totalTransmittals += p.transmittals;
+        totalFirstCardTransmittals += p.firstCardTransmittals || 0;
+        totalBundleCardTransmittals += p.bundleCardTransmittals || 0;
         totalActivations += p.activations;
         totalApprovals += p.approvals;
         totalBooked += p.booked;
@@ -610,6 +618,8 @@ export default function CollectorDashboard() {
 
     // When every assigned campaign is ACQ, the global roll-up switches to NTB.
     const allAcq = campaigns.length > 0 && campaigns.every((c) => isAcqCampaign(c.campaignName));
+    const allBdoSgm = campaigns.length > 0 && campaigns.every((c) => isBdoSgmCampaign(c.campaignName));
+    const latestImportView = campaigns.length > 0 && campaigns.every((c) => c.dataPeriod?.source === 'latest_import');
     const campaignKpis = new Set(campaigns.map((campaign) => campaign.kpiMetric || 'booked'));
     const mixedKpis = !allAcq && campaignKpis.size > 1;
     const primaryKpi = allAcq ? 'ntb' : (campaigns[0]?.kpiMetric || 'booked');
@@ -627,6 +637,8 @@ export default function CollectorDashboard() {
     return {
       totalAgents, presentCount, absentCount,
       totalTransmittals, totalActivations, totalApprovals, totalBooked, totalVolume,
+      totalFirstCardTransmittals, totalBundleCardTransmittals, allBdoSgm,
+      latestImportView,
       totalNtb, totalSupplementary, allAcq,
       totalSuppGoal, suppProgress, remainingSupp,
       goal, kpiValue, targetProgress, remainingGoal, totalTarget, entriesCount,
@@ -1099,6 +1111,17 @@ export default function CollectorDashboard() {
         </CardContent>
       </Card>
 
+      {kpis.latestImportView && (
+        <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          <CalendarDays className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>
+            The selected dates have no matching production. Showing the latest imported data
+            {campaigns.length === 1 ? ` for ${campaigns[0].campaignName}` : ''}: {' '}
+            <span className="font-semibold">{campaignDataPeriodLabel(campaigns[0]?.dataPeriod)}</span>.
+          </p>
+        </div>
+      )}
+
       {/* Message Display */}
       {message && (
         <div
@@ -1202,16 +1225,29 @@ export default function CollectorDashboard() {
             <div className="flex items-center justify-between">
               <div className="flex-1 min-w-0">
                 <p className="text-xs text-muted-foreground uppercase tracking-wide">
-                  {kpis.allAcq ? 'Total Supplementary' : kpis.mixedKpis ? 'Imported Volume' : `Current ${kpiLabel(kpis.primaryKpi)}`}
+                  {kpis.allBdoSgm ? 'Imported Card Transmittals' : kpis.allAcq ? 'Total Supplementary' : kpis.mixedKpis ? 'Imported Volume' : `Current ${kpiLabel(kpis.primaryKpi)}`}
                 </p>
-                <p className="text-3xl font-bold mt-1 text-purple-500">
-                  {kpis.allAcq
-                    ? (kpis.totalSupplementary?.toLocaleString() || '0')
-                    : kpis.mixedKpis
-                      ? formatKpiValue('volume', kpis.totalVolume)
-                      : formatKpiValue(kpis.primaryKpi, kpis.kpiValue)}
-                </p>
-                {kpis.allAcq ? (
+                {kpis.allBdoSgm ? (
+                  <div className="mt-2 grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-2xl font-bold text-blue-600">{kpis.totalFirstCardTransmittals.toLocaleString()}</p>
+                      <p className="text-xs text-blue-700">1st Card</p>
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold text-violet-600">{kpis.totalBundleCardTransmittals.toLocaleString()}</p>
+                      <p className="text-xs text-violet-700">Bundle Card</p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-3xl font-bold mt-1 text-purple-500">
+                    {kpis.allAcq
+                      ? (kpis.totalSupplementary?.toLocaleString() || '0')
+                      : kpis.mixedKpis
+                        ? formatKpiValue('volume', kpis.totalVolume)
+                        : formatKpiValue(kpis.primaryKpi, kpis.kpiValue)}
+                  </p>
+                )}
+                {kpis.allAcq && !kpis.allBdoSgm ? (
                   <>
                     <div className="flex items-center justify-between text-xs mt-1 pr-1">
                       <span className="text-muted-foreground">Goal: {kpis.totalSuppGoal.toLocaleString()}</span>
@@ -1221,9 +1257,9 @@ export default function CollectorDashboard() {
                       <p className="text-xs text-orange-500 font-semibold mt-1">To Go: {kpis.remainingSupp.toLocaleString()}</p>
                     )}
                   </>
-                ) : (
+                ) : !kpis.allBdoSgm ? (
                   <p className="text-xs text-muted-foreground mt-1">from imported data</p>
-                )}
+                ) : null}
               </div>
               <TrendingUp className="w-8 h-8 text-purple-500 opacity-80 shrink-0" />
             </div>
@@ -1233,7 +1269,7 @@ export default function CollectorDashboard() {
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Records in Range</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">{kpis.latestImportView ? 'Latest Imported Records' : 'Records in Range'}</p>
                 <p className="text-3xl font-bold mt-1 text-orange-500">{kpis.entriesCount}</p>
               </div>
               <ClipboardList className="w-8 h-8 text-orange-500 opacity-80" />
@@ -1433,7 +1469,16 @@ export default function CollectorDashboard() {
               const metricLabel = kpiLabel(campaignKpi);
               const goalProgress = campaignGoal > 0 ? ((totalKpiValue / campaignGoal) * 100).toFixed(1) : '0';
               const acq = isAcqCampaign(campaign.campaignName);
+              const bdoSgm = isBdoSgmCampaign(campaign.campaignName);
               const mbpl = isMbPlCampaign(campaign.campaignName) && Boolean(campaign.mbPlTotals);
+              const firstCardTransmittals = campaignAgents.reduce(
+                (sum, agent) => sum + Number((campaign.production[agent.id] || ZERO_PROD).firstCardTransmittals || 0),
+                0
+              );
+              const bundleCardTransmittals = campaignAgents.reduce(
+                (sum, agent) => sum + Number((campaign.production[agent.id] || ZERO_PROD).bundleCardTransmittals || 0),
+                0
+              );
 
               // Find the top performer using this campaign's configured KPI.
               const topPerformer = campaignAgents.length > 0
@@ -1522,7 +1567,22 @@ export default function CollectorDashboard() {
                       </div>
 
                       {/* Stats Grid */}
-                      {acq ? (
+                      {bdoSgm ? (
+                        <div className="grid grid-cols-3 gap-3 pt-2 border-t">
+                          <div className="text-center">
+                            <p className="text-2xl font-bold text-foreground">{campaignAgents.length}</p>
+                            <p className="text-xs text-muted-foreground mt-1">Agents</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-2xl font-bold text-blue-600">{firstCardTransmittals.toLocaleString()}</p>
+                            <p className="text-xs text-muted-foreground mt-1">1st Card</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-2xl font-bold text-violet-600">{bundleCardTransmittals.toLocaleString()}</p>
+                            <p className="text-xs text-muted-foreground mt-1">Bundle Card</p>
+                          </div>
+                        </div>
+                      ) : acq ? (
                         <div className="grid grid-cols-2 gap-3 pt-2 border-t">
                           <div className="text-center">
                             <p className="text-2xl font-bold text-blue-600">{Number(totalNtb).toLocaleString()}</p>
@@ -1620,6 +1680,7 @@ export default function CollectorDashboard() {
               const prodFor = (agentId: string) => block.production[agentId] || ZERO_PROD;
               const acq = isAcqCampaign(block.campaignName);
               const bdo = isBdoCampaign(block.campaignName);
+              const bdoSgm = isBdoSgmCampaign(block.campaignName);
               const mbpl = isMbPlCampaign(block.campaignName);
               const mbpa = isMbPaCampaign(block.campaignName);
               const hasImportedMbPlPerformance = mbpl && Boolean(block.mbPlPerformance && Object.keys(block.mbPlPerformance).length);
@@ -1747,6 +1808,13 @@ export default function CollectorDashboard() {
                                   <TableHead className="text-center">Supplementary Actual</TableHead>
                                   <TableHead className="text-center">Supplementary Goal</TableHead>
                                 </>
+                              ) : bdoSgm ? (
+                                <>
+                                  <TableHead className="text-center w-20">Attendance</TableHead>
+                                  <TableHead className="text-right text-blue-700">1st Card</TableHead>
+                                  <TableHead className="text-right text-violet-700">Bundle Card</TableHead>
+                                  <TableHead className="text-right">Goal</TableHead>
+                                </>
                               ) : bdo || hasImportedDashboardPerformance ? (
                                 <>
                                   <TableHead className="text-center w-20">Attendance</TableHead>
@@ -1855,6 +1923,26 @@ export default function CollectorDashboard() {
                                     <TableCell className="text-center font-semibold text-blue-600">{Number(agent.monthlyTarget || 0).toLocaleString()}</TableCell>
                                     <TableCell className="text-center font-semibold text-purple-600">{Number(prod.supplementary || 0).toLocaleString()}</TableCell>
                                     <TableCell className="text-center font-semibold text-purple-600">{Number(agent.monthlyTargetSupplementary || 0).toLocaleString()}</TableCell>
+                                  </>
+                                ) : bdoSgm ? (
+                                  <>
+                                    <TableCell className="text-center">
+                                      <button
+                                        onClick={() => handleToggleAttendance(agent.id, record?.status || 'PRESENT')}
+                                        className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors cursor-pointer ${
+                                          isPresent
+                                            ? 'text-green-500 bg-green-500/10 hover:bg-green-500/20'
+                                            : 'text-red-500 bg-red-500/10 hover:bg-red-500/20'
+                                        }`}
+                                        title="Click to toggle"
+                                      >
+                                        {isPresent ? <UserCheck className="w-3 h-3" /> : <UserX className="w-3 h-3" />}
+                                        <span>{isPresent ? 'P' : 'A'}</span>
+                                      </button>
+                                    </TableCell>
+                                    <TableCell className="text-right font-semibold text-blue-600">{Number(prod.firstCardTransmittals || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-right font-semibold text-violet-600">{Number(prod.bundleCardTransmittals || 0).toLocaleString()}</TableCell>
+                                    <TableCell className="text-right font-semibold text-slate-600">{formatKpiValue(block.kpiMetric, Number(agent.monthlyTarget || 0))}</TableCell>
                                   </>
                                 ) : bdo || hasImportedDashboardPerformance ? (
                                   <>

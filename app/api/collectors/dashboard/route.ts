@@ -208,6 +208,8 @@ export async function GET(req: NextRequest) {
           volume: true,
           ntb: true,
           supplementary: true,
+          cardLevel: true,
+          cardLevelLabel: true,
           bauPayrollTxn: true,
           bauPayrollVol: true,
           bauDepositorTxn: true,
@@ -314,6 +316,100 @@ export async function GET(req: NextRequest) {
         },
       }).catch(() => []),
     ]);
+
+    const importedFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
+    const importedAgentFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
+    const bdoSgmCampaignIds = campaigns
+      .filter((campaign) => /^BDO\s+SGM$/i.test(campaign.campaignName.trim()))
+      .map((campaign) => campaign.id);
+    const selectedDetailCampaignIds = new Set(rawDetails.map((detail) => detail.campaignId));
+    const fallbackCampaignIds = bdoSgmCampaignIds.filter((campaignId) => !selectedDetailCampaignIds.has(campaignId));
+
+    // BDO SGM ranking workbooks contain monthly data. When a daily range such
+    // as "Today" has no matching rows, use the campaign's latest imported
+    // month and label the response accordingly instead of displaying zero.
+    if (fallbackCampaignIds.length > 0) {
+      const importedEntries = await prisma.productionEntry.findMany({
+        where: {
+          campaignId: { in: fallbackCampaignIds },
+          importFileName: { not: null },
+          reportPeriodType: "monthly",
+        },
+        select: {
+          id: true,
+          campaignId: true,
+          date: true,
+          importFileName: true,
+          reportPeriodType: true,
+        },
+        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      });
+      const latestMonthByCampaign = new Map<string, string>();
+      for (const entry of importedEntries) {
+        if (!latestMonthByCampaign.has(entry.campaignId)) {
+          latestMonthByCampaign.set(entry.campaignId, businessMonthKey(entry.date));
+        }
+      }
+      const fallbackEntries = importedEntries.filter(
+        (entry) => businessMonthKey(entry.date) === latestMonthByCampaign.get(entry.campaignId)
+      );
+      if (fallbackEntries.length > 0) {
+        const fallbackDetails = await prisma.productionDetail.findMany({
+          where: { productionEntryId: { in: fallbackEntries.map((entry) => entry.id) } },
+          select: {
+            agentId: true,
+            campaignId: true,
+            transmittals: true,
+            activations: true,
+            approvals: true,
+            booked: true,
+            volume: true,
+            ntb: true,
+            supplementary: true,
+            cardLevel: true,
+            cardLevelLabel: true,
+            bauPayrollTxn: true,
+            bauPayrollVol: true,
+            bauDepositorTxn: true,
+            bauDepositorVol: true,
+            topupPayrollTxn: true,
+            topupPayrollVol: true,
+            topupDepositorTxn: true,
+            topupDepositorVol: true,
+            openMarketTxn: true,
+            openMarketVol: true,
+            c2gTxn: true,
+            c2gVol: true,
+            btTxn: true,
+            btVol: true,
+            balconTxn: true,
+            balconVol: true,
+            grandTotalTxn: true,
+            grandTotalVol: true,
+            agentLevel: true,
+            monthlyGoal: true,
+            monthlyActual: true,
+            monthlyAchievement: true,
+            productionEntry: {
+              select: {
+                id: true,
+                date: true,
+                importFileName: true,
+                reportPeriodType: true,
+              },
+            },
+          },
+        });
+        rawDetails.push(...fallbackDetails);
+        rawEntries.push(...fallbackEntries);
+        for (const [campaignId, period] of latestMonthByCampaign) {
+          const [year, month] = period.split("-").map(Number);
+          importedFallbackPeriodByCampaign.set(campaignId, { year, month });
+          importedAgentFallbackPeriodByCampaign.set(campaignId, { year, month });
+        }
+      }
+    }
+
     const usableDashboardAgentRecords = dashboardAgentRecords.filter(
       (record) => !isImportedClassificationRow(record)
     );
@@ -494,6 +590,7 @@ export async function GET(req: NextRequest) {
 
     const emptyProduction = () => ({
       transmittals: 0, activations: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0,
+      firstCardTransmittals: 0, bundleCardTransmittals: 0,
       transmittedVolume: 0, approvalsVolume: 0, bookedVolume: 0,
       bauPayrollTxn: 0, bauPayrollVol: 0, bauDepositorTxn: 0, bauDepositorVol: 0,
       topupPayrollTxn: 0, topupPayrollVol: 0, topupDepositorTxn: 0, topupDepositorVol: 0,
@@ -506,6 +603,8 @@ export async function GET(req: NextRequest) {
       const byAgent = prodByCampaign.get(d.campaignId) ?? {};
       const cur = byAgent[d.agentId] ?? emptyProduction();
       cur.transmittals += Number(d.transmittals);
+      if (d.cardLevel === "FIRST_CARD") cur.firstCardTransmittals += Number(d.transmittals);
+      if (d.cardLevel === "BUNDLE_CARD") cur.bundleCardTransmittals += Number(d.transmittals);
       cur.activations += Number(d.activations);
       cur.approvals += Number(d.approvals);
       cur.booked += Number(d.booked);
@@ -676,9 +775,7 @@ export async function GET(req: NextRequest) {
     // Keep dashboard imports inside the requested reporting period. Pulling a
     // campaign's latest record from another month made filters look populated
     // while displaying data that did not belong to the selected month/year.
-    const importedFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
     const preferredAgentDetailRecords = new Map(preferredDashboardRecords);
-    const importedAgentFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
     const campaignsWithCashInstallment = new Set(
       usableDashboardAgentRecords.filter((record) => /cash installment/i.test(record.metric)).map((record) => record.campaignId)
     );
@@ -985,7 +1082,18 @@ export async function GET(req: NextRequest) {
             }];
           }))
         : undefined;
-      const bdoPerformance = isBdoCampaign ? importedPerformance : undefined;
+      const bdoSgmPerformance = /^BDO\s+SGM$/i.test(c.campaignName.trim())
+        ? Object.fromEntries(campaignAgents.map((agent) => {
+            const actual = Number(production[agent.id]?.transmittals || 0);
+            const goal = Number(importedGoalForAgent(agent.id) || 0);
+            return [agent.id, {
+              goal,
+              actual,
+              achievement: goal > 0 ? (actual / goal) * 100 : 0,
+            }];
+          }))
+        : undefined;
+      const bdoPerformance = isBdoCampaign ? importedPerformance ?? bdoSgmPerformance : undefined;
       const bdoActualFromAgents = Object.values(rawImportedPerformance).reduce((sum, row) => sum + row.actual, 0);
       const hasBdoAgentImport = Object.keys(rawImportedPerformance).length > 0;
       const normalizedPrimaryGoalTotal = campaignAgents.reduce((sum, agent) => {

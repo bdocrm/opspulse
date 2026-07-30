@@ -16,6 +16,8 @@ export interface Agent {
 
 export interface Production {
   transmittals: number;
+  firstCardTransmittals?: number;
+  bundleCardTransmittals?: number;
   activations: number;
   approvals: number;
   booked: number;
@@ -81,6 +83,7 @@ const ZERO_PROD: Production = { transmittals: 0, activations: 0, approvals: 0, b
 // ACQ campaigns (name contains "ACQ") report NTB + Supplementary instead of booked volume.
 const isAcqCampaign = (name?: string | null) => /\bacq\b/i.test(name || '');
 const isBdoCampaign = (name?: string | null) => /^bdo\b/i.test((name || '').trim());
+const isBdoSgmCampaign = (name?: string | null) => /^bdo\s+sgm$/i.test((name || '').trim());
 const isMbPlCampaign = (name?: string | null) => /\bmb\s*pl\b/i.test(name || '');
 const isMbPaCampaign = (name?: string | null) => /\bmb\s*pa\b/i.test(name || '');
 
@@ -164,11 +167,14 @@ export function CampaignSummaryCard({
   // ACQ campaigns track NTB + Supplementary instead of booked volume.
   const acq = isAcqCampaign(campaignName);
   const bdo = isBdoCampaign(campaignName);
+  const bdoSgm = isBdoSgmCampaign(campaignName);
   const mbpl = isMbPlCampaign(campaignName);
   const mbpa = isMbPaCampaign(campaignName);
   const dashboardImported = Boolean(importedPerformance && Object.keys(importedPerformance).length);
   const totalNtb = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).ntb || 0), 0);
   const totalSupplementary = agents.reduce((sum, agent) => sum + ((production[agent.id] || ZERO_PROD).supplementary || 0), 0);
+  const totalFirstCard = agents.reduce((sum, agent) => sum + Number((production[agent.id] || ZERO_PROD).firstCardTransmittals || 0), 0);
+  const totalBundleCard = agents.reduce((sum, agent) => sum + Number((production[agent.id] || ZERO_PROD).bundleCardTransmittals || 0), 0);
 
   // For ACQ the header %/achievement tracks NTB vs the NTB goal (legacy monthly goal).
   const achievement = mbpl && importedAchievement != null
@@ -202,7 +208,7 @@ export function CampaignSummaryCard({
     if (goal === 0 || entriesCount === 0) return distribution;
     agents.forEach(agent => {
       const prod = production[agent.id] || ZERO_PROD;
-      const value = acq ? (prod.ntb || 0) : dashboardImported ? (importedPerformance?.[agent.id]?.actual || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaBillingTotal(prod) : kpiValueFor(kpiMetric, prod);
+      const value = acq ? (prod.ntb || 0) : dashboardImported ? (importedPerformance?.[agent.id]?.actual || 0) : bdoSgm ? prod.transmittals : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaBillingTotal(prod) : kpiValueFor(kpiMetric, prod);
       // Calculate agent's share of total goal proportionally, or use their monthly target if set
       const agentGoal = dashboardImported ? (importedPerformance?.[agent.id]?.goal || 0) : bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || 0;
       if (agentGoal === 0) return;
@@ -213,7 +219,7 @@ export function CampaignSummaryCard({
       else distribution.needsImprovement++;
     });
     return distribution;
-  }, [agents, production, goal, entriesCount, acq, bdo, mbpl, mbpa, dashboardImported, importedPerformance, bdoPerformance, mbPlPerformance, kpiMetric]);
+  }, [agents, production, goal, entriesCount, acq, bdo, bdoSgm, mbpl, mbpa, dashboardImported, importedPerformance, bdoPerformance, mbPlPerformance, kpiMetric]);
 
   // Top and bottom performers. ACQ ranks by NTB (Supplementary as tiebreaker),
   // matching the collector-details table; others use their configured KPI.
@@ -225,7 +231,7 @@ export function CampaignSummaryCard({
       .filter(agent => !mbpl || Boolean(mbPlPerformance?.[agent.id]))
       .map(agent => {
         const prod = production[agent.id] || ZERO_PROD;
-        const value = acq ? (prod.ntb || 0) : dashboardImported ? (importedPerformance?.[agent.id]?.actual || 0) : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaTransactionTotal(prod) : kpiValueFor(kpiMetric, prod);
+        const value = acq ? (prod.ntb || 0) : dashboardImported ? (importedPerformance?.[agent.id]?.actual || 0) : bdoSgm ? prod.transmittals : bdo ? (bdoPerformance?.[agent.id]?.actual || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.actual || 0) : mbpa ? mbPaTransactionTotal(prod) : kpiValueFor(kpiMetric, prod);
         const secondary = acq ? (prod.supplementary || 0) : mbpa ? mbPaBillingTotal(prod) : 0;
         const agentGoal = dashboardImported ? (importedPerformance?.[agent.id]?.goal || 0) : bdo ? (bdoPerformance?.[agent.id]?.goal || 0) : mbpl ? (mbPlPerformance?.[agent.id]?.goal || 0) : agent.monthlyTarget || 0;
         const progressValue = mbpa ? mbPaBillingTotal(prod) : value;
@@ -251,7 +257,7 @@ export function CampaignSummaryCard({
       withProduction: performers.filter(p => p.value > 0).length,
       zeroProduction: performers.filter(p => p.value === 0).length,
     };
-  }, [agents, production, goal, acq, bdo, mbpl, mbpa, dashboardImported, importedPerformance, bdoPerformance, mbPlPerformance, kpiMetric, entriesCount]);
+  }, [agents, production, goal, acq, bdo, bdoSgm, mbpl, mbpa, dashboardImported, importedPerformance, bdoPerformance, mbPlPerformance, kpiMetric, entriesCount]);
 
   const filteredAgents = useMemo(() => {
     if (!searchQuery.trim()) return agents;
@@ -308,7 +314,26 @@ export function CampaignSummaryCard({
             </div>
           )}
           {/* KPI Cards */}
-          {acq ? (
+          {bdoSgm ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Goal (Transmittals)</p>
+                <p className="text-xl font-bold text-blue-600">{goalStatus === 'missing' ? 'Unavailable' : goal.toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-sky-50 to-sky-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">1st Card</p>
+                <p className="text-xl font-bold text-blue-600">{totalFirstCard.toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-violet-50 to-violet-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">Bundle Card</p>
+                <p className="text-xl font-bold text-violet-600">{totalBundleCard.toLocaleString()}</p>
+              </div>
+              <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground mb-1">{fallbackPeriodLabel ? `Records (${fallbackPeriodLabel})` : 'Records in Range'}</p>
+                <p className="text-xl font-bold text-green-600">{entriesCount}</p>
+              </div>
+            </div>
+          ) : acq ? (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
                 <p className="text-xs text-muted-foreground mb-1">Monthly Goal (NTB)</p>
