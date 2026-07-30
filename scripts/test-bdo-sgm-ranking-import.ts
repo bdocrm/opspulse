@@ -6,6 +6,7 @@ import {
   detectBdoSgmMonth,
   isBdoSgmCampaign,
   normalizeBdoSgmCardLevel,
+  parseBdoSgmPivotCache,
   parseBdoSgmWorksheet,
 } from '../lib/bdo-sgm-ranking-import';
 
@@ -44,6 +45,45 @@ function roundTripWorkbook() {
   ]), 'Future Months');
   const bytes = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
   return XLSX.read(bytes, { type: 'buffer', cellDates: true, cellFormula: true });
+}
+
+function pivotCacheWorkbookBytes(): Uint8Array {
+  const archive = XLSX.CFB.utils.cfb_new();
+  const definition = [
+    '<pivotCacheDefinition><cacheFields count="5">',
+    '<cacheField name="Assigned Caller"><sharedItems><s v="AGENT, ONE"/></sharedItems></cacheField>',
+    '<cacheField name="Card Level"><sharedItems><s v="1ST CARD"/><s v="BUNDLE CARD"/></sharedItems></cacheField>',
+    '<cacheField name="Turn In Date"><sharedItems><d v="2026-01-05T00:00:00"/><d v="2026-02-05T00:00:00"/><d v="2026-07-05T00:00:00"/></sharedItems></cacheField>',
+    '<cacheField name="TURN INS ACTUAL MONTH"><sharedItems><s v="01-JAN"/><s v="02-FEB"/><s v="07-JUL"/></sharedItems></cacheField>',
+    '<cacheField name="Transmital Year"><sharedItems><n v="2026"/></sharedItems></cacheField>',
+    '</cacheFields></pivotCacheDefinition>',
+  ].join('');
+  const records = [
+    '<pivotCacheRecords count="6">',
+    '<r><x v="0"/><x v="0"/><x v="0"/><x v="0"/><x v="0"/></r>',
+    '<r><x v="0"/><x v="0"/><x v="0"/><x v="0"/><x v="0"/></r>',
+    '<r><x v="0"/><x v="1"/><x v="0"/><x v="0"/><x v="0"/></r>',
+    '<r><x v="0"/><x v="0"/><x v="1"/><x v="1"/><x v="0"/></r>',
+    '<r><x v="0"/><x v="0"/><x v="2"/><x v="2"/><x v="0"/></r>',
+    '<r><x v="0"/><x v="1"/><x v="2"/><x v="2"/><x v="0"/></r>',
+    '</pivotCacheRecords>',
+  ].join('');
+  const pivotTable = [
+    '<pivotTableDefinition><pivotFields count="5">',
+    '<pivotField axis="axisRow"><items><item x="0"/></items></pivotField>',
+    '<pivotField axis="axisPage"><items><item x="0"/><item x="1"/></items></pivotField>',
+    '<pivotField axis="axisPage"><items><item x="0"/><item x="1"/><item h="1" x="2"/></items></pivotField>',
+    '<pivotField axis="axisCol"><items><item x="0"/><item x="1"/><item h="1" x="2"/></items></pivotField>',
+    '<pivotField/>',
+    '</pivotFields><rowFields><field x="0"/></rowFields>',
+    '<pageFields><pageField fld="1"/><pageField fld="2"/></pageFields>',
+    '<dataFields><dataField name="Count of Card Level" fld="1" subtotal="count"/></dataFields>',
+    '</pivotTableDefinition>',
+  ].join('');
+  XLSX.CFB.utils.cfb_add(archive, 'xl/pivotCache/pivotCacheDefinition1.xml', Buffer.from(definition));
+  XLSX.CFB.utils.cfb_add(archive, 'xl/pivotCache/pivotCacheRecords1.xml', Buffer.from(records));
+  XLSX.CFB.utils.cfb_add(archive, 'xl/pivotTables/pivotTable1.xml', Buffer.from(pivotTable));
+  return XLSX.CFB.write(archive, { type: 'buffer', fileType: 'zip' });
 }
 
 assert.equal(isBdoSgmCampaign('BDO SGM'), true);
@@ -101,6 +141,19 @@ assert.equal(results[3].records.length, 1);
 assert.equal(results[3].records[0].reportDate.getFullYear(), 2027);
 assert.equal(results[3].records[0].reportDate.getMonth(), 0);
 assert.equal(results[3].records[0].cardLevel, 'FIRST_CARD');
+
+const pivotCache = parseBdoSgmPivotCache(
+  pivotCacheWorkbookBytes(),
+  'Pivot Report',
+  new Date(2026, 0, 1)
+);
+assert.ok(pivotCache);
+assert.deepEqual(pivotCache.detectedCardLevels, ['BUNDLE_CARD', 'FIRST_CARD']);
+assert.deepEqual(pivotCache.detectedMonths, ['2026-01', '2026-02']);
+assert.equal(pivotCache.records.length, 3);
+assert.equal(pivotCache.records.filter((record) => record.cardLevel === 'FIRST_CARD').reduce((sum, record) => sum + record.count, 0), 3);
+assert.equal(pivotCache.records.filter((record) => record.cardLevel === 'BUNDLE_CARD').reduce((sum, record) => sum + record.count, 0), 1);
+assert.equal(pivotCache.records.every((record) => record.grandTotal === (record.cardLevel === 'FIRST_CARD' ? 3 : 1)), true);
 
 const sameAgentMonths = ranking.records.filter((record) => record.name === 'DELA CRUZ, JUAN SANTOS');
 assert.equal(new Set(sameAgentMonths.map((record) => record.reportDate.toISOString().slice(0, 7))).size, 5);

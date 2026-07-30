@@ -286,6 +286,275 @@ function emptyResult(rowsScanned: number): BdoSgmWorksheetParseResult {
   };
 }
 
+function decodeXml(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+function xmlAttribute(attributes: string, name: string): string {
+  const match = attributes.match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`));
+  return match ? decodeXml(match[1]) : '';
+}
+
+function archiveXml(archive: any, suffix: string): string {
+  const index = (archive.FullPaths as string[]).findIndex((path) => path.endsWith(suffix));
+  if (index < 0) return '';
+  return Buffer.from(archive.FileIndex[index].content).toString('utf8');
+}
+
+interface PivotCacheField {
+  name: string;
+  sharedItems: string[];
+}
+
+function pivotCacheFields(definitionXml: string): PivotCacheField[] {
+  const fields: PivotCacheField[] = [];
+  const fieldPattern = /<cacheField\b([^>]*)>([\s\S]*?)<\/cacheField>/g;
+  for (const fieldMatch of definitionXml.matchAll(fieldPattern)) {
+    const sharedItems: string[] = [];
+    const sharedItemsXml = fieldMatch[2].match(/<sharedItems\b[^>]*>([\s\S]*?)<\/sharedItems>/)?.[1] || '';
+    for (const item of sharedItemsXml.matchAll(/<(?:s|n|d|b)\b([^>]*)\/>/g)) {
+      sharedItems.push(xmlAttribute(item[1], 'v'));
+    }
+    fields.push({
+      name: decodeXml(xmlAttribute(fieldMatch[1], 'name')),
+      sharedItems,
+    });
+  }
+  return fields;
+}
+
+interface PivotValue {
+  value: string;
+  sharedIndex: number | null;
+}
+
+function pivotRecordValues(recordXml: string, fields: PivotCacheField[]): PivotValue[] {
+  const values: PivotValue[] = [];
+  const cellPattern = /<(x|s|n|d|b|e|m)\b([^>]*)\/>/g;
+  let fieldIndex = 0;
+  for (const cell of recordXml.matchAll(cellPattern)) {
+    const tag = cell[1];
+    const raw = xmlAttribute(cell[2], 'v');
+    const sharedIndex = tag === 'x' && /^\d+$/.test(raw) ? Number(raw) : null;
+    values.push({
+      value: sharedIndex == null ? raw : fields[fieldIndex]?.sharedItems[sharedIndex] || '',
+      sharedIndex,
+    });
+    fieldIndex++;
+  }
+  return values;
+}
+
+function pivotHiddenValues(
+  pivotTableXml: string,
+  fields: PivotCacheField[],
+  cardLevelField: number
+): Map<number, Set<string>> {
+  const hiddenByField = new Map<number, Set<string>>();
+  const pivotFieldsXml = pivotTableXml.match(/<pivotFields\b[^>]*>([\s\S]*?)<\/pivotFields>/)?.[1] || '';
+  const fieldPattern = /<pivotField\b([^>]*?)(?:\/>|>([\s\S]*?)<\/pivotField>)/g;
+  let fieldIndex = 0;
+  for (const fieldMatch of pivotFieldsXml.matchAll(fieldPattern)) {
+    const attributes = fieldMatch[1];
+    const body = fieldMatch[2] || '';
+    const filteredAxis = /\baxis="(?:axisPage|axisCol)"/.test(attributes);
+    if (filteredAxis && fieldIndex !== cardLevelField) {
+      const hidden = new Set<string>();
+      for (const item of body.matchAll(/<item\b([^>]*)\/>/g)) {
+        if (xmlAttribute(item[1], 'h') !== '1') continue;
+        const sharedIndex = Number(xmlAttribute(item[1], 'x'));
+        const value = fields[fieldIndex]?.sharedItems[sharedIndex];
+        if (value != null) hidden.add(value);
+      }
+      if (hidden.size) hiddenByField.set(fieldIndex, hidden);
+    }
+    fieldIndex++;
+  }
+
+  for (const pageField of pivotTableXml.matchAll(/<pageField\b([^>]*)\/>/g)) {
+    const fieldIndex = Number(xmlAttribute(pageField[1], 'fld'));
+    const selectedItem = xmlAttribute(pageField[1], 'item');
+    if (
+      fieldIndex === cardLevelField ||
+      !selectedItem ||
+      !Number.isInteger(fieldIndex) ||
+      !/^\d+$/.test(selectedItem)
+    ) continue;
+    const selectedValue = fields[fieldIndex]?.sharedItems[Number(selectedItem)];
+    if (selectedValue == null) continue;
+    hiddenByField.set(
+      fieldIndex,
+      new Set(fields[fieldIndex].sharedItems.filter((value) => value !== selectedValue))
+    );
+  }
+  return hiddenByField;
+}
+
+function fieldIndexByName(fields: PivotCacheField[], aliases: string[]): number {
+  const normalizedAliases = new Set(aliases.map(compactLabel));
+  return fields.findIndex((field) => normalizedAliases.has(compactLabel(field.name)));
+}
+
+/**
+ * Reconstructs a BDO SGM ranking from the embedded Excel pivot cache.
+ * This allows both Card Levels to be imported even when the saved visible pivot
+ * is filtered to only 1st Card or Bundle Card.
+ */
+export function parseBdoSgmPivotCache(
+  workbookBytes: Uint8Array,
+  sourceSheet: string,
+  fallbackReportDate: Date
+): BdoSgmWorksheetParseResult | null {
+  let archive: any;
+  try {
+    archive = (XLSX as any).CFB.read(Buffer.from(workbookBytes), { type: 'buffer' });
+  } catch {
+    return null;
+  }
+
+  const cacheDefinitions = (archive.FullPaths as string[])
+    .map((path, index) => ({ path, index }))
+    .filter(({ path }) => /\/xl\/pivotCache\/pivotCacheDefinition\d+\.xml$/i.test(path));
+
+  for (const { path } of cacheDefinitions) {
+    const cacheNumber = path.match(/pivotCacheDefinition(\d+)\.xml$/i)?.[1];
+    if (!cacheNumber) continue;
+    const definitionXml = archiveXml(archive, `xl/pivotCache/pivotCacheDefinition${cacheNumber}.xml`);
+    const recordsXml = archiveXml(archive, `xl/pivotCache/pivotCacheRecords${cacheNumber}.xml`);
+    if (!definitionXml || !recordsXml) continue;
+
+    const fields = pivotCacheFields(definitionXml);
+    const agentField = fieldIndexByName(fields, ['Assigned Caller', 'Agent', 'Agent Name', 'Collector', 'Collector Name']);
+    const cardLevelField = fieldIndexByName(fields, ['Card Level']);
+    const actualMonthField = fieldIndexByName(fields, ['Turn Ins Actual Month', 'Turn In Actual Month', 'Turn In Month']);
+    const dateField = fieldIndexByName(fields, ['Turn In Date', 'Transmittal Date']);
+    const yearField = fieldIndexByName(fields, ['Transmital Year', 'Transmittal Year']);
+    if (agentField < 0 || cardLevelField < 0 || actualMonthField < 0) continue;
+
+    const pivotTableXml = (archive.FullPaths as string[])
+      .filter((candidate) => /\/xl\/pivotTables\/pivotTable\d+\.xml$/i.test(candidate))
+      .map((candidate) => archiveXml(archive, candidate.replace(/^.*\/xl\//, 'xl/')))
+      .find((candidate) =>
+        new RegExp(`<dataField\\b[^>]*\\bfld="${cardLevelField}"`).test(candidate) &&
+        new RegExp(`<rowFields\\b[^>]*>[\\s\\S]*?<field\\b[^>]*\\bx="${agentField}"`).test(candidate)
+      ) || '';
+    if (!pivotTableXml) continue;
+
+    const hiddenValues = pivotHiddenValues(pivotTableXml, fields, cardLevelField);
+    const grouped = new Map<string, {
+      name: string;
+      cardLevel: BdoSgmCardLevel;
+      cardLevelLabel: string;
+      reportDate: Date;
+      count: number;
+      firstRow: number;
+    }>();
+    let rowsScanned = 0;
+    let invalidRows = 0;
+
+    for (const recordMatch of recordsXml.matchAll(/<r>([\s\S]*?)<\/r>/g)) {
+      rowsScanned++;
+      const values = pivotRecordValues(recordMatch[1], fields);
+      const excluded = [...hiddenValues.entries()].some(([fieldIndex, hidden]) =>
+        hidden.has(values[fieldIndex]?.value || '')
+      );
+      if (excluded) continue;
+
+      const cardLevelLabel = normalizeText(values[cardLevelField]?.value);
+      const cardLevel = normalizeBdoSgmCardLevel(cardLevelLabel);
+      if (!cardLevel) continue;
+      const name = normalizeText(values[agentField]?.value);
+      if (!name || NON_AGENT_LABELS.test(name)) {
+        invalidRows++;
+        continue;
+      }
+
+      const dateValue = values[dateField]?.value;
+      const parsedDate = dateValue ? new Date(dateValue) : null;
+      let year = parsedDate && !Number.isNaN(parsedDate.getTime())
+        ? parsedDate.getUTCFullYear()
+        : Number(values[yearField]?.value);
+      if (!Number.isInteger(year) || year < 2000 || year > 2100) year = fallbackReportDate.getFullYear();
+      const month = detectBdoSgmMonth(values[actualMonthField]?.value, year);
+      if (!month) {
+        invalidRows++;
+        continue;
+      }
+
+      const key = `${cardLevel}|${name}|${month.year}-${String(month.month + 1).padStart(2, '0')}`;
+      const existing = grouped.get(key);
+      if (existing) {
+        existing.count++;
+      } else {
+        grouped.set(key, {
+          name,
+          cardLevel,
+          cardLevelLabel,
+          reportDate: new Date(month.year, month.month, 1),
+          count: 1,
+          firstRow: rowsScanned,
+        });
+      }
+    }
+
+    if (!grouped.size) continue;
+    const totals = new Map<string, number>();
+    for (const item of grouped.values()) {
+      const key = `${item.cardLevel}|${item.name}`;
+      totals.set(key, (totals.get(key) || 0) + item.count);
+    }
+    const records = [...grouped.values()]
+      .map<BdoSgmRankingRecord>((item) => ({
+        name: item.name,
+        count: item.count,
+        volume: 0,
+        metricType: BDO_SGM_METRIC_TYPE,
+        cardLevel: item.cardLevel,
+        cardLevelLabel: item.cardLevelLabel,
+        grandTotal: totals.get(`${item.cardLevel}|${item.name}`),
+        sourceSheet,
+        reportDate: item.reportDate,
+        rowIdx: item.firstRow,
+        normalizedMetrics: [{ metricType: BDO_SGM_METRIC_TYPE, count: item.count }],
+      }))
+      .sort((a, b) =>
+        a.cardLevel.localeCompare(b.cardLevel) ||
+        a.reportDate.getTime() - b.reportDate.getTime() ||
+        a.name.localeCompare(b.name)
+      );
+    const detectedMonths = [...new Set(records.map((record) =>
+      `${record.reportDate.getFullYear()}-${String(record.reportDate.getMonth() + 1).padStart(2, '0')}`
+    ))].sort();
+    const detectedCardLevels = [...new Set(records.map((record) => record.cardLevel))].sort();
+    const validAgentRows = new Set(records.map((record) => `${record.cardLevel}|${record.name}`)).size;
+
+    return {
+      detected: true,
+      format: 'BDO SGM Ranking',
+      headerRow: null,
+      headerRows: [],
+      records,
+      issues: [],
+      warnings: [],
+      errors: [],
+      rowsScanned,
+      validAgentRows,
+      monthlyRecordsDetected: records.length,
+      skippedBlankCells: 0,
+      invalidRows,
+      warningCount: 0,
+      detectedMonths,
+      detectedCardLevels,
+    };
+  }
+  return null;
+}
+
 export function parseBdoSgmWorksheet(
   rows: unknown[][],
   worksheet: string,

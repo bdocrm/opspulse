@@ -16,6 +16,7 @@ import { parseCampaignSummaryWorksheet } from '@/lib/campaign-summary-import';
 import {
   BDO_SGM_METRIC_TYPE,
   isBdoSgmCampaign,
+  parseBdoSgmPivotCache,
   parseBdoSgmWorksheet,
   type BdoSgmWorksheetParseResult,
 } from '@/lib/bdo-sgm-ranking-import';
@@ -2272,6 +2273,19 @@ export async function POST(req: NextRequest) {
           sheetName,
           parseBdoSgmWorksheet(preloadedWorksheetRows!.get(sheetName) || [], sheetName, reportDate),
         ]));
+        const visibleCardLevels = new Set(
+          [...preparsedBdoSgm.values()].flatMap((result) => result.detectedCardLevels)
+        );
+        const rankingSheet = workbook.SheetNames.find((sheetName) => preparsedBdoSgm!.get(sheetName)?.detected);
+        if (rankingSheet) {
+          const pivotCacheResult = parseBdoSgmPivotCache(bytes, rankingSheet, reportDate);
+          const containsAdditionalCardLevel = pivotCacheResult?.detectedCardLevels.some(
+            (cardLevel) => !visibleCardLevels.has(cardLevel)
+          );
+          if (pivotCacheResult && containsAdditionalCardLevel) {
+            preparsedBdoSgm.set(rankingSheet, pivotCacheResult);
+          }
+        }
         bdoSgmRankingDetected = [...preparsedBdoSgm.values()].some((result) => result.detected);
         if (bdoSgmRankingDetected) reportPeriodType = 'monthly';
       }
