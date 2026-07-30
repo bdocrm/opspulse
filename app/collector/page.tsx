@@ -1112,7 +1112,7 @@ export default function CollectorDashboard() {
       </Card>
 
       {kpis.latestImportView && (
-        <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 dark:border-blue-800/70 dark:bg-blue-950/40 dark:text-blue-200">
           <CalendarDays className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
             The selected dates have no matching production. Showing the latest imported data
@@ -1127,8 +1127,8 @@ export default function CollectorDashboard() {
         <div
           className={`p-4 rounded-lg text-sm flex items-start gap-3 border ${
             message.startsWith('Error') || message.startsWith('❌')
-              ? 'bg-red-50 text-red-900 border-red-200'
-              : 'bg-green-50 text-green-900 border-green-200'
+              ? 'bg-red-50 text-red-900 border-red-200 dark:bg-red-950/40 dark:text-red-200 dark:border-red-800/70'
+              : 'bg-green-50 text-green-900 border-green-200 dark:bg-green-950/40 dark:text-green-200 dark:border-green-800/70'
           }`}
         >
           {message.startsWith('Error') || message.startsWith('❌') ? (
@@ -1145,32 +1145,32 @@ export default function CollectorDashboard() {
 
       {/* Created Agent Credentials Card */}
       {createdAgent && (
-        <Card className="border-green-200 bg-gradient-to-r from-green-50 to-emerald-50">
+        <Card className="border-green-200 bg-gradient-to-r from-green-50 to-emerald-50 dark:border-green-800/60 dark:from-green-950/60 dark:to-emerald-950/40">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-green-900">
+            <CardTitle className="flex items-center gap-2 text-green-900 dark:text-green-100">
               <UserCheck className="w-5 h-5 text-green-600" />
               Agent Account Created
             </CardTitle>
-            <CardDescription className="text-green-700">New agent has been successfully registered</CardDescription>
+            <CardDescription className="text-green-700 dark:text-green-300">New agent has been successfully registered</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="p-3 bg-white/80 rounded border border-green-200">
+              <div className="rounded border border-green-200 bg-white/80 p-3 dark:border-green-800/60 dark:bg-green-950/40">
                 <p className="text-xs text-muted-foreground uppercase tracking-wide">Agent Name</p>
-                <p className="font-semibold text-green-900 mt-1">{createdAgent.name}</p>
+                <p className="mt-1 font-semibold text-green-900 dark:text-green-100">{createdAgent.name}</p>
               </div>
-              <div className="p-3 bg-white/80 rounded border border-green-200">
+              <div className="rounded border border-green-200 bg-white/80 p-3 dark:border-green-800/60 dark:bg-green-950/40">
                 <p className="text-xs text-muted-foreground uppercase tracking-wide">Seat Number</p>
-                <p className="font-semibold text-green-900 mt-1">Seat {createdAgent.seatNumber}</p>
+                <p className="mt-1 font-semibold text-green-900 dark:text-green-100">Seat {createdAgent.seatNumber}</p>
               </div>
-              <div className="p-3 bg-white/80 rounded border border-green-200 md:col-span-2">
+              <div className="rounded border border-green-200 bg-white/80 p-3 md:col-span-2 dark:border-green-800/60 dark:bg-green-950/40">
                 <p className="text-xs text-muted-foreground uppercase tracking-wide">System Email</p>
-                <p className="font-mono text-sm text-green-900 mt-1 break-all">{createdAgent.email}</p>
+                <p className="mt-1 break-all font-mono text-sm text-green-900 dark:text-green-100">{createdAgent.email}</p>
               </div>
             </div>
-            <div className="p-3 bg-blue-50 rounded border border-blue-200">
-              <p className="text-xs text-blue-700 font-semibold">💡 Info:</p>
-              <p className="text-xs text-blue-700 mt-1">
+            <div className="rounded border border-blue-200 bg-blue-50 p-3 dark:border-blue-800/60 dark:bg-blue-950/40">
+              <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">💡 Info:</p>
+              <p className="mt-1 text-xs text-blue-700 dark:text-blue-300">
                 This agent is automatically assigned to <span className="font-semibold">{createdAgent.campaignName}</span>.
                 They will access the system through the data entry interface.
               </p>
@@ -1353,7 +1353,7 @@ export default function CollectorDashboard() {
 
       {/* Add Agent Form (Collapsible) */}
       {showAddAgent && (
-        <Card className="border-blue-200 bg-blue-50/30">
+        <Card className="border-blue-200 bg-blue-50/30 dark:border-blue-800/60 dark:bg-blue-950/20">
           <CardHeader className="pb-3">
             <CardTitle className="text-lg flex items-center gap-2"><Plus className="w-5 h-5 text-blue-600" />Add New Agent</CardTitle>
             <CardDescription>Register a new agent for one of your campaigns</CardDescription>
@@ -1392,8 +1392,8 @@ export default function CollectorDashboard() {
                 </div>
               </div>
 
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
-                <p className="text-sm text-amber-900">
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800/60 dark:bg-amber-950/30">
+                <p className="text-sm text-amber-900 dark:text-amber-200">
                   <span className="font-semibold">ℹ️ Auto-Generated:</span> A unique system email and credentials will be created for this agent upon submission.
                 </p>
               </div>
@@ -1619,7 +1619,7 @@ export default function CollectorDashboard() {
 
                       {/* Top KPI Performer */}
                       {(campaign.recordCount ?? campaign.entriesCount) > 0 && topPerformer && topKpiValue > 0 && (
-                        <div className="pt-2 border-t bg-yellow-50/50 rounded-lg p-2 mx-[-0.75rem] px-3">
+                        <div className="mx-[-0.75rem] rounded-lg border-t bg-yellow-50/50 p-2 px-3 pt-2 dark:bg-yellow-950/30">
                           <p className="text-xs text-muted-foreground uppercase tracking-wide font-semibold">🥇 Top {metricLabel}</p>
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-sm font-medium text-foreground truncate">{topPerformer.name}</span>
@@ -1811,8 +1811,8 @@ export default function CollectorDashboard() {
                               ) : bdoSgm ? (
                                 <>
                                   <TableHead className="text-center w-20">Attendance</TableHead>
-                                  <TableHead className="text-right text-blue-700">1st Card</TableHead>
-                                  <TableHead className="text-right text-violet-700">Bundle Card</TableHead>
+                                  <TableHead className="text-right text-blue-700 dark:text-blue-300">1st Card</TableHead>
+                                  <TableHead className="text-right text-violet-700 dark:text-violet-300">Bundle Card</TableHead>
                                   <TableHead className="text-right">Goal</TableHead>
                                 </>
                               ) : bdo || hasImportedDashboardPerformance ? (
@@ -1942,13 +1942,13 @@ export default function CollectorDashboard() {
                                     </TableCell>
                                     <TableCell className="text-right font-semibold text-blue-600">{Number(prod.firstCardTransmittals || 0).toLocaleString()}</TableCell>
                                     <TableCell className="text-right font-semibold text-violet-600">{Number(prod.bundleCardTransmittals || 0).toLocaleString()}</TableCell>
-                                    <TableCell className="text-right font-semibold text-slate-600">{formatKpiValue(block.kpiMetric, Number(agent.monthlyTarget || 0))}</TableCell>
+                                    <TableCell className="text-right font-semibold text-slate-600 dark:text-slate-300">{formatKpiValue(block.kpiMetric, Number(agent.monthlyTarget || 0))}</TableCell>
                                   </>
                                 ) : bdo || hasImportedDashboardPerformance ? (
                                   <>
                                     <TableCell className="text-center">
                                       {agent.importedOnly ? (
-                                        <span className="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-600">Imported</span>
+                                        <span className="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-600 dark:bg-blue-950/50 dark:text-blue-300">Imported</span>
                                       ) : (
                                         <button
                                           onClick={() => handleToggleAttendance(agent.id, record?.status || 'PRESENT')}
@@ -1972,7 +1972,7 @@ export default function CollectorDashboard() {
                                   <>
                                     <TableCell className="text-center">
                                       {agent.importedOnly ? (
-                                        <span className="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-600">Imported</span>
+                                        <span className="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-600 dark:bg-blue-950/50 dark:text-blue-300">Imported</span>
                                       ) : (
                                         <button
                                           onClick={() => handleToggleAttendance(agent.id, record?.status || 'PRESENT')}

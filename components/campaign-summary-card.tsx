@@ -296,7 +296,7 @@ export function CampaignSummaryCard({
       {expanded && (
         <CardContent className="pt-0 space-y-6">
           {fallbackPeriodLabel && (
-            <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:border-blue-800/70 dark:bg-blue-950/40 dark:text-blue-200">
               The selected dates have no records for this campaign. Showing its latest imported campaign summary from {fallbackPeriodLabel}
               {agentFallbackPeriodLabel && agentFallbackPeriodLabel !== fallbackPeriodLabel
                 ? ` and collector monitoring data from ${agentFallbackPeriodLabel}`
@@ -304,88 +304,88 @@ export function CampaignSummaryCard({
             </div>
           )}
           {!hasRecordsInRange && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800/70 dark:bg-amber-950/40 dark:text-amber-200">
               No production records fall within the selected date range. Adjust the date filter to view this campaign&apos;s imported performance.
             </div>
           )}
           {hasRecordsInRange && (goalStatus === 'missing' || dataStatus === 'missing-goal') && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800/70 dark:bg-amber-950/40 dark:text-amber-200">
               Production was imported for this period, but the workbook does not contain a valid campaign or agent goal.
             </div>
           )}
           {/* KPI Cards */}
           {bdoSgm ? (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-blue-200/60 bg-gradient-to-br from-blue-50 to-blue-100/50 p-3 dark:border-blue-800/50 dark:from-blue-950/60 dark:to-blue-900/20">
                 <p className="text-xs text-muted-foreground mb-1">Goal (Transmittals)</p>
                 <p className="text-xl font-bold text-blue-600">{goalStatus === 'missing' ? 'Unavailable' : goal.toLocaleString()}</p>
               </div>
-              <div className="bg-gradient-to-br from-sky-50 to-sky-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-sky-200/60 bg-gradient-to-br from-sky-50 to-sky-100/50 p-3 dark:border-sky-800/50 dark:from-sky-950/60 dark:to-sky-900/20">
                 <p className="text-xs text-muted-foreground mb-1">1st Card</p>
                 <p className="text-xl font-bold text-blue-600">{totalFirstCard.toLocaleString()}</p>
               </div>
-              <div className="bg-gradient-to-br from-violet-50 to-violet-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-violet-200/60 bg-gradient-to-br from-violet-50 to-violet-100/50 p-3 dark:border-violet-800/50 dark:from-violet-950/60 dark:to-violet-900/20">
                 <p className="text-xs text-muted-foreground mb-1">Bundle Card</p>
                 <p className="text-xl font-bold text-violet-600">{totalBundleCard.toLocaleString()}</p>
               </div>
-              <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-green-200/60 bg-gradient-to-br from-green-50 to-green-100/50 p-3 dark:border-green-800/50 dark:from-green-950/60 dark:to-green-900/20">
                 <p className="text-xs text-muted-foreground mb-1">{fallbackPeriodLabel ? `Records (${fallbackPeriodLabel})` : 'Records in Range'}</p>
                 <p className="text-xl font-bold text-green-600">{entriesCount}</p>
               </div>
             </div>
           ) : acq ? (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-blue-200/60 bg-gradient-to-br from-blue-50 to-blue-100/50 p-3 dark:border-blue-800/50 dark:from-blue-950/60 dark:to-blue-900/20">
                 <p className="text-xs text-muted-foreground mb-1">Monthly Goal (NTB)</p>
                 <p className="text-xl font-bold text-blue-600">{goalStatus === 'missing' ? 'Unavailable' : goal.toLocaleString()}</p>
               </div>
-              <div className="bg-gradient-to-br from-indigo-50 to-indigo-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-indigo-200/60 bg-gradient-to-br from-indigo-50 to-indigo-100/50 p-3 dark:border-indigo-800/50 dark:from-indigo-950/60 dark:to-indigo-900/20">
                 <p className="text-xs text-muted-foreground mb-1">Monthly Goal (Supplementary)</p>
                 <p className="text-xl font-bold text-indigo-600">{Number(supplementaryGoal).toLocaleString()}</p>
               </div>
-              <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-purple-200/60 bg-gradient-to-br from-purple-50 to-purple-100/50 p-3 dark:border-purple-800/50 dark:from-purple-950/60 dark:to-purple-900/20">
                 <p className="text-xs text-muted-foreground mb-1">Total NTB</p>
                 <p className="text-xl font-bold text-purple-600">{Number(totalNtb).toLocaleString()}</p>
               </div>
-              <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-green-200/60 bg-gradient-to-br from-green-50 to-green-100/50 p-3 dark:border-green-800/50 dark:from-green-950/60 dark:to-green-900/20">
                 <p className="text-xs text-muted-foreground mb-1">Total Supplementary</p>
                 <p className="text-xl font-bold text-green-600">{Number(totalSupplementary).toLocaleString()}</p>
               </div>
             </div>
           ) : mbpl && mbPlTotals ? (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-blue-200/60 bg-gradient-to-br from-blue-50 to-blue-100/50 p-3 dark:border-blue-800/50 dark:from-blue-950/60 dark:to-blue-900/20">
                 <p className="text-xs text-muted-foreground mb-1">Target Transactions</p>
                 <p className="text-xl font-bold text-blue-600">{mbPlTotals.transactionGoal.toLocaleString()}</p>
               </div>
-              <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-purple-200/60 bg-gradient-to-br from-purple-50 to-purple-100/50 p-3 dark:border-purple-800/50 dark:from-purple-950/60 dark:to-purple-900/20">
                 <p className="text-xs text-muted-foreground mb-1">Actual Transactions</p>
                 <p className="text-xl font-bold text-purple-600">{mbPlTotals.transactionActual.toLocaleString()}</p>
               </div>
-              <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-blue-200/60 bg-gradient-to-br from-blue-50 to-blue-100/50 p-3 dark:border-blue-800/50 dark:from-blue-950/60 dark:to-blue-900/20">
                 <p className="text-xs text-muted-foreground mb-1">Target Volume</p>
                 <p className="text-xl font-bold text-blue-600">₱{mbPlTotals.volumeGoal.toLocaleString()}</p>
               </div>
-              <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-green-200/60 bg-gradient-to-br from-green-50 to-green-100/50 p-3 dark:border-green-800/50 dark:from-green-950/60 dark:to-green-900/20">
                 <p className="text-xs text-muted-foreground mb-1">Actual Volume</p>
                 <p className="text-xl font-bold text-green-600">₱{mbPlTotals.volumeActual.toLocaleString()}</p>
               </div>
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-blue-200/60 bg-gradient-to-br from-blue-50 to-blue-100/50 p-3 dark:border-blue-800/50 dark:from-blue-950/60 dark:to-blue-900/20">
                 <p className="text-xs text-muted-foreground mb-1">{mbpl ? 'Imported Goal' : `Goal (${metricLabel})`}</p>
                 <p className="text-xl font-bold text-blue-600">{goalStatus === 'missing' ? 'Unavailable' : formatKpiValue(displayMetric, goal)}</p>
               </div>
-              <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-purple-200/60 bg-gradient-to-br from-purple-50 to-purple-100/50 p-3 dark:border-purple-800/50 dark:from-purple-950/60 dark:to-purple-900/20">
                 <p className="text-xs text-muted-foreground mb-1">{mbpl ? 'Imported Actual' : `Current ${metricLabel}`}</p>
                 <p className="text-xl font-bold text-purple-600">{formatKpiValue(displayMetric, totalProduction)}</p>
               </div>
-              <div className="bg-gradient-to-br from-orange-50 to-orange-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-orange-200/60 bg-gradient-to-br from-orange-50 to-orange-100/50 p-3 dark:border-orange-800/50 dark:from-orange-950/60 dark:to-orange-900/20">
                 <p className="text-xs text-muted-foreground mb-1">Remaining to Goal</p>
                 <p className="text-xl font-bold text-orange-600">{formatKpiValue(displayMetric, remainingGoal)}</p>
               </div>
-              <div className="bg-gradient-to-br from-green-50 to-green-100/50 rounded-lg p-3">
+              <div className="rounded-lg border border-green-200/60 bg-gradient-to-br from-green-50 to-green-100/50 p-3 dark:border-green-800/50 dark:from-green-950/60 dark:to-green-900/20">
                 <p className="text-xs text-muted-foreground mb-1">{fallbackPeriodLabel ? `Records (${fallbackPeriodLabel})` : 'Records in Range'}</p>
                 <p className="text-xl font-bold text-green-600">{entriesCount}</p>
               </div>
@@ -418,7 +418,7 @@ export function CampaignSummaryCard({
           {/* Top/Bottom Performers */}
           <div className="grid grid-cols-2 gap-3">
             {performerStats.topPerformer && (
-              <div className="bg-green-50/50 border border-green-200/50 rounded-lg p-3">
+              <div className="rounded-lg border border-green-200/50 bg-green-50/50 p-3 dark:border-green-800/50 dark:bg-green-950/30">
                 <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
                   <CheckCircle2 className="w-3 h-3 text-green-600" />
                   Top Performer
@@ -428,7 +428,7 @@ export function CampaignSummaryCard({
               </div>
             )}
             {performerStats.bottomPerformer && performerStats.bottomPerformer.agent.id && (
-              <div className="bg-amber-50/50 border border-amber-200/50 rounded-lg p-3">
+              <div className="rounded-lg border border-amber-200/50 bg-amber-50/50 p-3 dark:border-amber-800/50 dark:bg-amber-950/30">
                 <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
                   <AlertCircle className="w-3 h-3 text-amber-600" />
                   Lowest Performer
