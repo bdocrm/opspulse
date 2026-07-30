@@ -330,9 +330,13 @@ export default function BulkImportPage() {
   const [normalizedPreviewRecords, setNormalizedPreviewRecords] = useState<NormalizedPreviewRecord[]>([]);
   const [monthSummaries, setMonthSummaries] = useState<MonthImportSummary[]>([]);
   const previewInFlight = useRef(false);
+  const campaignAccessRefreshed = useRef(false);
 
   const fetcher = (url: string) => fetch(url).then((res) => res.json());
-  const { data: importHistoryData, mutate: mutateImportHistory } = useSWR<{ imports: ImportFileSummary[] }>(
+  const { data: importHistoryData, mutate: mutateImportHistory } = useSWR<{
+    imports: ImportFileSummary[];
+    campaigns: Array<{ id: string; campaignName: string }>;
+  }>(
     (session?.user as any)?.role === 'COLLECTOR' ? '/api/collectors/bulk-import' : null,
     fetcher
   );
@@ -344,6 +348,15 @@ export default function BulkImportPage() {
       .then(data => setCampaigns(Array.isArray(data) ? data : []))
       .catch(() => {});
   }, []);
+
+  // Campaign assignments can change while a collector is logged in. Refresh
+  // the JWT-backed session once on entry so the picker uses the current
+  // database assignments instead of the campaignIds cached at sign-in.
+  useEffect(() => {
+    if (status !== 'authenticated' || campaignAccessRefreshed.current) return;
+    campaignAccessRefreshed.current = true;
+    void updateSession();
+  }, [status, updateSession]);
 
   useEffect(() => {
     const assignedIds = (session?.user as any)?.campaignIds as string[] | undefined;
@@ -389,7 +402,11 @@ export default function BulkImportPage() {
     [importResult?.details, importDateSort]
   );
   const assignedCampaignIds: string[] = (session?.user as any)?.campaignIds || [];
-  const availableCampaigns = assignedCampaignIds.length ? campaigns.filter((campaign) => assignedCampaignIds.includes(campaign.id)) : campaigns;
+  const availableCampaigns = Array.isArray(importHistoryData?.campaigns)
+    ? importHistoryData.campaigns
+    : assignedCampaignIds.length
+      ? campaigns.filter((campaign) => assignedCampaignIds.includes(campaign.id))
+      : campaigns;
   const selectedCampaigns = availableCampaigns.filter((campaign) => campaignIds.includes(campaign.id));
   const importFiles = importHistoryData?.imports ?? [];
   const sortedImportFiles = useMemo(

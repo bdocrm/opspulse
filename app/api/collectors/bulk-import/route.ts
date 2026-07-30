@@ -13,6 +13,12 @@ import { isMbPaMonthlyLayout, parseMbPaMonthlyRows } from '@/lib/mb-pa-import';
 import { isMbGoalAchievementLayout, parseMbGoalAchievementRows } from '@/lib/mb-goal-achievement-import';
 import { parseImportNumber } from '@/lib/import-number';
 import { parseCampaignSummaryWorksheet } from '@/lib/campaign-summary-import';
+import {
+  BDO_SGM_METRIC_TYPE,
+  isBdoSgmCampaign,
+  parseBdoSgmWorksheet,
+  type BdoSgmWorksheetParseResult,
+} from '@/lib/bdo-sgm-ranking-import';
 
 type ParsedEntry = {
   name: string; count: number; volume: number;
@@ -131,6 +137,12 @@ type SheetPreview = {
   validRows: number;
   invalidRows: number;
   duplicateRows: number;
+  validAgentRows?: number;
+  monthlyRecordsDetected?: number;
+  skippedBlankCells?: number;
+  warningCount?: number;
+  detectedMonths?: string[];
+  validationIssues?: Array<{ worksheet: string; row: number; reason: string; warning: boolean }>;
   warnings: string[];
   errors: string[];
   matched: any[];
@@ -1257,12 +1269,16 @@ async function buildWorkbookPreview({
   metricType,
   selectedReportDate,
   reportPeriodType,
+  preloadedWorksheetRows,
+  preparsedBdoSgm,
 }: {
   workbook: XLSX.WorkBook;
   selectedCampaigns: AssignedCampaign[];
   metricType: string;
   selectedReportDate: Date;
   reportPeriodType: ReportPeriodType;
+  preloadedWorksheetRows?: Map<string, any[][]>;
+  preparsedBdoSgm?: Map<string, BdoSgmWorksheetParseResult>;
 }) {
   const campaignIds = selectedCampaigns.map((campaign) => campaign.id);
   const campaignAgents = await prisma.user.findMany({
@@ -1281,10 +1297,25 @@ async function buildWorkbookPreview({
     hiddenByName.set(workbook.SheetNames[index], Boolean(sheetInfo?.Hidden));
   });
 
+  const worksheetRows = preloadedWorksheetRows || new Map<string, any[][]>(workbook.SheetNames.map((sheetName) => [
+    sheetName,
+    XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: true, defval: null } as any),
+  ]));
+  const bdoSgmMode = selectedCampaigns.length === 1 && isBdoSgmCampaign(selectedCampaigns[0].campaignName);
+  const bdoSgmBySheet = preparsedBdoSgm || new Map<string, BdoSgmWorksheetParseResult>(
+    bdoSgmMode
+      ? workbook.SheetNames.map((sheetName) => [
+          sheetName,
+          parseBdoSgmWorksheet(worksheetRows.get(sheetName) || [], sheetName, selectedReportDate),
+        ])
+      : []
+  );
+  const hasBdoSgmRanking = [...bdoSgmBySheet.values()].some((result) => result.detected);
+
   const allSeen = new Set<string>();
   const sheets: SheetPreview[] = workbook.SheetNames.map((sheetName, index) => {
-    const sheet = workbook.Sheets[sheetName];
-    const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null } as any);
+    const rows = worksheetRows.get(sheetName) || [];
+    const bdoSgm = bdoSgmBySheet.get(sheetName);
     const defaultMapping = mapWorksheetCampaign(sheetName, selectedCampaigns);
     const mbPaCampaigns = selectedCampaigns.filter((campaign) => /\bmb\s*pa\b/i.test(campaign.campaignName));
     const detectedMbPaLayout = isMbPaMonthlyLayout(rows);
@@ -1296,16 +1327,36 @@ async function buildWorkbookPreview({
         ? { campaign: mbCampaigns[0], source: 'sheet' as const }
         : defaultMapping;
     const reportDate = parseReportDateFromRows(rows, selectedReportDate, sheetName);
-    const detectedMetric = detectMetricFromText(`${sheetName} ${rows.slice(0, 5).flat().join(' ')}`, metricType);
+    const detectedMetric = bdoSgm?.detected
+      ? BDO_SGM_METRIC_TYPE
+      : detectMetricFromText(`${sheetName} ${rows.slice(0, 5).flat().join(' ')}`, metricType);
     const campaignSummary = parseCampaignSummaryWorksheet(
       rows,
       sheetName,
       selectedCampaigns,
       reportDate
     );
-    const parsed = campaignSummary?.entries.length
-      ? campaignSummary
-      : parseDetectedRows(rows, detectedMetric, mapping.campaign.campaignName, sheetName, reportDate);
+    const parsed = bdoSgm?.detected
+      ? {
+          format: bdoSgm.format,
+          entries: bdoSgm.records as ParsedEntry[],
+          invalidRows: bdoSgm.invalidRows,
+          warnings: bdoSgm.warnings,
+          errors: bdoSgm.errors,
+        }
+      : hasBdoSgmRanking
+        ? {
+            format: 'Unsupported',
+            entries: [] as ParsedEntry[],
+            invalidRows: 0,
+            warnings: rows.filter(rowHasAnyValue).length
+              ? ['Worksheet skipped because it does not contain a BDO SGM ranking table.']
+              : [],
+            errors: [] as string[],
+          }
+        : campaignSummary?.entries.length
+          ? campaignSummary
+          : parseDetectedRows(rows, detectedMetric, mapping.campaign.campaignName, sheetName, reportDate);
     const hasPerRecordCampaigns = parsed.format === 'Campaign Summary';
     const entries: ParsedEntry[] = [];
     let duplicateRows = 0;
@@ -1367,6 +1418,12 @@ async function buildWorkbookPreview({
       validRows: entries.length,
       invalidRows: parsed.invalidRows,
       duplicateRows,
+      validAgentRows: bdoSgm?.validAgentRows,
+      monthlyRecordsDetected: bdoSgm?.monthlyRecordsDetected,
+      skippedBlankCells: bdoSgm?.skippedBlankCells,
+      warningCount: bdoSgm?.warningCount,
+      detectedMonths: bdoSgm?.detectedMonths,
+      validationIssues: bdoSgm?.issues,
       warnings,
       errors,
       matched,
@@ -1429,7 +1486,10 @@ async function buildWorkbookPreview({
         c2gVol: entry.c2gVol, btVol: entry.btVol, balconVol: entry.balconVol, grandTotalVol: entry.grandTotalVol,
       } : {}),
       status: agent && existingKeys.has(key) ? 'Existing' : 'New',
-      validationMessage: agent ? '' : 'Agent not found; approve creation before import.',
+      validationMessage: [
+        agent ? '' : 'Agent not found; approve creation before import.',
+        ...(entry.validationErrors || []),
+      ].filter(Boolean).join(' '),
       row: entry.rowIdx,
       }];
     });
@@ -1443,6 +1503,20 @@ async function buildWorkbookPreview({
       totalValidRecords: sheets.reduce((sum, sheet) => sum + sheet.validRows, 0),
       totalInvalidRecords: sheets.reduce((sum, sheet) => sum + sheet.invalidRows, 0),
       totalDuplicateRecords: sheets.reduce((sum, sheet) => sum + sheet.duplicateRows, 0),
+      ...(hasBdoSgmRanking ? {
+        bdoSgmRanking: true,
+        totalRowsScanned: [...bdoSgmBySheet.values()].reduce((sum, result) => sum + result.rowsScanned, 0),
+        validAgentRows: [...bdoSgmBySheet.values()].reduce((sum, result) => sum + result.validAgentRows, 0),
+        monthlyRecordsDetected: [...bdoSgmBySheet.values()].reduce((sum, result) => sum + result.monthlyRecordsDetected, 0),
+        recordsReadyForImport: previewRecords.length,
+        skippedBlankCells: [...bdoSgmBySheet.values()].reduce((sum, result) => sum + result.skippedBlankCells, 0),
+        warningCount: [...bdoSgmBySheet.values()].reduce((sum, result) => sum + result.warningCount, 0),
+        detectedMonths: [...new Set([...bdoSgmBySheet.values()].flatMap((result) => result.detectedMonths))].sort(),
+        supportedWorksheets: sheets.filter((sheet) => sheet.format === 'BDO SGM Ranking').map((sheet) => sheet.sheetName),
+        unsupportedWorksheets: sheets.filter((sheet) => sheet.format !== 'BDO SGM Ranking').map((sheet) => sheet.sheetName),
+        detectedMetrics: [BDO_SGM_METRIC_TYPE],
+        agentCount: [...bdoSgmBySheet.values()].reduce((sum, result) => sum + result.validAgentRows, 0),
+      } : {}),
     },
     sheets,
     matched: sheets.flatMap((sheet) => sheet.matched),
@@ -1955,7 +2029,9 @@ export async function GET(req: NextRequest) {
     `;
     const dashboardImports = dashboardRows.map((batch) => ({ id: batch.id, campaignId: batch.campaignId, campaignName: batch.campaignName, fileName: batch.fileName, metricType: 'all_metrics', reportDate: batch.reportDate, importedAt: batch.createdAt, detailCount: Number(batch.detailCount || 0), totals: { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 } }));
     const imports = [...rows.map(formatImportSummary), ...dashboardImports].sort((a, b) => new Date(b.importedAt).getTime() - new Date(a.importedAt).getTime()).slice(0, 50);
-    return NextResponse.json({ imports });
+    const campaigns = (await getAssignedCampaigns(user.id, user.campaignId))
+      .sort((a, b) => a.campaignName.localeCompare(b.campaignName));
+    return NextResponse.json({ imports, campaigns });
   } catch (error) {
     console.error('Bulk import history error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -1984,7 +2060,7 @@ export async function POST(req: NextRequest) {
     const mode = (formData.get('mode') as string) || 'import';
     const importMode = (formData.get('importMode') as string) || 'single';
     const requestedMetricType = (formData.get('metricType') as string) || 'transmittals';
-    const reportPeriodType = ((formData.get('reportPeriodType') as string) || 'daily') as ReportPeriodType;
+    let reportPeriodType = ((formData.get('reportPeriodType') as string) || 'daily') as ReportPeriodType;
     const duplicateMode = ((formData.get('duplicateMode') as string) || 'skip') as DuplicateMode;
     const reportMonthValue = Number(formData.get('reportMonth') || 0);
     const reportYearValue = Number(formData.get('reportYear') || 0);
@@ -2134,7 +2210,23 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'No worksheets found in Excel file' }, { status: 400 });
       }
 
-      if (isBpiDashboardWorkbook(workbook, file.name)) {
+      let preloadedWorksheetRows: Map<string, any[][]> | undefined;
+      let preparsedBdoSgm: Map<string, BdoSgmWorksheetParseResult> | undefined;
+      let bdoSgmRankingDetected = false;
+      if (selectedCampaigns.length === 1 && isBdoSgmCampaign(selectedCampaigns[0].campaignName)) {
+        preloadedWorksheetRows = new Map(workbook.SheetNames.map((sheetName) => [
+          sheetName,
+          XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: true, defval: null } as any) as any[][],
+        ]));
+        preparsedBdoSgm = new Map(workbook.SheetNames.map((sheetName) => [
+          sheetName,
+          parseBdoSgmWorksheet(preloadedWorksheetRows!.get(sheetName) || [], sheetName, reportDate),
+        ]));
+        bdoSgmRankingDetected = [...preparsedBdoSgm.values()].some((result) => result.detected);
+        if (bdoSgmRankingDetected) reportPeriodType = 'monthly';
+      }
+
+      if (!bdoSgmRankingDetected && isBpiDashboardWorkbook(workbook, file.name)) {
         if (importMode === 'single') {
           return NextResponse.json({ error: 'BPI dashboard workbooks require Import All Data or Import Selected Worksheets.' }, { status: 400 });
         }
@@ -2208,7 +2300,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ...result, bpiDashboard: true, unmapped: bpiPreview.workbookSummary.totalUnmappedRecords, workbookSummary: bpiPreview.workbookSummary, worksheetPreviews: bpiPreview.worksheetPreviews, normalizedImported: result.inserted, normalizedDuplicates: result.skipped });
       }
 
-      if (isBdoDashboardWorkbook(workbook)) {
+      if (!bdoSgmRankingDetected && isBdoDashboardWorkbook(workbook)) {
         if (importMode === 'single') {
           return NextResponse.json({ error: 'BDO dashboard workbooks require Import All Data or Import Selected Worksheets.' }, { status: 400 });
         }
@@ -2279,6 +2371,8 @@ export async function POST(req: NextRequest) {
         metricType,
         selectedReportDate: reportDate,
         reportPeriodType,
+        preloadedWorksheetRows,
+        preparsedBdoSgm,
       });
 
       if (mode === 'preview') {
@@ -2321,6 +2415,14 @@ export async function POST(req: NextRequest) {
           detectedRange: preview.detectedRange,
           workbookSummary: preview.workbookSummary,
           worksheetPreviews: preview.sheets.map(({ entries, ...sheet }) => sheet),
+          validationWarnings: preview.sheets.flatMap((sheet) =>
+            (sheet.validationIssues || []).map((issue) => ({
+              worksheet: issue.worksheet,
+              row: issue.row,
+              reason: issue.reason,
+              warning: issue.warning,
+            }))
+          ),
         });
       }
 
@@ -2605,6 +2707,19 @@ export async function POST(req: NextRequest) {
         normalizedImported: normalizedInsert.count,
         normalizedDuplicates: skippedRecords + preview.workbookSummary.totalDuplicateRecords,
         ...results,
+        errors: [
+          ...selectedSheets.flatMap((sheet) =>
+            (sheet.validationIssues || [])
+              .filter((issue) => !issue.warning)
+              .map((issue) => `${issue.worksheet} row ${issue.row}: ${issue.reason}`)
+          ),
+          ...results.errors,
+        ],
+        warnings: selectedSheets.flatMap((sheet) =>
+          (sheet.validationIssues || [])
+            .filter((issue) => issue.warning)
+            .map((issue) => `${issue.worksheet} row ${issue.row}: ${issue.reason}`)
+        ),
       };
       }, { timeout: 120000 });
       developmentImportLog('persisted', {
