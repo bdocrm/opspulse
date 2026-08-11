@@ -150,12 +150,13 @@ export default function PerformanceTrendsPage() {
         subtitle={allMonths ? "Trends across all available bulk import files" : "Track metrics performance over time"}
       />
 
-      <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-        <div className="flex gap-4">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex w-full flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center xl:flex-nowrap">
           <ReportPeriodSelector
             year={year}
             month={month}
             allMonths={allMonths}
+            className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm sm:w-[180px]"
             onChange={(nextYear, nextMonth, nextAllMonths) => {
               setYear(nextYear);
               setMonth(nextMonth);
@@ -168,23 +169,25 @@ export default function PerformanceTrendsPage() {
               selectedCampaignId={selectedCampaignId}
               onCampaignChange={setSelectedCampaignId}
               includeAllOption
-              className="min-w-[220px]"
+              className="w-full space-y-0 sm:w-[220px]"
+              labelClassName="sr-only"
+              triggerClassName="h-10 w-full"
             />
           )}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {METRIC_OPTIONS.map(m => (
               <Button 
                 key={m}
                 variant={metric === m ? 'default' : 'outline'}
                 onClick={() => setMetric(m)}
-                className={m === 'all' ? '' : 'capitalize'}
+                className={`h-10 ${m === 'all' ? '' : 'capitalize'}`}
               >
                 {METRIC_LABELS[m]}
               </Button>
             ))}
           </div>
         </div>
-        <Button variant="outline" size="sm">
+        <Button variant="outline" size="sm" className="h-10 self-start xl:shrink-0 xl:self-auto">
           <Download className="h-4 w-4 mr-2" />
           Export
         </Button>

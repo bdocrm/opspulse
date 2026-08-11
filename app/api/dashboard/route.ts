@@ -124,7 +124,7 @@ export async function GET(req: NextRequest) {
           monthlyGoal: true,
           monthlyActual: true,
           agent: { select: { id: true, name: true, monthlyTarget: true } },
-          productionEntry: { select: { date: true } },
+          productionEntry: { select: { date: true, createdAt: true } },
         },
       }),
       prisma.campaignGoal.findMany({
@@ -170,7 +170,7 @@ export async function GET(req: NextRequest) {
         reportDate: { gte: startDate, lte: endDate },
         OR: [{ actual: { not: null } }, { achievement: { not: null } }],
       },
-      select: { campaignId: true, recordKind: true, worksheetSource: true, entityName: true, monitoringType: true, metric: true, year: true, month: true, reportDate: true, target: true, actual: true, achievement: true },
+      select: { campaignId: true, recordKind: true, worksheetSource: true, entityName: true, monitoringType: true, metric: true, year: true, month: true, reportDate: true, target: true, actual: true, achievement: true, updatedAt: true },
       orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
     }).catch(() => []);
     const usableDashboardRows = dashboardRows.filter((row) => !isImportedClassificationRow(row));
@@ -453,6 +453,14 @@ export async function GET(req: NextRequest) {
         warnings: agent.metrics.warnings,
       }));
 
+    const sourceTimestamps = [
+      ...allDetails.map((detail) => detail.productionEntry.createdAt),
+      ...dashboardRows.map((record) => record.updatedAt),
+    ];
+    const lastUpdated = sourceTimestamps.length > 0
+      ? new Date(Math.max(...sourceTimestamps.map((timestamp) => timestamp.getTime()))).toISOString()
+      : null;
+
     return NextResponse.json({
       kpis: {
         totalMTD:       totalMTD == null ? null : Math.round(totalMTD),
@@ -468,6 +476,7 @@ export async function GET(req: NextRequest) {
       distribution,
       leaderboard,
       availablePeriods,
+      lastUpdated,
     }, {
       headers: {
         "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",

@@ -149,12 +149,13 @@ export default function AgentSummariesPage() {
         subtitle={allMonths ? "Performance from all available bulk import files" : "Comprehensive overview of agent performance and production metrics"}
       />
 
-      <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-        <div className="flex flex-col sm:flex-row gap-4">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+        <div className="grid w-full grid-cols-1 items-center gap-3 sm:grid-cols-[minmax(0,180px)_minmax(0,220px)_minmax(0,256px)] xl:w-auto">
           <ReportPeriodSelector
             year={year}
             month={month}
             allMonths={allMonths}
+            className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
             onChange={(nextYear, nextMonth, nextAllMonths) => {
               setYear(nextYear);
               setMonth(nextMonth);
@@ -166,21 +167,22 @@ export default function AgentSummariesPage() {
             selectedCampaignId={selectedCampaignId}
             onCampaignChange={setSelectedCampaignId}
             includeAllOption
-            className="min-w-[220px]"
+            className="w-full space-y-0"
+            labelClassName="sr-only"
+            triggerClassName="h-10 w-full"
           />
-          <div className="flex gap-2">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-              <Input
-                placeholder="Search agents..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 w-64"
-              />
-            </div>
+          <div className="relative w-full">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              aria-label="Search agents"
+              placeholder="Search agents..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="h-10 w-full pl-10"
+            />
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 xl:shrink-0">
           <ExportButton
             endpoint={exportEndpoint}
             label="Export Report"

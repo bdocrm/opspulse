@@ -13,11 +13,16 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { CampaignSummaryCard } from '@/components/campaign-summary-card';
+import { CollectorPerformanceChart } from '@/components/charts/collector-performance-chart';
+import { DailyLineChart } from '@/components/charts/daily-line-chart';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Plus, Trash2, Users, UserCheck, UserX, ClipboardList,
   TrendingUp, Target, ChevronRight,
   RefreshCw, CheckCircle2, AlertCircle, Download, Search,
-  AlertTriangle, CalendarDays, Trophy
+  AlertTriangle, CalendarDays, Trophy, LayoutGrid, List, BarChart3,
+  Clock3, Database, Upload, MoreHorizontal, ArrowRight, Minus
 } from 'lucide-react';
 
 interface Agent {
@@ -120,6 +125,7 @@ interface CampaignBlock {
   entriesCount: number;
   dataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
   agentDataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
+  lastUpdated?: string | null;
 }
 
 function campaignDataPeriodLabel(period?: CampaignBlock['dataPeriod']): string | null {
@@ -264,6 +270,70 @@ const getProgressColor = (progress: number) => {
   if (progress >= 25) return 'bg-orange-500';
   return 'bg-red-500';
 };
+
+type CampaignStatus = 'on-track' | 'needs-attention' | 'critical' | 'no-data';
+type CampaignSort = 'achievement-desc' | 'achievement-asc' | 'production-desc' | 'production-asc' | 'agents-desc' | 'records-desc' | 'updated-desc' | 'name-asc' | 'name-desc';
+type CampaignViewMode = 'cards' | 'table';
+
+interface CollectorCampaignView {
+  campaign: CampaignBlock;
+  status: CampaignStatus;
+  statusLabel: string;
+  achievement: number | null;
+  actual: number;
+  goal: number | null;
+  agentCount: number;
+  recordCount: number;
+  missingAgentEntries: number;
+}
+
+function collectorCampaignStatus(campaign: CampaignBlock, achievement: number | null): Pick<CollectorCampaignView, 'status' | 'statusLabel'> {
+  if (campaign.dataStatus === 'no-production-records' || campaign.dataStatus === 'no-imported-data') {
+    return { status: 'no-data', statusLabel: 'No Data' };
+  }
+  if (campaign.dataStatus === 'zero-production') return { status: 'critical', statusLabel: 'Critical' };
+  if (campaign.dataStatus === 'missing-goal' || campaign.goalStatus === 'missing') {
+    return { status: 'needs-attention', statusLabel: 'Target Missing' };
+  }
+  if (achievement == null) return { status: 'no-data', statusLabel: 'No Data' };
+  if (achievement >= 100) return { status: 'on-track', statusLabel: 'On Track' };
+  if (achievement >= 50) return { status: 'needs-attention', statusLabel: 'Needs Attention' };
+  return { status: 'critical', statusLabel: 'Critical' };
+}
+
+function campaignStatusClass(status: CampaignStatus) {
+  if (status === 'on-track') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-500';
+  if (status === 'needs-attention') return 'border-amber-500/25 bg-amber-500/10 text-amber-500';
+  if (status === 'critical') return 'border-rose-500/25 bg-rose-500/10 text-rose-500';
+  return 'border-border bg-muted/60 text-muted-foreground';
+}
+
+function CampaignStatusBadge({ status, label }: { status: CampaignStatus; label: string }) {
+  const Icon = status === 'on-track' ? CheckCircle2 : status === 'no-data' ? Minus : AlertTriangle;
+  return <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${campaignStatusClass(status)}`}><Icon className="h-3.5 w-3.5" />{label}</span>;
+}
+
+function relativeUpdate(value?: string | null) {
+  if (!value) return 'No update timestamp';
+  const elapsed = Math.max(0, Date.now() - new Date(value).getTime());
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return 'Updated just now';
+  if (minutes < 60) return `Updated ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Updated ${hours}h ago`;
+  return `Updated ${new Date(value).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+}
+
+function CollectorKpiCard({ label, value, support, icon: Icon, loading }: { label: string; value: string; support?: React.ReactNode; icon: typeof Users; loading: boolean }) {
+  return (
+    <Card className="transition-colors hover:border-primary/30">
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{label}</p>{loading ? <Skeleton className="mt-3 h-9 w-28" /> : <p className="mt-2 truncate text-3xl font-bold tracking-tight" title={value}>{value}</p>}</div><span className="rounded-xl border bg-muted/30 p-2.5"><Icon className="h-5 w-5 text-muted-foreground" /></span></div>
+        {!loading && support && <div className="mt-3 text-xs text-muted-foreground">{support}</div>}
+      </CardContent>
+    </Card>
+  );
+}
 
 const getRankBadge = (index: number) => {
   if (index === 0) return <span className="text-yellow-500 text-lg">🥇</span>;
@@ -501,6 +571,13 @@ export default function CollectorDashboard() {
   const [selectedCampaignId, setSelectedCampaignId] = useState<string>(ALL_CAMPAIGNS);
   const [deletingCampaignData, setDeletingCampaignData] = useState(false);
   const [deletingAllAgents, setDeletingAllAgents] = useState(false);
+  const [campaignSearch, setCampaignSearch] = useState('');
+  const [campaignStatusFilter, setCampaignStatusFilter] = useState<'all' | CampaignStatus>('all');
+  const [campaignSort, setCampaignSort] = useState<CampaignSort>('achievement-desc');
+  const [campaignViewMode, setCampaignViewMode] = useState<CampaignViewMode>('cards');
+  const [showDataManagement, setShowDataManagement] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState('');
 
   // Date range filter
   const today = new Date().toISOString().split('T')[0];
@@ -526,12 +603,16 @@ export default function CollectorDashboard() {
     }
   };
 
-  const fetcher = (url: string) => fetch(url).then((r) => r.json());
+  const fetcher = async (url: string) => {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) throw new Error('Unable to load campaign performance');
+    return response.json();
+  };
 
   // Single aggregate request: all assigned campaigns + production + attendance,
   // grouped by campaign. Avoids per-campaign round-trips (no N+1, no duplicate
   // requests) and returns only campaigns assigned to this collector.
-  const { data: dashboardData, isLoading: loadingDashboard, mutate: mutateDashboard } = useSWR(
+  const { data: dashboardData, error: dashboardError, isLoading: loadingDashboard, isValidating: refreshingDashboard, mutate: mutateDashboard } = useSWR(
     session?.user && dateFrom && dateTo
       ? `/api/collectors/dashboard?dateFrom=${dateFrom}&dateTo=${dateTo}&attendanceDate=${dateTo}`
       : null,
@@ -684,6 +765,55 @@ export default function CollectorDashboard() {
     };
   }, [campaigns]);
 
+  const campaignViews = useMemo<CollectorCampaignView[]>(() => campaigns.map((campaign) => {
+    const actual = campaign.campaignProduction
+      ?? campaign.actual
+      ?? campaign.agents.reduce((sum, agent) => sum + kpiValueFor(campaign.kpiMetric, campaign.production[agent.id] || ZERO_PROD), 0);
+    const achievement = campaign.achievementPercent
+      ?? campaign.achievement
+      ?? (campaign.goal != null && campaign.goal > 0 ? (actual / campaign.goal) * 100 : null);
+    const statusInfo = collectorCampaignStatus(campaign, achievement);
+    const hasCampaignRecords = Number(campaign.recordCount ?? campaign.entriesCount) > 0;
+    const missingAgentEntries = hasCampaignRecords
+      ? campaign.agents.filter((agent) => !campaign.production[agent.id]).length
+      : campaign.agents.length;
+    return {
+      campaign,
+      ...statusInfo,
+      achievement,
+      actual,
+      goal: campaign.goal,
+      agentCount: campaign.agentCount ?? campaign.agents.length,
+      recordCount: campaign.recordCount ?? campaign.entriesCount,
+      missingAgentEntries,
+    };
+  }), [campaigns]);
+
+  const filteredCampaignViews = useMemo(() => {
+    const query = campaignSearch.trim().toLowerCase();
+    const result = campaignViews.filter((item) =>
+      (!query || item.campaign.campaignName.toLowerCase().includes(query)) &&
+      (campaignStatusFilter === 'all' || item.status === campaignStatusFilter)
+    );
+    return [...result].sort((left, right) => {
+      if (campaignSort === 'achievement-desc') return Number(right.achievement ?? -Infinity) - Number(left.achievement ?? -Infinity);
+      if (campaignSort === 'achievement-asc') return Number(left.achievement ?? Infinity) - Number(right.achievement ?? Infinity);
+      if (campaignSort === 'production-desc') return right.actual - left.actual;
+      if (campaignSort === 'production-asc') return left.actual - right.actual;
+      if (campaignSort === 'agents-desc') return right.agentCount - left.agentCount;
+      if (campaignSort === 'records-desc') return right.recordCount - left.recordCount;
+      if (campaignSort === 'updated-desc') return new Date(right.campaign.lastUpdated || 0).getTime() - new Date(left.campaign.lastUpdated || 0).getTime();
+      if (campaignSort === 'name-desc') return right.campaign.campaignName.localeCompare(left.campaign.campaignName);
+      return left.campaign.campaignName.localeCompare(right.campaign.campaignName);
+    });
+  }, [campaignSearch, campaignSort, campaignStatusFilter, campaignViews]);
+
+  const campaignHealth = useMemo(() => campaignViews.reduce((summary, item) => {
+    summary[item.status] += 1;
+    summary.missingAgentEntries += item.missingAgentEntries;
+    return summary;
+  }, { 'on-track': 0, 'needs-attention': 0, critical: 0, 'no-data': 0, missingAgentEntries: 0 }), [campaignViews]);
+
   // Next seat is per selected campaign (seats are unique within a campaign).
   useEffect(() => {
     const block = allCampaigns.find((c) => c.id === addAgentCampaignId);
@@ -828,10 +958,7 @@ export default function CollectorDashboard() {
 
   const handleDeleteCampaignData = async () => {
     const selectedCampaign = allCampaigns.find(c => c.id === selectedCampaignId);
-    if (!selectedCampaign) return;
-
-    const confirmMessage = `Are you sure you want to delete all production data for "${selectedCampaign.campaignName}"? This action cannot be undone.`;
-    if (!confirm(confirmMessage)) return;
+    if (!selectedCampaign || deleteConfirmation !== 'DELETE') return;
 
     setDeletingCampaignData(true);
     try {
@@ -840,6 +967,8 @@ export default function CollectorDashboard() {
       });
       if (!res.ok) throw new Error('Failed to delete campaign data');
       setMessage(`✅ All data deleted for ${selectedCampaign.campaignName}`);
+      setDeleteDialogOpen(false);
+      setDeleteConfirmation('');
       mutateDashboard();
     } catch (error) {
       setMessage(`Error: ${(error as Error).message}`);
@@ -1021,29 +1150,36 @@ export default function CollectorDashboard() {
       : allCampaigns.length === 1
       ? allCampaigns[0].campaignName
       : `${allCampaigns.length} campaigns`;
+  const selectedDataCampaign = allCampaigns.find((campaign) => campaign.id === selectedCampaignId) ?? null;
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Collector Dashboard</h1>
-          <p className="text-muted-foreground mt-1">
-            Campaign{allCampaigns.length > 1 ? 's' : ''}:{' '}
-            <span className="font-semibold text-foreground">{campaignLabel}</span>
-          </p>
+          <p className="mt-1 text-muted-foreground">Monitor campaign performance and production.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span className="rounded-full border bg-muted/30 px-3 py-1.5"><span className="font-semibold text-foreground">{allCampaigns.length}</span> Assigned Campaign{allCampaigns.length === 1 ? '' : 's'}</span>
+          <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted/30 px-3 py-1.5"><Clock3 className="h-3.5 w-3.5" />{relativeUpdate(dashboardData?.lastUpdated)}</span>
+          {refreshingDashboard && <span className="inline-flex items-center gap-1.5"><RefreshCw className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />Synchronizing</span>}
         </div>
       </div>
 
-      {/* Campaign Selector */}
+      {/* Global Filters */}
+      <div className="sticky top-16 z-20 space-y-2">
       {allCampaigns.length > 0 && (
-        <Card>
+        <Card className="border-border/80 bg-background/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/85">
           <CardContent className="py-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <label className="text-sm font-medium text-muted-foreground">Select Campaign:</label>
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(210px,1fr)_minmax(180px,0.8fr)_170px_190px_auto]">
+              <div className="relative">
+                <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                <Input value={campaignSearch} onChange={(event) => setCampaignSearch(event.target.value)} placeholder="Search campaigns..." aria-label="Search campaigns" className="pl-9" />
+              </div>
+              <div>
                 <Select value={selectedCampaignId} onValueChange={setSelectedCampaignId}>
-                  <SelectTrigger className="w-72">
+                  <SelectTrigger aria-label="Campaign selection">
                     <SelectValue placeholder="Choose a campaign..." />
                   </SelectTrigger>
                   <SelectContent>
@@ -1070,30 +1206,16 @@ export default function CollectorDashboard() {
                   </SelectContent>
                 </Select>
               </div>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={handleDeleteCampaignData}
-                disabled={
-                  deletingCampaignData ||
-                  selectedCampaignId === ALL_CAMPAIGNS ||
-                  Boolean(selectedOrganization(selectedCampaignId))
-                }
-                title={
-                  selectedCampaignId === ALL_CAMPAIGNS || selectedOrganization(selectedCampaignId)
-                    ? 'Select one campaign to delete its data.'
-                    : undefined
-                }
-              >
-                {deletingCampaignData ? 'Deleting...' : 'Delete All Data'}
-              </Button>
+              <Select value={campaignStatusFilter} onValueChange={(value) => setCampaignStatusFilter(value as 'all' | CampaignStatus)}><SelectTrigger aria-label="Campaign status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All Statuses</SelectItem><SelectItem value="on-track">On Track</SelectItem><SelectItem value="needs-attention">Needs Attention</SelectItem><SelectItem value="critical">Critical</SelectItem><SelectItem value="no-data">No Data</SelectItem></SelectContent></Select>
+              <Select value={campaignSort} onValueChange={(value) => setCampaignSort(value as CampaignSort)}><SelectTrigger aria-label="Sort campaigns"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="achievement-desc">Highest Achievement</SelectItem><SelectItem value="achievement-asc">Lowest Achievement</SelectItem><SelectItem value="production-desc">Highest Production</SelectItem><SelectItem value="production-asc">Lowest Production</SelectItem><SelectItem value="agents-desc">Most Agents</SelectItem><SelectItem value="records-desc">Most Records</SelectItem><SelectItem value="updated-desc">Recently Updated</SelectItem><SelectItem value="name-asc">A–Z</SelectItem><SelectItem value="name-desc">Z–A</SelectItem></SelectContent></Select>
+              <div className="flex rounded-md border p-1"><Button type="button" variant={campaignViewMode === 'cards' ? 'secondary' : 'ghost'} size="sm" className="h-8 flex-1 px-2" onClick={() => setCampaignViewMode('cards')} aria-pressed={campaignViewMode === 'cards'}><LayoutGrid className="mr-1.5 h-4 w-4" />Cards</Button><Button type="button" variant={campaignViewMode === 'table' ? 'secondary' : 'ghost'} size="sm" className="h-8 flex-1 px-2" onClick={() => setCampaignViewMode('table')} aria-pressed={campaignViewMode === 'table'}><List className="mr-1.5 h-4 w-4" />Table</Button></div>
             </div>
           </CardContent>
         </Card>
       )}
 
       {/* Date Filter */}
-      <Card>
+      <Card className="border-border/80 bg-background/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/85">
         <CardContent className="py-3">
           <div className="flex flex-col md:flex-row md:items-center gap-3">
             <div className="flex items-center gap-2">
@@ -1120,6 +1242,7 @@ export default function CollectorDashboard() {
           </div>
         </CardContent>
       </Card>
+      </div>
 
       {kpis.latestImportView && (
         <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 dark:border-blue-800/70 dark:bg-blue-950/40 dark:text-blue-200">
@@ -1190,99 +1313,44 @@ export default function CollectorDashboard() {
         </Card>
       )}
 
+      {dashboardError && (
+        <Card className="border-rose-500/30"><CardContent className="flex flex-col items-center py-8 text-center"><AlertCircle className="h-8 w-8 text-rose-500" /><p className="mt-3 font-semibold">Unable to load campaign performance</p><p className="mt-1 text-sm text-muted-foreground">Your existing data has not been changed.</p><Button variant="outline" className="mt-4" onClick={() => mutateDashboard()}><RefreshCw className="mr-2 h-4 w-4" />Try Again</Button></CardContent></Card>
+      )}
+
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card className="bg-gradient-to-br from-indigo-500/10 to-indigo-600/5 border-indigo-500/20">
-          <CardContent className="pt-4">
-            <div className="flex flex-col gap-2">
-              <p className="text-xs text-muted-foreground uppercase tracking-wide">
-                {kpis.allBdoSgm ? 'Final FC Total' : kpis.mixedKpis ? 'Campaign KPI Goals' : `Total Goal (${kpis.allAcq ? 'NTB' : kpiLabel(kpis.primaryKpi)})`}
-              </p>
-              <p className="text-3xl font-bold text-indigo-500">
-                {kpis.allBdoSgm ? kpis.totalFirstCardTransmittals.toLocaleString() : kpis.mixedKpis ? '—' : (kpis.allAcq ? kpis.goal.toLocaleString() : formatKpiValue(kpis.primaryKpi, kpis.goal))}
-              </p>
-              {kpis.allBdoSgm ? (
-                <p className="text-xs text-muted-foreground">Selected reporting period</p>
-              ) : kpis.mixedKpis ? (
-                <p className="text-xs text-muted-foreground">Mixed KPIs are shown per campaign below.</p>
-              ) : (
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">
-                    Progress: {kpis.allAcq ? kpis.totalNtb.toLocaleString() : formatKpiValue(kpis.primaryKpi, kpis.kpiValue)}
-                  </span>
-                  <span className="font-semibold text-indigo-500">{kpis.targetProgress}%</span>
-                </div>
-              )}
-              {!kpis.allBdoSgm && !kpis.mixedKpis && kpis.remainingGoal > 0 && (
-                <p className="text-xs text-orange-500 font-semibold">
-                  To Go: {kpis.allAcq ? kpis.remainingGoal.toLocaleString() : formatKpiValue(kpis.primaryKpi, kpis.remainingGoal)}
-                </p>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-500/20">
-          <CardContent className="pt-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">{kpis.allBdoSgm ? 'Final BC Total' : 'Total Agents'}</p>
-                <p className="text-3xl font-bold mt-1">{kpis.allBdoSgm ? kpis.totalBundleCardTransmittals.toLocaleString() : kpis.totalAgents}</p>
-              </div>
-              <Users className="w-8 h-8 text-blue-500 opacity-80" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/20">
-          <CardContent className="pt-4">
-            <div className="flex items-center justify-between">
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">
-                  {kpis.allBdoSgm ? 'Whole-Year Total FC' : kpis.allAcq ? 'Total Supplementary' : kpis.mixedKpis ? 'Imported Volume' : `Current ${kpiLabel(kpis.primaryKpi)}`}
-                </p>
-                {kpis.allBdoSgm ? (
-                  <p className="mt-1 text-3xl font-bold text-purple-500">{kpis.totalFirstCardWholeYear.toLocaleString()}</p>
-                ) : (
-                  <p className="text-3xl font-bold mt-1 text-purple-500">
-                    {kpis.allAcq
-                      ? (kpis.totalSupplementary?.toLocaleString() || '0')
-                      : kpis.mixedKpis
-                        ? formatKpiValue('volume', kpis.totalVolume)
-                        : formatKpiValue(kpis.primaryKpi, kpis.kpiValue)}
-                  </p>
-                )}
-                {kpis.allAcq && !kpis.allBdoSgm ? (
-                  <>
-                    <div className="flex items-center justify-between text-xs mt-1 pr-1">
-                      <span className="text-muted-foreground">Goal: {kpis.totalSuppGoal.toLocaleString()}</span>
-                      <span className="font-semibold text-purple-500">{kpis.suppProgress}%</span>
-                    </div>
-                    {kpis.remainingSupp > 0 && (
-                      <p className="text-xs text-orange-500 font-semibold mt-1">To Go: {kpis.remainingSupp.toLocaleString()}</p>
-                    )}
-                  </>
-                ) : !kpis.allBdoSgm ? (
-                  <p className="text-xs text-muted-foreground mt-1">from imported data</p>
-                ) : null}
-              </div>
-              <TrendingUp className="w-8 h-8 text-purple-500 opacity-80 shrink-0" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border-orange-500/20">
-          <CardContent className="pt-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">{kpis.allBdoSgm ? 'Whole-Year Total BC' : kpis.latestImportView ? 'Latest Imported Records' : 'Records in Range'}</p>
-                <p className="text-3xl font-bold mt-1 text-orange-500">{kpis.allBdoSgm ? kpis.totalBundleCardWholeYear.toLocaleString() : kpis.entriesCount}</p>
-              </div>
-              <ClipboardList className="w-8 h-8 text-orange-500 opacity-80" />
-            </div>
-          </CardContent>
-        </Card>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <CollectorKpiCard
+          label={campaigns.length === 1 ? `${kpiLabel(campaigns[0].kpiMetric)} Goal` : 'Campaign Overview'}
+          value={campaigns.length === 1 ? (campaigns[0].goal == null ? 'Target unavailable' : formatKpiValue(campaigns[0].kpiMetric, campaigns[0].goal)) : `${campaigns.length} Assigned`}
+          support={campaigns.length === 1
+            ? `${campaignViews[0]?.statusLabel ?? 'No data'} · ${campaignViews[0]?.achievement == null ? 'Achievement unavailable' : `${campaignViews[0].achievement.toFixed(1)}% achievement`}`
+            : <span>{campaignHealth['on-track']} on track · {campaignHealth['needs-attention']} attention · {campaignHealth.critical} critical</span>}
+          icon={Target}
+          loading={loadingDashboard}
+        />
+        <CollectorKpiCard label="Total Agents" value={kpis.totalAgents.toLocaleString()} support={`${kpis.presentCount} present · ${kpis.absentCount} absent`} icon={Users} loading={loadingDashboard} />
+        <CollectorKpiCard
+          label={kpis.mixedKpis ? 'Imported Volume' : `Total ${kpiLabel(kpis.primaryKpi)}`}
+          value={kpis.mixedKpis ? formatKpiValue('volume', kpis.totalVolume) : formatKpiValue(kpis.primaryKpi, kpis.allAcq ? kpis.totalNtb : kpis.kpiValue)}
+          support={kpis.mixedKpis ? 'Mixed campaign KPIs remain separate below.' : 'Production in the selected range'}
+          icon={TrendingUp}
+          loading={loadingDashboard}
+        />
+        <CollectorKpiCard label={kpis.latestImportView ? 'Latest Imported Records' : 'Records in Range'} value={kpis.entriesCount.toLocaleString()} support={dateFrom === dateTo ? dateFrom : `${dateFrom} to ${dateTo}`} icon={ClipboardList} loading={loadingDashboard} />
+        <CollectorKpiCard label="Overall Achievement" value={campaignAchievementSummary.overall == null ? 'Unavailable' : `${campaignAchievementSummary.overall.toFixed(1)}%`} support={campaignAchievementSummary.overall == null ? 'Valid targets are required.' : `${campaignHealth['on-track']} of ${campaigns.length} campaigns on target`} icon={BarChart3} loading={loadingDashboard} />
       </div>
+      {/* Collector Focus */}
+      <Card className="border-amber-500/20"><CardHeader className="pb-3"><div className="flex items-center gap-2"><AlertTriangle className="h-5 w-5 text-amber-500" /><CardTitle className="text-base">Needs Attention</CardTitle></div><CardDescription>Validated operational items from the currently loaded campaigns.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          { label: 'Critical campaigns', value: campaignHealth.critical, detail: 'Confirmed zero or below 50% achievement', status: 'critical' as CampaignStatus },
+          { label: 'Needs attention', value: campaignHealth['needs-attention'], detail: 'Below target or target missing', status: 'needs-attention' as CampaignStatus },
+          { label: 'Campaigns with no data', value: campaignHealth['no-data'], detail: 'No records for the selected range', status: 'no-data' as CampaignStatus },
+        ].map((item) => <button type="button" key={item.label} onClick={() => { setCampaignStatusFilter(item.status); document.getElementById('campaign-performance')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} className="rounded-xl border bg-muted/10 p-4 text-left transition-colors hover:border-primary/30 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><p className="text-2xl font-bold">{item.value}</p><p className="mt-1 text-sm font-semibold">{item.label}</p><p className="mt-1 text-xs text-muted-foreground">{item.detail}</p><span className="mt-3 inline-flex items-center text-xs font-semibold text-primary">Review <ArrowRight className="ml-1 h-3.5 w-3.5" /></span></button>)}
+        <button type="button" onClick={() => { setAgentSearch(''); document.getElementById('production-leaderboard')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} className="rounded-xl border bg-muted/10 p-4 text-left transition-colors hover:border-primary/30 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><p className="text-2xl font-bold">{campaignHealth.missingAgentEntries}</p><p className="mt-1 text-sm font-semibold">Agents missing entries</p><p className="mt-1 text-xs text-muted-foreground">No production row found in this range</p><span className="mt-3 inline-flex items-center text-xs font-semibold text-primary">Review agents <ArrowRight className="ml-1 h-3.5 w-3.5" /></span></button>
+      </CardContent></Card>
 
       {/* Quick Actions */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div><div className="mb-3 flex items-center justify-between"><div><h2 className="text-base font-semibold">Quick Actions</h2><p className="text-sm text-muted-foreground">Common collector workflows.</p></div></div><div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Link href="/collector/data-entry">
           <Card className="hover:border-primary/50 transition-colors cursor-pointer group h-full">
             <CardContent className="pt-4">
@@ -1300,7 +1368,7 @@ export default function CollectorDashboard() {
           </Card>
         </Link>
 
-        <Card className="hover:border-primary/50 transition-colors cursor-pointer group" onClick={() => setShowAddAgent(!showAddAgent)}>
+        <Card className="hover:border-primary/50 transition-colors cursor-pointer group" role="button" tabIndex={0} onClick={() => setShowAddAgent(!showAddAgent)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setShowAddAgent((value) => !value); }}>
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -1315,7 +1383,11 @@ export default function CollectorDashboard() {
           </CardContent>
         </Card>
 
-        <Card className="hover:border-green-500/50 transition-colors cursor-pointer group" onClick={handleExport}>
+        <Link href="/collector/bulk-import">
+          <Card className="h-full cursor-pointer transition-colors hover:border-primary/50 group"><CardContent className="pt-4"><div className="flex items-center justify-between"><div className="flex items-center gap-3"><div className="rounded-lg bg-violet-500/10 p-2"><Upload className="h-6 w-6 text-violet-500" /></div><div><p className="font-semibold">Bulk Import</p><p className="text-sm text-muted-foreground">Upload production files</p></div></div><ChevronRight className="h-5 w-5 text-muted-foreground transition-colors group-hover:text-primary" /></div></CardContent></Card>
+        </Link>
+
+        <Card className="hover:border-green-500/50 transition-colors cursor-pointer group" role="button" tabIndex={0} onClick={handleExport} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') handleExport(); }}>
           <CardContent className="pt-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -1331,7 +1403,7 @@ export default function CollectorDashboard() {
             </div>
           </CardContent>
         </Card>
-      </div>
+      </div></div>
 
       {/* Low Performer Alerts */}
       {lowPerformers.length > 0 && (
@@ -1415,7 +1487,7 @@ export default function CollectorDashboard() {
 
       {/* Per-Campaign Summary Cards */}
       {campaigns.length > 0 && (
-        <div>
+        <div id="campaign-performance" className="scroll-mt-44">
           <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
             <Target className="w-5 h-5 text-blue-500" />
             Campaign Achievement
@@ -1441,10 +1513,8 @@ export default function CollectorDashboard() {
                   : `${campaignAchievementSummary.average.toFixed(1)}%`,
               },
               {
-                label: 'Overall',
-                value: campaignAchievementSummary.overall == null
-                  ? 'Goal unavailable'
-                  : `${campaignAchievementSummary.overall.toFixed(1)}%`,
+                label: 'Campaigns On Target',
+                value: `${campaignHealth['on-track']} / ${campaigns.length}`,
               },
             ].map((item) => (
               <Card key={item.label}>
@@ -1455,8 +1525,13 @@ export default function CollectorDashboard() {
               </Card>
             ))}
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {campaigns.map((campaign) => {
+          <div className="mb-6 grid gap-4 xl:grid-cols-2">
+            <Card><CardHeader className="pb-2"><CardTitle className="text-base">Performance Overview</CardTitle><CardDescription>Achievement by campaign for the active filters.</CardDescription></CardHeader><CardContent>{loadingDashboard ? <Skeleton className="h-64 w-full" /> : filteredCampaignViews.length ? <CollectorPerformanceChart data={filteredCampaignViews.map((item) => ({ name: item.campaign.campaignName, achievement: item.achievement, status: item.status }))} /> : <p className="py-16 text-center text-sm text-muted-foreground">No campaigns match your filters.</p>}</CardContent></Card>
+            <Card><CardHeader className="pb-2"><CardTitle className="text-base">Production Activity</CardTitle><CardDescription>Production records by date for the selected range.</CardDescription></CardHeader><CardContent>{loadingDashboard ? <Skeleton className="h-[300px] w-full" /> : dashboardData?.activityTrend?.length ? <DailyLineChart data={dashboardData.activityTrend} label="Records" /> : <div className="py-16 text-center"><Database className="mx-auto h-8 w-8 text-muted-foreground" /><p className="mt-3 text-sm font-semibold">No production history available</p><p className="mt-1 text-sm text-muted-foreground">Change the date range or import production data.</p></div>}</CardContent></Card>
+          </div>
+          {filteredCampaignViews.length === 0 && !loadingDashboard && <Card><CardContent className="py-10 text-center"><Search className="mx-auto h-8 w-8 text-muted-foreground" /><p className="mt-3 font-semibold">No campaigns match your filters</p><Button variant="outline" className="mt-4" onClick={() => { setCampaignSearch(''); setCampaignStatusFilter('all'); }}>Clear Filters</Button></CardContent></Card>}
+          <div className={campaignViewMode === 'cards' ? 'grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3' : 'hidden'}>
+            {filteredCampaignViews.map(({ campaign }) => {
               const campaignAgents = campaign.agents;
               const campaignGoal = campaign.goal ?? 0;
               const campaignKpi = campaign.kpiMetric;
@@ -1514,7 +1589,7 @@ export default function CollectorDashboard() {
               const displayedProgress = achievementPercent == null
                 ? null
                 : achievementPercent.toFixed(1);
-              const statusLabel =
+              const dataLabel =
                 campaign.goalStatus === 'missing' || campaign.dataStatus === 'missing-goal'
                   ? 'Goal unavailable'
                   : campaign.dataStatus === 'no-imported-data'
@@ -1523,6 +1598,7 @@ export default function CollectorDashboard() {
                       ? 'No production'
                     : `${displayedProgress ?? '0.0'}%`;
               const fallbackPeriodLabel = campaignDataPeriodLabel(campaign.dataPeriod);
+              const campaignView = campaignViews.find((item) => item.campaign.id === campaign.id)!;
 
               return (
                 <Card key={campaign.id} className="relative overflow-hidden hover:shadow-md transition-shadow">
@@ -1532,18 +1608,20 @@ export default function CollectorDashboard() {
                   <CardContent className="pt-6 relative">
                     <div className="space-y-4">
                       {/* Campaign Header */}
-                      <div>
-                        <h3 className="font-bold text-lg text-foreground">{campaign.campaignName}</h3>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0"><h3 className="truncate text-lg font-bold text-foreground">{campaign.campaignName}</h3>
                         <p className="text-xs text-muted-foreground capitalize mt-1">
                           {acq ? 'NTB Goal' : mbpl ? 'Bulk Import Achievement' : `${metricLabel} Goal`}
-                        </p>
+                        </p></div>
+                        <CampaignStatusBadge status={campaignView.status} label={campaignView.statusLabel} />
                       </div>
 
                       {/* Goal and Progress */}
                       <div className="space-y-2">
                         <div className="flex items-baseline justify-between">
-                          <span className="text-xs text-muted-foreground uppercase tracking-wide">{acq ? 'NTB Goal' : 'Goal'}</span>
-                          <span className="text-xl font-bold text-blue-600">
+                          <span className="text-xs text-muted-foreground uppercase tracking-wide">Actual / {acq ? 'NTB Goal' : 'Goal'}</span>
+                          <span className="text-lg font-bold text-foreground">
+                            {formatKpiValue(campaignKpi, totalKpiValue)} <span className="font-normal text-muted-foreground">/</span>{' '}
                             {campaign.goalStatus === 'missing'
                               ? 'Goal unavailable'
                               : acq
@@ -1564,7 +1642,7 @@ export default function CollectorDashboard() {
                             />
                           </div>
                           <span className="text-sm font-semibold text-foreground min-w-12 text-right whitespace-nowrap">
-                            {statusLabel}
+                            {dataLabel}
                           </span>
                         </div>
                       </div>
@@ -1639,6 +1717,7 @@ export default function CollectorDashboard() {
                           <span className="text-xs text-muted-foreground">{fallbackPeriodLabel ? `Latest Import (${fallbackPeriodLabel})` : 'Records in Range'}</span>
                           <span className="text-sm font-semibold text-orange-500">{campaign.recordCount ?? campaign.entriesCount}</span>
                         </div>
+                        <div className="mt-2 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{relativeUpdate(campaign.lastUpdated)}</span><Button type="button" variant="ghost" size="sm" className="h-8 px-2" onClick={() => { setSelectedCampaignId(campaign.id); window.setTimeout(() => document.getElementById('production-leaderboard')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0); }}>View Details <ArrowRight className="ml-1 h-3.5 w-3.5" /></Button></div>
                       </div>
                     </div>
                   </CardContent>
@@ -1646,11 +1725,14 @@ export default function CollectorDashboard() {
               );
             })}
           </div>
+          {campaignViewMode === 'table' && filteredCampaignViews.length > 0 && (
+            <Card><CardContent className="p-0"><div className="max-h-[560px] overflow-auto"><Table><TableHeader className="sticky top-0 z-10 bg-card"><TableRow><TableHead>Campaign</TableHead><TableHead>Status</TableHead><TableHead>Goal Type</TableHead><TableHead className="text-right">Goal</TableHead><TableHead className="text-right">Actual</TableHead><TableHead className="text-right">Achievement</TableHead><TableHead className="text-right">Agents</TableHead><TableHead className="text-right">Records</TableHead><TableHead>Last Updated</TableHead><TableHead><span className="sr-only">Action</span></TableHead></TableRow></TableHeader><TableBody>{filteredCampaignViews.map((item) => <TableRow key={item.campaign.id}><TableCell className="font-medium">{item.campaign.campaignName}</TableCell><TableCell><CampaignStatusBadge status={item.status} label={item.statusLabel} /></TableCell><TableCell>{kpiLabel(item.campaign.kpiMetric)}</TableCell><TableCell className="text-right">{item.goal == null ? 'Unavailable' : formatKpiValue(item.campaign.kpiMetric, item.goal)}</TableCell><TableCell className="text-right">{formatKpiValue(item.campaign.kpiMetric, item.actual)}</TableCell><TableCell className="text-right font-semibold">{item.achievement == null ? 'Unavailable' : `${item.achievement.toFixed(1)}%`}</TableCell><TableCell className="text-right">{item.agentCount}</TableCell><TableCell className="text-right">{item.recordCount}</TableCell><TableCell className="whitespace-nowrap text-xs text-muted-foreground">{relativeUpdate(item.campaign.lastUpdated)}</TableCell><TableCell><Button variant="ghost" size="sm" onClick={() => { setSelectedCampaignId(item.campaign.id); window.setTimeout(() => document.getElementById('production-leaderboard')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0); }}>View</Button></TableCell></TableRow>)}</TableBody></Table></div></CardContent></Card>
+          )}
         </div>
       )}
 
       {/* Production Leaderboard — grouped by campaign */}
-      <div className="space-y-4">
+      <div id="production-leaderboard" className="scroll-mt-44 space-y-4">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <div>
             <h2 className="text-xl font-bold flex items-center gap-2">
@@ -2164,6 +2246,11 @@ export default function CollectorDashboard() {
           </Card>
         )}
       </div>
+
+      {/* Data Management */}
+      <Card><Button type="button" variant="ghost" className="h-auto w-full justify-between px-5 py-4 text-left" onClick={() => setShowDataManagement((value) => !value)} aria-expanded={showDataManagement}><span className="flex items-center gap-3"><span className="rounded-lg border bg-muted/30 p-2"><MoreHorizontal className="h-4 w-4" /></span><span><span className="block font-semibold">Data Management</span><span className="mt-0.5 block text-xs font-normal text-muted-foreground">Restricted maintenance actions</span></span></span><ChevronRight className={`h-4 w-4 transition-transform ${showDataManagement ? 'rotate-90' : ''}`} /></Button>{showDataManagement && <CardContent className="border-t pt-4"><div className="flex flex-col gap-3 rounded-xl border border-rose-500/20 bg-rose-500/5 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-semibold">Delete campaign production data</p><p className="mt-1 text-xs text-muted-foreground">Select one campaign above. Imported and entered production records will be permanently removed.</p></div><Button variant="destructive" size="sm" disabled={!selectedDataCampaign || deletingCampaignData} onClick={() => { setDeleteConfirmation(''); setDeleteDialogOpen(true); }}><Trash2 className="mr-2 h-4 w-4" />Delete Campaign Data</Button></div></CardContent>}</Card>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={(open) => { setDeleteDialogOpen(open); if (!open) setDeleteConfirmation(''); }}><DialogContent><DialogHeader><DialogTitle>Delete all Collector data?</DialogTitle><DialogDescription>This permanently deletes production entries and details for the selected campaign. This cannot be undone.</DialogDescription></DialogHeader>{selectedDataCampaign && <div className="space-y-4"><div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-4"><p className="font-semibold">{selectedDataCampaign.campaignName}</p><p className="mt-2 text-sm text-muted-foreground">This action will delete approximately {Number(selectedDataCampaign.recordCount ?? selectedDataCampaign.entriesCount).toLocaleString()} loaded records. Agent accounts and campaign configuration are managed separately.</p></div><div className="space-y-2"><Label htmlFor="delete-confirmation">Type <span className="font-mono font-bold">DELETE</span> to continue</Label><Input id="delete-confirmation" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} autoComplete="off" /></div><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setDeleteDialogOpen(false)} disabled={deletingCampaignData}>Cancel</Button><Button variant="destructive" onClick={handleDeleteCampaignData} disabled={deleteConfirmation !== 'DELETE' || deletingCampaignData}>{deletingCampaignData ? 'Deleting…' : 'Delete All Data'}</Button></div></div>}</DialogContent></Dialog>
 
       {/* Target Modal */}
       {targetModal && (

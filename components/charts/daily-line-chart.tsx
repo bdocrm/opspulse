@@ -8,6 +8,7 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
+  Legend,
 } from "recharts";
 
 interface DailyLineChartProps {
@@ -57,6 +58,7 @@ export function DailyLineChart({ data, color = "#6366f1", label = "Value" }: Dai
         <XAxis dataKey="date" className="text-xs" tick={{ fontSize: 11 }} />
         <YAxis className="text-xs" tick={{ fontSize: 11 }} />
         <Tooltip content={<ExecutiveTooltip />} />
+        {data.some((item) => item.goal != null) && <Legend />}
         <Line
           type="monotone"
           dataKey="value"
@@ -64,7 +66,22 @@ export function DailyLineChart({ data, color = "#6366f1", label = "Value" }: Dai
           strokeWidth={2}
           dot={{ r: 3 }}
           activeDot={{ r: 5 }}
+          connectNulls={false}
+          name={label}
         />
+        {data.some((item) => item.goal != null) && (
+          <Line
+            type="linear"
+            dataKey="goal"
+            stroke="hsl(var(--muted-foreground))"
+            strokeWidth={1.5}
+            strokeDasharray="5 5"
+            dot={false}
+            activeDot={false}
+            connectNulls={false}
+            name="Daily target"
+          />
+        )}
       </LineChart>
     </ResponsiveContainer>
   );

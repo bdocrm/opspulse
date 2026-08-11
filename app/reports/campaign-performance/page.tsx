@@ -89,7 +89,7 @@ function PeriodSelector({
         const [nextYear, nextMonth] = event.target.value.split("-").map(Number);
         onChange(nextYear, nextMonth, false);
       }}
-      className="h-10 min-w-[180px] rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+      className="h-10 min-w-[180px] rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
     >
       <option value="all">All Months</option>
       {periods.map((period) => {
@@ -106,12 +106,14 @@ function PeriodSelector({
 }
 
 const achievementTextClass = (value: number) => {
-  if (value >= 100) return "text-green-600";
-  if (value >= 80) return "text-amber-600";
-  return "text-red-600";
+  if (value >= 100) return "text-green-600 dark:text-green-400";
+  if (value >= 80) return "text-amber-600 dark:text-amber-400";
+  return "text-red-600 dark:text-red-400";
 };
 
-const actualTextClass = (value: number) => (value > 0 ? "text-green-600" : "text-red-600");
+const actualTextClass = (value: number) => (
+  value > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+);
 
 const statusLabel = (status?: "hit" | "near" | "missed") => {
   if (status === "hit") return "HIT";
@@ -120,15 +122,15 @@ const statusLabel = (status?: "hit" | "near" | "missed") => {
 };
 
 const statusTextClass = (status?: "hit" | "near" | "missed") => {
-  if (status === "hit") return "text-green-600";
-  if (status === "near") return "text-amber-600";
-  return "text-red-600";
+  if (status === "hit") return "text-green-600 dark:text-green-400";
+  if (status === "near") return "text-amber-600 dark:text-amber-400";
+  return "text-red-600 dark:text-red-400";
 };
 
 const statusBadgeClass = (status?: "hit" | "near" | "missed") => {
-  if (status === "hit") return "bg-green-50 text-green-700";
-  if (status === "near") return "bg-amber-50 text-amber-700";
-  return "bg-red-50 text-red-700";
+  if (status === "hit") return "bg-green-50 text-green-700 dark:bg-green-950/50 dark:text-green-300";
+  if (status === "near") return "bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300";
+  return "bg-red-50 text-red-700 dark:bg-red-950/50 dark:text-red-300";
 };
 
 function OverallCampaignPerformanceCard({
@@ -146,11 +148,11 @@ function OverallCampaignPerformanceCard({
   const mixedMetrics = summary?.aggregationMode === "mixed-metrics";
 
   return (
-    <Card className="p-5 border-slate-200 bg-white shadow-sm">
+    <Card className="border-border bg-card p-5 text-card-foreground shadow-sm">
       <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-bold text-slate-900">Overall Campaign Performance</h2>
-          <p className="text-sm text-slate-500">
+          <h2 className="text-lg font-bold text-foreground">Overall Campaign Performance</h2>
+          <p className="text-sm text-muted-foreground">
             {loading ? "Calculating current performance..." : `${summary?.campaignCount ?? 0} campaign${summary?.campaignCount === 1 ? "" : "s"} included`}
           </p>
         </div>
@@ -163,17 +165,17 @@ function OverallCampaignPerformanceCard({
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {[
           mixedMetrics
-            ? { label: "Campaigns", value: String(summary?.campaignCount ?? 0), className: "text-blue-600" }
-            : { label: "Total Goal", value: totalGoal.toLocaleString(), className: "text-blue-600" },
+            ? { label: "Campaigns", value: String(summary?.campaignCount ?? 0), className: "text-blue-600 dark:text-blue-400" }
+            : { label: "Total Goal", value: totalGoal.toLocaleString(), className: "text-blue-600 dark:text-blue-400" },
           mixedMetrics
-            ? { label: "Targets Hit", value: `${summary?.targetHitCount ?? 0} of ${summary?.campaignCount ?? 0}`, className: "text-green-600" }
+            ? { label: "Targets Hit", value: `${summary?.targetHitCount ?? 0} of ${summary?.campaignCount ?? 0}`, className: "text-green-600 dark:text-green-400" }
             : { label: "Total Actual", value: totalActual.toLocaleString(), className: actualTextClass(totalActual) },
           { label: mixedMetrics ? "Average Achievement" : "Achievement Rate", value: `${achievementRate.toFixed(1)}%`, className: achievementTextClass(achievementRate) },
           { label: mixedMetrics ? "Portfolio Status" : "Target Status", value: statusLabel(targetStatus), className: statusTextClass(targetStatus) },
         ].map(({ label, value, className }) => (
-          <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
-            <p className={`mt-2 text-2xl font-bold ${loading ? "text-slate-400" : className}`}>
+          <div key={label} className="rounded-lg border border-border bg-muted/40 p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+            <p className={`mt-2 text-2xl font-bold ${loading ? "text-muted-foreground" : className}`}>
               {loading ? "..." : value}
             </p>
           </div>
@@ -311,7 +313,7 @@ function CampaignSelectorView({
         <select
           value={selectedCampaignId}
           onChange={(e) => onCampaignChange(e.target.value)}
-          className="h-10 min-w-[220px] rounded-md border border-slate-300 px-3 py-2 text-sm"
+          className="h-10 min-w-[220px] rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
         >
           <option value="">All Campaigns</option>
           {campaigns.map((campaign) => (
@@ -324,7 +326,7 @@ function CampaignSelectorView({
           value={campaignSearch}
           onChange={(e) => onCampaignSearchChange(e.target.value)}
           placeholder="Search campaigns..."
-          className="h-10 min-w-[220px] rounded-md border border-slate-300 px-3 py-2 text-sm"
+          className="h-10 min-w-[220px] rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
         />
       </div>
 
@@ -334,7 +336,7 @@ function CampaignSelectorView({
 
       {campaigns.length === 0 ? (
         <Card className="p-6 text-center">
-          <p className="text-gray-600">
+          <p className="text-muted-foreground">
             No bulk-imported campaign reports are available.
           </p>
         </Card>
@@ -352,35 +354,35 @@ function CampaignSelectorView({
               key={campaign.id}
               href={`/reports/campaign-performance?campaignId=${campaign.id}&year=${year}&month=${month}${allMonths ? "&allMonths=true" : ""}`}
             >
-              <Card className="p-6 cursor-pointer hover:shadow-lg hover:border-blue-400 transition-all h-full">
-                <h3 className="text-lg font-bold text-gray-800 mb-3">
+              <Card className="h-full cursor-pointer border-border bg-card p-6 text-card-foreground transition-all hover:border-blue-400 hover:shadow-lg">
+                <h3 className="mb-3 text-lg font-bold text-foreground">
                   {campaign.campaignName}
                 </h3>
-                <div className="space-y-2 text-sm text-gray-600">
+                <div className="space-y-2 text-sm text-muted-foreground">
                   <div className="flex justify-between">
                     <span>{campaignSummary?.reportBasis === "YTD" || campaignSummary?.reportBasis === "Latest YTD" ? "YTD Goal:" : allMonths ? "All Months Goal:" : "Monthly Goal:"}</span>
-                    <span className="font-semibold text-blue-600">
+                    <span className="font-semibold text-blue-600 dark:text-blue-400">
                       {campaignGoal.toLocaleString()}
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span>KPI Metric:</span>
-                    <span className="font-semibold text-gray-800 capitalize">
+                    <span className="font-semibold capitalize text-foreground">
                       {campaignMetric}
                     </span>
                   </div>
                 </div>
-                <div className="mt-4 space-y-2 border-t pt-4 text-sm text-gray-600">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Overall Performance</p>
+                <div className="mt-4 space-y-2 border-t border-border pt-4 text-sm text-muted-foreground">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Overall Performance</p>
                   <div className="flex justify-between">
                     <span>Total Actual:</span>
-                    <span className={`font-semibold ${summaryLoading ? "text-slate-400" : actualTextClass(campaignActual)}`}>
+                    <span className={`font-semibold ${summaryLoading ? "text-muted-foreground" : actualTextClass(campaignActual)}`}>
                       {summaryLoading ? "..." : campaignActual.toLocaleString()}
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span>Achievement:</span>
-                    <span className={`font-semibold ${summaryLoading ? "text-slate-400" : achievementTextClass(campaignAchievement)}`}>
+                    <span className={`font-semibold ${summaryLoading ? "text-muted-foreground" : achievementTextClass(campaignAchievement)}`}>
                       {summaryLoading ? "..." : `${campaignAchievement.toFixed(1)}%`}
                     </span>
                   </div>
@@ -391,8 +393,8 @@ function CampaignSelectorView({
                     </span>
                   </div>
                 </div>
-                <div className="mt-4 pt-4 border-t">
-                  <span className="text-blue-600 font-semibold text-sm hover:text-blue-800">
+                <div className="mt-4 border-t border-border pt-4">
+                  <span className="text-sm font-semibold text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300">
                     View Performance Report →
                   </span>
                 </div>
@@ -472,40 +474,40 @@ function CampaignDetailView({
           value={agentSearch}
           onChange={(e) => onAgentSearchChange(e.target.value)}
           placeholder="Search agents or seat..."
-          className="h-10 min-w-[240px] rounded-md border border-slate-300 px-3 py-2 text-sm"
+          className="h-10 min-w-[240px] rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
         />
       </div>
 
       {/* Overall Performance Summary */}
-      <Card className="p-6 bg-gradient-to-r from-blue-50 to-indigo-50 border-indigo-200">
-        <h2 className="text-2xl font-bold mb-6 text-gray-800">
+      <Card className="border-indigo-200 bg-gradient-to-r from-blue-50 to-indigo-50 p-6 dark:border-indigo-900/60 dark:from-blue-950/30 dark:to-indigo-950/20">
+        <h2 className="mb-6 text-2xl font-bold text-foreground">
           📊 Overall Campaign Performance
         </h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <p className="text-sm text-gray-600">
+          <div className="rounded-lg border border-border/60 bg-background/80 p-4 shadow-sm">
+            <p className="text-sm text-muted-foreground">
               {campaign.reportBasis === "YTD" || campaign.reportBasis === "Latest YTD"
                 ? "YTD Goal"
                 : campaign.reportBasis === "All Months" ? "All Months Goal" : "Total Goal"}
             </p>
-            <p className="text-2xl font-bold text-blue-600">
+            <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">
               {overallPerformance.totalGoal.toLocaleString()}
             </p>
           </div>
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <p className="text-sm text-gray-600">Total Actual</p>
-            <p className="text-2xl font-bold text-green-600">
+          <div className="rounded-lg border border-border/60 bg-background/80 p-4 shadow-sm">
+            <p className="text-sm text-muted-foreground">Total Actual</p>
+            <p className="text-2xl font-bold text-green-600 dark:text-green-400">
               {overallPerformance.totalActual.toLocaleString()}
             </p>
           </div>
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <p className="text-sm text-gray-600">Achievement Rate</p>
-            <p className="text-2xl font-bold text-purple-600">
+          <div className="rounded-lg border border-border/60 bg-background/80 p-4 shadow-sm">
+            <p className="text-sm text-muted-foreground">Achievement Rate</p>
+            <p className="text-2xl font-bold text-purple-600 dark:text-purple-400">
               {overallPerformance.achievementRate}%
             </p>
           </div>
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <p className="text-sm text-gray-600">Target Status</p>
+          <div className="rounded-lg border border-border/60 bg-background/80 p-4 shadow-sm">
+            <p className="text-sm text-muted-foreground">Target Status</p>
             <p className={`text-2xl font-bold ${statusTextClass(targetStatus)}`}>
               {statusLabel(targetStatus)}
             </p>
@@ -514,41 +516,41 @@ function CampaignDetailView({
       </Card>
 
       {/* Top Performers */}
-      <Card className="p-6 bg-gradient-to-r from-green-50 to-emerald-50 border-green-200">
-        <h2 className="text-2xl font-bold mb-4 text-gray-800">
+      <Card className="border-green-200 bg-gradient-to-r from-green-50 to-emerald-50 p-6 dark:border-green-900/60 dark:from-green-950/30 dark:to-emerald-950/20">
+        <h2 className="mb-4 text-2xl font-bold text-foreground">
           🏆 Top 5 Performers
         </h2>
         <div className="space-y-3">
           {topPerformers.map((agent, idx) => (
             <div
               key={agent.id}
-              className="bg-white p-4 rounded-lg shadow-sm flex justify-between items-start"
+              className="flex items-start justify-between rounded-lg border border-border/60 bg-background/80 p-4 shadow-sm"
             >
               <div className="flex-1">
                 <div className="flex items-center gap-2">
                   <span className="bg-yellow-400 w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center">
                     #{idx + 1}
                   </span>
-                  <span className="font-semibold text-gray-800">
+                  <span className="font-semibold text-foreground">
                     {agent.name}
                   </span>
                   <span
                     className={`px-2 py-1 rounded text-xs font-semibold ${
                       agent.level === "CORE"
-                        ? "bg-blue-100 text-blue-800"
-                        : "bg-green-100 text-green-800"
+                        ? "bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300"
+                        : "bg-green-100 text-green-800 dark:bg-green-950/60 dark:text-green-300"
                     }`}
                   >
                     {agent.level}
                   </span>
                 </div>
-                <p className="text-sm text-gray-600 mt-1">
+                <p className="mt-1 text-sm text-muted-foreground">
                   Goal: {agent.goal.toLocaleString()} | Actual:{" "}
                   {agent.actual.toLocaleString()}
                 </p>
               </div>
               <div className="text-right">
-                <p className="text-3xl font-bold text-green-600">
+                <p className="text-3xl font-bold text-green-600 dark:text-green-400">
                   {agent.achievement}%
                 </p>
               </div>
@@ -559,56 +561,56 @@ function CampaignDetailView({
 
       {/* CORE vs ROOKIE Breakdown */}
       <div className="grid md:grid-cols-2 gap-6">
-        <Card className="p-6 bg-gradient-to-br from-blue-50 to-cyan-50 border-blue-200">
-          <h2 className="text-xl font-bold mb-4 text-gray-800">🔹 CORE Agents</h2>
+        <Card className="border-blue-200 bg-gradient-to-br from-blue-50 to-cyan-50 p-6 dark:border-blue-900/60 dark:from-blue-950/30 dark:to-cyan-950/20">
+          <h2 className="mb-4 text-xl font-bold text-foreground">🔹 CORE Agents</h2>
           <div className="space-y-3">
             <div className="flex justify-between">
-              <span className="text-gray-700">Total Agents:</span>
+              <span className="text-muted-foreground">Total Agents:</span>
               <span className="font-bold">{breakdown.core.total}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-700">Met Goal:</span>
-              <span className="font-bold text-green-600">{breakdown.core.met}</span>
+              <span className="text-muted-foreground">Met Goal:</span>
+              <span className="font-bold text-green-600 dark:text-green-400">{breakdown.core.met}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-700">Missed Goal:</span>
-              <span className="font-bold text-red-600">
+              <span className="text-muted-foreground">Missed Goal:</span>
+              <span className="font-bold text-red-600 dark:text-red-400">
                 {breakdown.core.missed}
               </span>
             </div>
-            <div className="bg-white p-3 rounded-lg mt-4 border-l-4 border-blue-500">
-              <p className="text-sm text-gray-600">Avg Achievement</p>
-              <p className="text-2xl font-bold text-blue-600">
+            <div className="mt-4 rounded-lg border border-border/60 border-l-4 border-l-blue-500 bg-background/80 p-3">
+              <p className="text-sm text-muted-foreground">Avg Achievement</p>
+              <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">
                 {breakdown.core.averageAchievement}%
               </p>
             </div>
           </div>
         </Card>
 
-        <Card className="p-6 bg-gradient-to-br from-green-50 to-teal-50 border-green-200">
-          <h2 className="text-xl font-bold mb-4 text-gray-800">
+        <Card className="border-green-200 bg-gradient-to-br from-green-50 to-teal-50 p-6 dark:border-green-900/60 dark:from-green-950/30 dark:to-teal-950/20">
+          <h2 className="mb-4 text-xl font-bold text-foreground">
             🟢 ROOKIE Agents
           </h2>
           <div className="space-y-3">
             <div className="flex justify-between">
-              <span className="text-gray-700">Total Agents:</span>
+              <span className="text-muted-foreground">Total Agents:</span>
               <span className="font-bold">{breakdown.rookie.total}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-700">Met Goal:</span>
-              <span className="font-bold text-green-600">
+              <span className="text-muted-foreground">Met Goal:</span>
+              <span className="font-bold text-green-600 dark:text-green-400">
                 {breakdown.rookie.met}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-700">Missed Goal:</span>
-              <span className="font-bold text-red-600">
+              <span className="text-muted-foreground">Missed Goal:</span>
+              <span className="font-bold text-red-600 dark:text-red-400">
                 {breakdown.rookie.missed}
               </span>
             </div>
-            <div className="bg-white p-3 rounded-lg mt-4 border-l-4 border-green-500">
-              <p className="text-sm text-gray-600">Avg Achievement</p>
-              <p className="text-2xl font-bold text-green-600">
+            <div className="mt-4 rounded-lg border border-border/60 border-l-4 border-l-green-500 bg-background/80 p-3">
+              <p className="text-sm text-muted-foreground">Avg Achievement</p>
+              <p className="text-2xl font-bold text-green-600 dark:text-green-400">
                 {breakdown.rookie.averageAchievement}%
               </p>
             </div>
@@ -617,16 +619,16 @@ function CampaignDetailView({
       </div>
 
       {/* Agents Needing Attention */}
-      <Card className="p-6 bg-gradient-to-r from-yellow-50 to-orange-50 border-yellow-200">
-        <h2 className="text-xl font-bold mb-4 text-gray-800">
+      <Card className="border-yellow-200 bg-gradient-to-r from-yellow-50 to-orange-50 p-6 dark:border-yellow-900/60 dark:from-yellow-950/30 dark:to-orange-950/20">
+        <h2 className="mb-4 text-xl font-bold text-foreground">
           ⚠️ Agents Needing Attention ({needingAttention.length})
         </h2>
         {critical.length > 0 && (
-          <div className="mb-6 p-4 bg-red-50 border-l-4 border-red-500 rounded">
-            <p className="font-semibold text-red-700 mb-2">
+          <div className="mb-6 rounded border-l-4 border-red-500 bg-red-50 p-4 dark:bg-red-950/40">
+            <p className="mb-2 font-semibold text-red-700 dark:text-red-300">
               🚨 CRITICAL: {critical.length} agents below 70%
             </p>
-            <ul className="text-sm text-red-600 space-y-1">
+            <ul className="space-y-1 text-sm text-red-600 dark:text-red-400">
               {critical.map((agent) => (
                 <li key={agent.id}>
                   • {agent.name} ({agent.achievement}%) - Immediate coaching
@@ -642,14 +644,14 @@ function CampaignDetailView({
               key={agent.id}
               className={`p-4 rounded-lg ${
                 agent.achievement < 70
-                  ? "bg-red-50 border-l-4 border-red-500"
-                  : "bg-white border-l-4 border-yellow-500"
+                  ? "border-l-4 border-red-500 bg-red-50 dark:bg-red-950/40"
+                  : "border-l-4 border-yellow-500 bg-background/80"
               }`}
             >
               <div className="flex justify-between items-start">
                 <div>
-                  <p className="font-semibold text-gray-800">{agent.name}</p>
-                  <p className="text-sm text-gray-600">
+                  <p className="font-semibold text-foreground">{agent.name}</p>
+                  <p className="text-sm text-muted-foreground">
                     {agent.level} | Goal: {agent.goal.toLocaleString()} | Actual:{" "}
                     {agent.actual.toLocaleString()}
                   </p>
@@ -658,13 +660,13 @@ function CampaignDetailView({
                   <p
                     className={`text-xl font-bold ${
                       agent.achievement < 70
-                        ? "text-red-600"
-                        : "text-yellow-600"
+                        ? "text-red-600 dark:text-red-400"
+                        : "text-yellow-600 dark:text-yellow-400"
                     }`}
                   >
                     {agent.achievement}%
                   </p>
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-muted-foreground">
                     {agent.achievement < 70 ? "🔴 Critical" : "🟡 Near Miss"}
                   </p>
                 </div>
@@ -676,15 +678,15 @@ function CampaignDetailView({
 
       {/* Individual Agent Scorecard */}
       <Card className="p-6">
-        <h2 className="text-xl font-bold mb-4 text-gray-800">
+        <h2 className="mb-4 text-xl font-bold text-foreground">
           📋 Individual Agent Scorecard
         </h2>
-        <p className="mb-4 text-sm text-gray-500">
+        <p className="mb-4 text-sm text-muted-foreground">
           Showing {filteredAgents.length} of {allAgents.length} agents
         </p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-gray-100 border-b-2 border-gray-300">
+            <thead className="border-b-2 border-border bg-muted/60">
               <tr>
                 <th className="px-4 py-2 text-left">Name</th>
                 <th className="px-4 py-2 text-right">Seat Number</th>
@@ -704,8 +706,8 @@ function CampaignDetailView({
             </thead>
             <tbody>
               {filteredAgents.map((agent) => (
-                <tr key={agent.id} className="border-b hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-800">
+                <tr key={agent.id} className="border-b border-border hover:bg-muted/40">
+                  <td className="px-4 py-3 font-medium text-foreground">
                     {agent.name}
                   </td>
                   <td className="px-4 py-3 text-right">
@@ -736,8 +738,8 @@ function CampaignDetailView({
                     <span
                       className={`px-2 py-1 rounded text-xs font-semibold ${
                         agent.level === "CORE"
-                          ? "bg-blue-100 text-blue-800"
-                          : "bg-green-100 text-green-800"
+                          ? "bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300"
+                          : "bg-green-100 text-green-800 dark:bg-green-950/60 dark:text-green-300"
                       }`}
                     >
                       {agent.level}
@@ -752,10 +754,10 @@ function CampaignDetailView({
                   <td
                     className={`px-4 py-3 text-right font-bold ${
                       agent.achievement >= 100
-                        ? "text-green-600"
+                        ? "text-green-600 dark:text-green-400"
                         : agent.achievement >= 85
-                          ? "text-yellow-600"
-                          : "text-red-600"
+                          ? "text-yellow-600 dark:text-yellow-400"
+                          : "text-red-600 dark:text-red-400"
                     }`}
                   >
                     {agent.achievement}%
@@ -769,7 +771,7 @@ function CampaignDetailView({
               ))}
               {filteredAgents.length === 0 && (
                 <tr>
-                  <td colSpan={14} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={14} className="px-4 py-8 text-center text-muted-foreground">
                     No agents match your search.
                   </td>
                 </tr>
@@ -780,17 +782,17 @@ function CampaignDetailView({
       </Card>
 
       {/* Team Leader Action Points */}
-      <Card className="p-6 bg-gradient-to-r from-purple-50 to-pink-50 border-purple-200">
-        <h2 className="text-2xl font-bold mb-4 text-gray-800">
+      <Card className="border-purple-200 bg-gradient-to-r from-purple-50 to-pink-50 p-6 dark:border-purple-900/60 dark:from-purple-950/30 dark:to-pink-950/20">
+        <h2 className="mb-4 text-2xl font-bold text-foreground">
           💡 Team Leader Action Points
         </h2>
         <div className="space-y-3">
           {recommendations.map((rec, idx) => (
             <div
               key={idx}
-              className="bg-white p-4 rounded-lg shadow-sm border-l-4 border-purple-500"
+              className="rounded-lg border border-border/60 border-l-4 border-l-purple-500 bg-background/80 p-4 shadow-sm"
             >
-              <p className="text-gray-800">{rec}</p>
+              <p className="text-foreground">{rec}</p>
             </div>
           ))}
         </div>
@@ -919,10 +921,10 @@ function CampaignPerformancePageContent() {
   if (error)
     return (
       <div className="p-6 min-h-screen">
-        <div className="bg-red-50 border border-red-200 rounded-lg p-6">
-          <p className="text-red-700 font-semibold mb-2">Error Loading Data:</p>
-          <p className="text-red-600 text-sm">{error}</p>
-          <p className="text-red-500 text-xs mt-4">Check the browser console for more details.</p>
+        <div className="rounded-lg border border-red-200 bg-red-50 p-6 dark:border-red-900/60 dark:bg-red-950/40">
+          <p className="mb-2 font-semibold text-red-700 dark:text-red-300">Error Loading Data:</p>
+          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+          <p className="mt-4 text-xs text-red-500 dark:text-red-400">Check the browser console for more details.</p>
         </div>
       </div>
     );

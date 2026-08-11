@@ -42,6 +42,18 @@ function businessMonthKey(value: Date) {
   return `${parts.find((part) => part.type === "year")?.value}-${parts.find((part) => part.type === "month")?.value}`;
 }
 
+function businessDateKey(value: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
 function monthYearFromYmd(value: string) {
   const [yearRaw, monthRaw] = value.split("-");
   const year = Number(yearRaw);
@@ -240,6 +252,7 @@ export async function GET(req: NextRequest) {
             select: {
               id: true,
               date: true,
+              createdAt: true,
               importFileName: true,
               reportPeriodType: true,
             },
@@ -262,6 +275,7 @@ export async function GET(req: NextRequest) {
           id: true,
           campaignId: true,
           date: true,
+          createdAt: true,
           importFileName: true,
           reportPeriodType: true,
         },
@@ -293,6 +307,7 @@ export async function GET(req: NextRequest) {
           target: true,
           actual: true,
           achievement: true,
+          updatedAt: true,
         },
         orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
       }).catch(() => []),
@@ -317,6 +332,7 @@ export async function GET(req: NextRequest) {
           actual: true,
           achievement: true,
           sourceFile: true,
+          createdAt: true,
         },
       }).catch(() => []),
     ]);
@@ -343,6 +359,7 @@ export async function GET(req: NextRequest) {
           id: true,
           campaignId: true,
           date: true,
+          createdAt: true,
           importFileName: true,
           reportPeriodType: true,
         },
@@ -402,6 +419,7 @@ export async function GET(req: NextRequest) {
               select: {
                 id: true,
                 date: true,
+                createdAt: true,
                 importFileName: true,
                 reportPeriodType: true,
               },
@@ -994,6 +1012,35 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    const sourceUpdateByCampaign = new Map<string, Date>();
+    const registerSourceUpdate = (campaignId: string, timestamp: Date) => {
+      const current = sourceUpdateByCampaign.get(campaignId);
+      if (!current || timestamp > current) sourceUpdateByCampaign.set(campaignId, timestamp);
+    };
+    for (const entry of entries) registerSourceUpdate(entry.campaignId, entry.createdAt);
+    for (const record of preferredAgentDetailRecords.values()) registerSourceUpdate(record.campaignId, record.updatedAt);
+    for (const metric of rawMetricRecords) {
+      if (metric.reportMonth == null) continue;
+      const periodIndex = metric.reportYear * 12 + metric.reportMonth;
+      if (periodIndex >= selectedStartPeriodIndex && periodIndex <= selectedEndPeriodIndex) {
+        registerSourceUpdate(metric.campaignId, metric.createdAt);
+      }
+    }
+
+    const activityByDate = new Map<string, number>();
+    for (const entry of entries) {
+      const key = businessDateKey(entry.date);
+      activityByDate.set(key, (activityByDate.get(key) ?? 0) + 1);
+    }
+    const importedActivityKeys = new Set<string>();
+    for (const record of preferredAgentDetailRecords.values()) {
+      const identity = `${record.campaignId}|${record.worksheetSource}|${record.recordKind}|${record.year}|${record.month ?? businessDateKey(record.reportDate)}`;
+      if (importedActivityKeys.has(identity)) continue;
+      importedActivityKeys.add(identity);
+      const key = businessDateKey(record.reportDate);
+      activityByDate.set(key, (activityByDate.get(key) ?? 0) + 1);
+    }
+
     const result = campaigns.map((c) => {
       const savedGoal = monthlyGoalsByCampaignId.get(c.id);
       const isBdoCampaign = /^BDO\b/i.test(c.campaignName);
@@ -1293,6 +1340,7 @@ export async function GET(req: NextRequest) {
         agentDataPeriod: importedAgentFallbackPeriodByCampaign.has(c.id)
           ? { source: "latest_import", ...importedAgentFallbackPeriodByCampaign.get(c.id)! }
           : { source: "selected_range" },
+        lastUpdated: sourceUpdateByCampaign.get(c.id)?.toISOString() ?? null,
       };
     });
 
@@ -1331,6 +1379,12 @@ export async function GET(req: NextRequest) {
       },
       summary,
       campaigns: result,
+      lastUpdated: sourceUpdateByCampaign.size > 0
+        ? new Date(Math.max(...[...sourceUpdateByCampaign.values()].map((timestamp) => timestamp.getTime()))).toISOString()
+        : null,
+      activityTrend: [...activityByDate.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([date, value]) => ({ date, value })),
     }, {
       headers: {
         "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",

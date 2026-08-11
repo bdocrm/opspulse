@@ -147,11 +147,11 @@ const statusLabel = (status: AchievementStatus) => {
 };
 
 const statusClass = (status: AchievementStatus) => {
-  if (status === 'above') return 'bg-green-50 text-green-700 border-green-200';
-  if (status === 'on-track') return 'bg-yellow-50 text-yellow-700 border-yellow-200';
-  if (status === 'needs-attention') return 'bg-orange-50 text-orange-700 border-orange-200';
-  if (status === 'at-risk') return 'bg-red-50 text-red-700 border-red-200';
-  return 'bg-slate-50 text-slate-700 border-slate-200';
+  if (status === 'above') return 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/50 dark:text-green-300 dark:border-green-900';
+  if (status === 'on-track') return 'bg-yellow-50 text-yellow-700 border-yellow-200 dark:bg-yellow-950/50 dark:text-yellow-300 dark:border-yellow-900';
+  if (status === 'needs-attention') return 'bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/50 dark:text-orange-300 dark:border-orange-900';
+  if (status === 'at-risk') return 'bg-red-50 text-red-700 border-red-200 dark:bg-red-950/50 dark:text-red-300 dark:border-red-900';
+  return 'bg-muted text-muted-foreground border-border';
 };
 
 const dashboardExportRows = (rows: Campaign[]) =>
@@ -829,26 +829,26 @@ export default function GoalsManagement() {
       <PageTitle title="Goals Management" subtitle="Monitor campaign goals, KPI performance, and run rate in one place." />
 
       {error && (
-        <div className="flex gap-3 bg-red-50 border border-red-200 rounded-lg p-4 items-start">
+        <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900/60 dark:bg-red-950/40">
           <AlertCircle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-red-700">{error}</p>
+          <p className="text-sm text-red-700 dark:text-red-300">{error}</p>
         </div>
       )}
       {message && (
-        <div className="flex gap-3 bg-green-50 border border-green-200 rounded-lg p-4 items-start">
+        <div className="flex items-start gap-3 rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-900/60 dark:bg-green-950/40">
           <CheckCircle className="h-5 w-5 text-green-600 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-green-700">{message}</p>
+          <p className="text-sm text-green-700 dark:text-green-300">{message}</p>
         </div>
       )}
 
       {/* Executive Target Dashboard */}
-      <Card className="border-blue-200 bg-blue-50/40 p-6 shadow-sm">
+      <Card className="border-blue-200 bg-blue-50/40 p-6 text-card-foreground shadow-sm dark:border-blue-900/60 dark:bg-blue-950/20">
         <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-lg font-semibold text-slate-950">Executive Target Dashboard</h3>
+              <h3 className="text-lg font-semibold text-foreground">Executive Target Dashboard</h3>
             </div>
-            <p className="mt-1 text-sm text-slate-600">
+            <p className="mt-1 text-sm text-muted-foreground">
               All campaign targets and live performance for {MONTHS[selectedMonth - 1]} {selectedYear}.
             </p>
           </div>
@@ -858,7 +858,7 @@ export default function GoalsManagement() {
               variant="outline"
               size="sm"
               onClick={handleDashboardToggle}
-              className="gap-2 border-blue-200 bg-white text-blue-700 shadow-sm hover:bg-blue-50"
+              className="gap-2 border-blue-200 bg-background text-blue-700 shadow-sm hover:bg-blue-50 dark:border-blue-900 dark:text-blue-300 dark:hover:bg-blue-950/50"
               aria-expanded={dashboardExpanded}
               aria-controls="executive-target-dashboard-panel"
             >
@@ -870,7 +870,7 @@ export default function GoalsManagement() {
                 type="button"
                 variant="outline"
                 size="sm"
-                className="gap-2 border-slate-200 bg-white shadow-sm"
+                className="gap-2 border-border bg-background text-foreground shadow-sm"
                 onClick={() => setExportOpen((open) => !open)}
                 aria-expanded={exportOpen}
               >
@@ -879,7 +879,7 @@ export default function GoalsManagement() {
                 <ChevronDown className="h-4 w-4" />
               </Button>
               {exportOpen && (
-                <div className="absolute right-0 z-20 mt-2 w-52 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-sm shadow-lg">
+                <div className="absolute right-0 z-20 mt-2 w-52 overflow-hidden rounded-lg border border-border bg-popover py-1 text-sm text-popover-foreground shadow-lg">
                   {[
                     ['Export XLSX', () => exportCampaignRows(campaigns, 'xlsx')],
                     ['Export CSV', () => exportCampaignRows(campaigns, 'csv')],
@@ -889,7 +889,7 @@ export default function GoalsManagement() {
                     <button
                       key={label as string}
                       type="button"
-                      className="block w-full px-4 py-2 text-left text-slate-700 hover:bg-slate-50"
+                      className="block w-full px-4 py-2 text-left text-popover-foreground hover:bg-muted"
                       onClick={() => {
                         (action as () => void)();
                         setExportOpen(false);
@@ -921,30 +921,30 @@ export default function GoalsManagement() {
                 { label: 'Above Goal', value: summary.aboveGoal.toLocaleString(), note: 'Performing well', accent: 'bg-emerald-500', progress: summary.totalCampaigns > 0 ? (summary.aboveGoal / summary.totalCampaigns) * 100 : 0 },
                 { label: 'Below Goal', value: summary.belowGoal.toLocaleString(), note: 'Needs attention', accent: 'bg-red-500', progress: summary.totalCampaigns > 0 ? (summary.belowGoal / summary.totalCampaigns) * 100 : 0 },
               ].map((card) => (
-                <div key={card.label} className="flex min-h-[126px] flex-col justify-between rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+                <div key={card.label} className="flex min-h-[126px] flex-col justify-between rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{card.label}</p>
-                    <p className="mt-2 text-2xl font-bold text-slate-950">{card.value}</p>
-                    <p className="mt-1 text-xs text-slate-500">{card.note}</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{card.label}</p>
+                    <p className="mt-2 text-2xl font-bold text-foreground">{card.value}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{card.note}</p>
                   </div>
-                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
                     <div className={`h-full rounded-full ${card.accent}`} style={{ width: `${Math.max(4, Math.min(100, card.progress))}%` }} />
                   </div>
                 </div>
               ))}
             </div>
 
-            <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mt-5 rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm">
               <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <p className="text-sm font-semibold text-slate-950">Smart Filters</p>
-                  <p className="text-xs text-slate-500">Narrow the dashboard without leaving the executive view.</p>
+                  <p className="text-sm font-semibold text-foreground">Smart Filters</p>
+                  <p className="text-xs text-muted-foreground">Narrow the dashboard without leaving the executive view.</p>
                 </div>
-                <p className="text-xs font-medium text-slate-500">{sortedFilteredCampaigns.length.toLocaleString()} results</p>
+                <p className="text-xs font-medium text-muted-foreground">{sortedFilteredCampaigns.length.toLocaleString()} results</p>
               </div>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
                 <div className="relative">
-                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
+                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                   <Input
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
@@ -955,7 +955,7 @@ export default function GoalsManagement() {
                 <select
                   value={campaignFilter}
                   onChange={(e) => setCampaignFilter(e.target.value)}
-                  className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
                 >
                   <option value="all">All Campaigns</option>
                   {campaigns.map((campaign) => (
@@ -965,7 +965,7 @@ export default function GoalsManagement() {
                 <select
                   value={metricFilter}
                   onChange={(e) => setMetricFilter(e.target.value)}
-                  className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
                 >
                   <option value="all">All KPI Metrics</option>
                   {KPI_METRICS.map((metric) => (
@@ -975,7 +975,7 @@ export default function GoalsManagement() {
                 <select
                   value={achievementStatus}
                   onChange={(e) => setAchievementStatus(e.target.value as AchievementStatus)}
-                  className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
                 >
                   <option value="all">All Statuses</option>
                   <option value="above">Above Goal</option>
@@ -991,7 +991,7 @@ export default function GoalsManagement() {
                     setSortKey('updatedAt');
                     setSortDirection(value);
                   }}
-                  className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
                 >
                   <option value="desc">Date: Recent to Old</option>
                   <option value="asc">Date: Old to Recent</option>
@@ -1008,9 +1008,9 @@ export default function GoalsManagement() {
               </div>
             </div>
 
-            <div className="mt-5 max-h-[620px] overflow-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+            <div className="mt-5 max-h-[620px] overflow-auto rounded-xl border border-border bg-card text-card-foreground shadow-sm">
               <table className="w-full min-w-[1050px] text-sm">
-                <thead className="sticky top-0 z-10 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500 shadow-sm">
+                <thead className="sticky top-0 z-10 bg-muted text-left text-xs uppercase tracking-wide text-muted-foreground shadow-sm">
                   <tr>
                     {[
                   ['campaignName', 'Campaign'],
@@ -1043,14 +1043,14 @@ export default function GoalsManagement() {
             <tbody>
               {paginatedCampaigns.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-3 py-8 text-center text-gray-500">No target records match the selected filters.</td>
+                  <td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">No target records match the selected filters.</td>
                 </tr>
               ) : (
                 paginatedCampaigns.map((campaign, index) => {
                   const rowStatus = statusForCampaign(campaign);
                   return (
-                    <tr key={campaign.id} className={`border-t border-gray-100 transition hover:bg-blue-50/60 ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'}`}>
-                      <td className="px-4 py-4 font-semibold text-gray-900">{campaign.campaignName}</td>
+                    <tr key={campaign.id} className={`border-t border-border transition hover:bg-blue-50/60 dark:hover:bg-blue-950/30 ${index % 2 === 0 ? 'bg-card' : 'bg-muted/35'}`}>
+                      <td className="px-4 py-4 font-semibold text-foreground">{campaign.campaignName}</td>
                       <td className="px-4 py-4">{metricLabel(campaign.kpiMetric)}</td>
                       <td className="px-4 py-4 text-right font-medium">{formatNumber(campaign.monthlyGoal)}</td>
                       <td className="px-4 py-4 text-right">{formatNumber(campaign.mtd)}</td>
@@ -1062,7 +1062,7 @@ export default function GoalsManagement() {
                           {statusLabel(rowStatus)}
                         </span>
                       </td>
-                      <td className="px-4 py-4 text-gray-500">
+                      <td className="px-4 py-4 text-muted-foreground">
                         {campaign.updatedAt ? new Date(campaign.updatedAt).toLocaleDateString() : '-'}
                       </td>
                       <td className="px-4 py-4">
@@ -1098,14 +1098,14 @@ export default function GoalsManagement() {
             </div>
 
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-muted-foreground">
                 Showing {paginatedCampaigns.length} of {sortedFilteredCampaigns.length} filtered records
               </p>
               <div className="flex items-center gap-2">
                 <select
                   value={rowsPerPage}
                   onChange={(e) => setRowsPerPage(e.target.value)}
-                  className="rounded-md border border-gray-300 px-3 py-2 text-sm"
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
                 >
                   <option value="5">5 rows</option>
                   <option value="10">10 rows</option>
@@ -1123,7 +1123,7 @@ export default function GoalsManagement() {
                 >
                   Previous
                 </Button>
-                <span className="text-sm text-gray-500">Page {Math.min(currentPage, totalPages)} of {totalPages}</span>
+                <span className="text-sm text-muted-foreground">Page {Math.min(currentPage, totalPages)} of {totalPages}</span>
                 <Button
                   variant="outline"
                   size="sm"
@@ -1139,7 +1139,7 @@ export default function GoalsManagement() {
       </Card>
 
       {/* Campaign Selection */}
-      <Card className="border-cyan-200 bg-cyan-50/30 p-6 shadow-sm">
+      <Card className="border-cyan-200 bg-cyan-50/30 p-6 shadow-sm dark:border-cyan-900/60 dark:bg-cyan-950/20">
         <button
           type="button"
           onClick={() => setSelectCampaignExpanded((expanded) => !expanded)}
@@ -1149,12 +1149,12 @@ export default function GoalsManagement() {
         >
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-cyan-100 px-2.5 py-1 text-xs font-bold text-cyan-700">Campaign Setup</span>
-              <h3 className="text-lg font-semibold text-slate-950">Select Campaign</h3>
+              <span className="rounded-full bg-cyan-100 px-2.5 py-1 text-xs font-bold text-cyan-700 dark:bg-cyan-950/60 dark:text-cyan-300">Campaign Setup</span>
+              <h3 className="text-lg font-semibold text-foreground">Select Campaign</h3>
             </div>
-            <p className="mt-1 text-sm text-slate-600">Pick the campaign you want to configure.</p>
+            <p className="mt-1 text-sm text-muted-foreground">Pick the campaign you want to configure.</p>
           </div>
-          <span className="inline-flex items-center gap-2 rounded-md border border-cyan-200 bg-white px-3 py-1.5 text-sm font-medium text-cyan-700 shadow-sm">
+          <span className="inline-flex items-center gap-2 rounded-md border border-cyan-200 bg-background px-3 py-1.5 text-sm font-medium text-cyan-700 shadow-sm dark:border-cyan-900 dark:text-cyan-300">
             {selectCampaignExpanded ? (
               <>
                 <ChevronUp className="h-5 w-5" />
@@ -1182,8 +1182,8 @@ export default function GoalsManagement() {
               onClick={() => handleCampaignChange(campaign)}
               className={`p-3 rounded-lg border-2 text-sm font-medium transition-all ${
                 selectedCampaign?.id === campaign.id
-                  ? 'border-cyan-500 bg-white text-cyan-800 shadow-sm ring-2 ring-cyan-100'
-                  : 'border-cyan-100 bg-white text-gray-700 hover:border-cyan-300 hover:text-cyan-800'
+                  ? 'border-cyan-500 bg-background text-cyan-800 shadow-sm ring-2 ring-cyan-100 dark:text-cyan-300 dark:ring-cyan-950'
+                  : 'border-cyan-100 bg-background text-foreground hover:border-cyan-300 hover:text-cyan-800 dark:border-cyan-900 dark:hover:text-cyan-300'
               }`}
             >
               {campaign.campaignName}
@@ -1197,7 +1197,7 @@ export default function GoalsManagement() {
       {selectedCampaign && (
         <>
           {/* Campaign Goal & Run Rate Config */}
-          <Card className="border-amber-200 bg-amber-50/30 p-6 shadow-sm">
+          <Card className="border-amber-200 bg-amber-50/30 p-6 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/20">
             <button
               type="button"
               onClick={() => setCampaignGoalExpanded((expanded) => !expanded)}
@@ -1207,12 +1207,12 @@ export default function GoalsManagement() {
             >
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-700">Goal Configuration</span>
-                  <h3 className="text-lg font-semibold text-slate-950">Campaign Goal &amp; Run Rate Settings</h3>
+                  <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-700 dark:bg-amber-950/60 dark:text-amber-300">Goal Configuration</span>
+                  <h3 className="text-lg font-semibold text-foreground">Campaign Goal &amp; Run Rate Settings</h3>
                 </div>
-                <p className="mt-1 text-sm text-slate-600">Choose the month, then set the campaign goal, KPI metric, working days, and run-rate inputs.</p>
+                <p className="mt-1 text-sm text-muted-foreground">Choose the month, then set the campaign goal, KPI metric, working days, and run-rate inputs.</p>
               </div>
-              <span className="inline-flex items-center gap-2 rounded-md border border-amber-200 bg-white px-3 py-1.5 text-sm font-medium text-amber-700 shadow-sm">
+              <span className="inline-flex items-center gap-2 rounded-md border border-amber-200 bg-background px-3 py-1.5 text-sm font-medium text-amber-700 shadow-sm dark:border-amber-900 dark:text-amber-300">
                 {campaignGoalExpanded ? (
                   <>
                     <ChevronUp className="h-5 w-5" />
@@ -1233,10 +1233,10 @@ export default function GoalsManagement() {
               }`}
             >
               <div className="min-h-0 overflow-hidden">
-            <div className="mb-4 rounded-xl border border-amber-200 bg-white p-4">
+            <div className="mb-4 rounded-xl border border-amber-200 bg-background/80 p-4 dark:border-amber-900/60">
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-700">Monthly Setup</span>
-                <h4 className="font-semibold text-slate-950">Month</h4>
+                <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-700 dark:bg-amber-950/60 dark:text-amber-300">Monthly Setup</span>
+                <h4 className="font-semibold text-foreground">Month</h4>
               </div>
               <div className="max-w-xs">
                 <Label htmlFor="goal-month">Goal Month</Label>
@@ -1244,13 +1244,13 @@ export default function GoalsManagement() {
                   id="goal-month"
                   value={selectedMonth}
                   onChange={(e) => setSelectedMonth(Number(e.target.value))}
-                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   {MONTHS.map((m, i) => (
                     <option key={m} value={i + 1}>{m} {selectedYear}</option>
                   ))}
                 </select>
-                <p className="mt-1 text-xs text-gray-500">
+                <p className="mt-1 text-xs text-muted-foreground">
                   Saving creates or updates the goal for {selectedCampaign.campaignName} in {MONTHS[selectedMonth - 1]} {selectedYear}.
                 </p>
               </div>
@@ -1265,14 +1265,14 @@ export default function GoalsManagement() {
                   id="kpi"
                   value={kpiMetric}
                   onChange={(e) => setKpiMetric(e.target.value)}
-                  className="mt-1 w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   {(usesBpiThreeKpis(selectedCampaign?.campaignName) ? BPI_KPI_METRICS : KPI_METRICS).map((m) => (
                     <option key={m.value} value={m.value}>{m.label}</option>
                   ))}
                 </select>
                 {usesBpiThreeKpis(selectedCampaign?.campaignName) && (
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     BPI campaigns use Transmittals, Approvals, or Booked. BPI PA OUTBOUND is excluded.
                   </p>
                 )}
@@ -1320,7 +1320,7 @@ export default function GoalsManagement() {
               <div>
                 <Label htmlFor="working-days">
                   Working Days (WDays)
-                  <span className="ml-1 text-xs text-gray-400 font-normal">— total working days this month</span>
+                  <span className="ml-1 text-xs font-normal text-muted-foreground">— total working days this month</span>
                 </Label>
                 <Input
                   id="working-days"
@@ -1336,7 +1336,7 @@ export default function GoalsManagement() {
               <div>
                 <Label htmlFor="days-lapsed">
                   Days Lapsed
-                  <span className="ml-1 text-xs text-gray-400 font-normal">— working days elapsed so far</span>
+                  <span className="ml-1 text-xs font-normal text-muted-foreground">— working days elapsed so far</span>
                 </Label>
                 <Input
                   id="days-lapsed"
@@ -1356,10 +1356,10 @@ export default function GoalsManagement() {
                 {['W1', 'W2', 'W3', 'W4'].map((week) => (
                   <div
                     key={week}
-                    className="group relative bg-blue-50 border border-blue-200 rounded p-3 text-center cursor-help"
+                    className="group relative cursor-help rounded border border-blue-200 bg-blue-50 p-3 text-center dark:border-blue-900/60 dark:bg-blue-950/40"
                   >
-                    <div className="text-xs font-medium text-blue-600">{week}</div>
-                    <div className="text-lg font-bold text-blue-900 mt-1">
+                    <div className="text-xs font-medium text-blue-600 dark:text-blue-400">{week}</div>
+                    <div className="mt-1 text-lg font-bold text-blue-900 dark:text-blue-200">
                       {weekGoal.toLocaleString()}
                     </div>
                     <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-max max-w-[240px] -translate-x-1/2 whitespace-normal rounded-md bg-gray-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block">
@@ -1371,37 +1371,37 @@ export default function GoalsManagement() {
             </div>
 
             {/* Formula preview */}
-            <div className="mt-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Formula Preview (on-pace estimate)</p>
+            <div className="mt-4 rounded-lg border border-border bg-muted/40 p-4">
+              <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Formula Preview (on-pace estimate)</p>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center text-sm">
                 <div className="group relative cursor-help">
-                  <p className="text-xs text-gray-400">MTD (on pace)</p>
-                  <p className="text-lg font-bold text-gray-800">{previewMTD.toLocaleString()}</p>
-                  <p className="text-xs text-gray-400">sum W1–W4</p>
+                  <p className="text-xs text-muted-foreground">MTD (on pace)</p>
+                  <p className="text-lg font-bold text-foreground">{previewMTD.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">sum W1–W4</p>
                   <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-max max-w-[240px] -translate-x-1/2 whitespace-normal rounded-md bg-gray-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block">
                     {`MTD (on pace) = Goal × (Days Lapsed ÷ WDays) = ${goal.toLocaleString()} × (${dLapsed} ÷ ${wDays}) = ${previewMTD.toLocaleString()}`}
                   </div>
                 </div>
                 <div className="group relative cursor-help">
-                  <p className="text-xs text-gray-400">Achievement</p>
-                  <p className="text-lg font-bold text-blue-700">{previewAch}%</p>
-                  <p className="text-xs text-gray-400">MTD / Goal</p>
+                  <p className="text-xs text-muted-foreground">Achievement</p>
+                  <p className="text-lg font-bold text-blue-700 dark:text-blue-400">{previewAch}%</p>
+                  <p className="text-xs text-muted-foreground">MTD / Goal</p>
                   <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-max max-w-[240px] -translate-x-1/2 whitespace-normal rounded-md bg-gray-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block">
                     {`Achievement = MTD ÷ Goal × 100 = ${previewMTD.toLocaleString()} ÷ ${goal.toLocaleString()} × 100 = ${previewAch}%`}
                   </div>
                 </div>
                 <div className="group relative cursor-help">
-                  <p className="text-xs text-gray-400">Run Rate</p>
-                  <p className="text-lg font-bold text-gray-800">{previewRR.toLocaleString()}</p>
-                  <p className="text-xs text-gray-400">MTD / Lapsed × WDays</p>
+                  <p className="text-xs text-muted-foreground">Run Rate</p>
+                  <p className="text-lg font-bold text-foreground">{previewRR.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">MTD / Lapsed × WDays</p>
                   <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-max max-w-[240px] -translate-x-1/2 whitespace-normal rounded-md bg-gray-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block">
                     {`Run Rate = MTD ÷ Days Lapsed × WDays = ${previewMTD.toLocaleString()} ÷ ${dLapsed} × ${wDays} = ${previewRR.toLocaleString()}`}
                   </div>
                 </div>
                 <div className="group relative cursor-help">
-                  <p className="text-xs text-gray-400">RR Achievement</p>
-                  <p className="text-lg font-bold text-blue-700">{previewRRAch}%</p>
-                  <p className="text-xs text-gray-400">Run Rate / Goal</p>
+                  <p className="text-xs text-muted-foreground">RR Achievement</p>
+                  <p className="text-lg font-bold text-blue-700 dark:text-blue-400">{previewRRAch}%</p>
+                  <p className="text-xs text-muted-foreground">Run Rate / Goal</p>
                   <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-max max-w-[240px] -translate-x-1/2 whitespace-normal rounded-md bg-gray-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block">
                     {`RR Achievement = Run Rate ÷ Goal × 100 = ${previewRR.toLocaleString()} ÷ ${goal.toLocaleString()} × 100 = ${previewRRAch}%`}
                   </div>
@@ -1421,7 +1421,7 @@ export default function GoalsManagement() {
           </Card>
 
           {/* Agent Targets */}
-          <Card className="border-indigo-200 bg-indigo-50/30 p-6 shadow-sm">
+          <Card className="border-indigo-200 bg-indigo-50/30 p-6 shadow-sm dark:border-indigo-900/60 dark:bg-indigo-950/20">
             <button
               type="button"
               onClick={handleAgentTargetsToggle}
@@ -1431,15 +1431,15 @@ export default function GoalsManagement() {
             >
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-bold text-indigo-700">Agent Assignment</span>
-                  <h3 className="text-lg font-semibold text-slate-950">
+                  <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-bold text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300">Agent Assignment</span>
+                  <h3 className="text-lg font-semibold text-foreground">
                     Agent Targets
-                    <span className="ml-2 text-sm font-normal text-slate-500">({selectedCampaign.users.length} agents)</span>
+                    <span className="ml-2 text-sm font-normal text-muted-foreground">({selectedCampaign.users.length} agents)</span>
                   </h3>
                 </div>
-                <p className="mt-1 text-sm text-slate-600">Review and update individual monthly targets for agents in this campaign.</p>
+                <p className="mt-1 text-sm text-muted-foreground">Review and update individual monthly targets for agents in this campaign.</p>
               </div>
-              <span className="inline-flex items-center gap-2 rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-sm font-medium text-indigo-700 shadow-sm">
+              <span className="inline-flex items-center gap-2 rounded-md border border-indigo-200 bg-background px-3 py-1.5 text-sm font-medium text-indigo-700 shadow-sm dark:border-indigo-900 dark:text-indigo-300">
                 {agentTargetsExpanded ? (
                   <>
                     <ChevronUp className="h-5 w-5" />
@@ -1462,11 +1462,11 @@ export default function GoalsManagement() {
             >
               <div className="min-h-0 overflow-hidden">
                 {selectedCampaign.users.length === 0 ? (
-                  <p className="text-sm text-gray-500">No agents assigned to this campaign</p>
+                  <p className="text-sm text-muted-foreground">No agents assigned to this campaign</p>
                 ) : (
                   <div className="space-y-3">
                     <div className="relative">
-                      <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
+                      <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                       <Input
                         value={agentTargetSearch}
                         onChange={(e) => setAgentTargetSearch(e.target.value)}
@@ -1475,24 +1475,24 @@ export default function GoalsManagement() {
                       />
                     </div>
                     {filteredCampaignAgents.length === 0 ? (
-                      <p className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-500">
+                      <p className="rounded-lg border border-border bg-muted/40 p-4 text-sm text-muted-foreground">
                         No agents match your search.
                       </p>
                     ) : (
                       <>
                       {paginatedCampaignAgents.map((agent, index) => (
-                        <div key={agent.id} className="flex flex-col gap-3 p-4 bg-gray-50 rounded-lg border border-gray-200 sm:flex-row sm:items-end">
-                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-sm font-semibold text-blue-700">
+                        <div key={agent.id} className="flex flex-col gap-3 rounded-lg border border-border bg-muted/40 p-4 sm:flex-row sm:items-end">
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-sm font-semibold text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
                             {agentTargetStart + index}
                           </div>
                           <div className="flex-1">
-                            <Label className="text-xs text-gray-500">
+                            <Label className="text-xs text-muted-foreground">
                               {agent.seatNumber ? `Seat ${agent.seatNumber}` : 'No seat'}
                             </Label>
-                            <div className="font-semibold text-gray-900">{agent.name}</div>
+                            <div className="font-semibold text-foreground">{agent.name}</div>
                           </div>
                           <div className="w-full sm:w-36">
-                            <Label htmlFor={`agent-${agent.id}`} className="text-xs text-gray-500">Monthly Target</Label>
+                            <Label htmlFor={`agent-${agent.id}`} className="text-xs text-muted-foreground">Monthly Target</Label>
                             <Input
                               id={`agent-${agent.id}`}
                               inputMode="decimal"
@@ -1515,15 +1515,15 @@ export default function GoalsManagement() {
                           </Button>
                         </div>
                       ))}
-                      <div className="flex flex-col gap-3 rounded-lg border border-gray-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-sm text-gray-500">
+                      <div className="flex flex-col gap-3 rounded-lg border border-border bg-background/80 p-3 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-sm text-muted-foreground">
                           Showing {agentTargetStart}-{agentTargetEnd} of {filteredCampaignAgents.length} agents
                         </p>
                         <div className="flex flex-wrap items-center gap-2">
                           <select
                             value={agentRowsPerPage}
                             onChange={(e) => setAgentRowsPerPage(e.target.value)}
-                            className="rounded-md border border-gray-300 px-3 py-2 text-sm"
+                            className="rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
                           >
                             <option value="5">5 rows</option>
                             <option value="10">10 rows</option>
@@ -1541,7 +1541,7 @@ export default function GoalsManagement() {
                           >
                             Previous
                           </Button>
-                          <span className="text-sm text-gray-500">
+                          <span className="text-sm text-muted-foreground">
                             Page {agentTargetPage} of {agentTargetTotalPages}
                           </span>
                           <Button
@@ -1563,31 +1563,31 @@ export default function GoalsManagement() {
           </Card>
 
           {/* Summary */}
-          <Card className="border-slate-200 bg-white p-6 shadow-sm">
+          <Card className="border-border bg-card p-6 text-card-foreground shadow-sm">
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">Current Edit Summary</span>
-              <h3 className="font-semibold text-gray-900">{selectedCampaign.campaignName}</h3>
+              <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-bold text-muted-foreground">Current Edit Summary</span>
+              <h3 className="font-semibold text-foreground">{selectedCampaign.campaignName}</h3>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
-              <div className="rounded-lg border border-blue-100 bg-blue-50 p-3">
-                <div className="text-gray-500">Monthly Goal</div>
-                <div className="text-2xl font-bold text-blue-600">{goal.toLocaleString()}</div>
+              <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 dark:border-blue-900/60 dark:bg-blue-950/30">
+                <div className="text-muted-foreground">Monthly Goal</div>
+                <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">{goal.toLocaleString()}</div>
               </div>
-              <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-3">
-                <div className="text-gray-500">Total Agent Targets</div>
-                <div className="text-2xl font-bold text-indigo-600">
+              <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-3 dark:border-indigo-900/60 dark:bg-indigo-950/30">
+                <div className="text-muted-foreground">Total Agent Targets</div>
+                <div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">
                   {Object.values(agentTarget).reduce((s, v) => s + (v || 0), 0).toLocaleString()}
                 </div>
               </div>
-              <div className="rounded-lg border border-amber-100 bg-amber-50 p-3">
-                <div className="text-gray-500">Working Days</div>
-                <div className="text-2xl font-bold text-amber-700">{wDays}</div>
+              <div className="rounded-lg border border-amber-100 bg-amber-50 p-3 dark:border-amber-900/60 dark:bg-amber-950/30">
+                <div className="text-muted-foreground">Working Days</div>
+                <div className="text-2xl font-bold text-amber-700 dark:text-amber-400">{wDays}</div>
               </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <div className="text-gray-500">Days Lapsed</div>
-                <div className="text-2xl font-bold text-gray-800">
+              <div className="rounded-lg border border-border bg-muted/40 p-3">
+                <div className="text-muted-foreground">Days Lapsed</div>
+                <div className="text-2xl font-bold text-foreground">
                   {dLapsed}
-                  <span className="text-sm font-normal text-gray-400 ml-1">/ {wDays}</span>
+                  <span className="ml-1 text-sm font-normal text-muted-foreground">/ {wDays}</span>
                 </div>
               </div>
             </div>
@@ -1596,7 +1596,7 @@ export default function GoalsManagement() {
       )}
 
       {/* Saved Campaign Goals — view all saved per-month configurations */}
-      <Card className="border-emerald-200 bg-emerald-50/30 p-6 shadow-sm">
+      <Card className="border-emerald-200 bg-emerald-50/30 p-6 shadow-sm dark:border-emerald-900/60 dark:bg-emerald-950/20">
         <button
           type="button"
           onClick={() => setSavedGoalsExpanded((expanded) => !expanded)}
@@ -1606,15 +1606,15 @@ export default function GoalsManagement() {
         >
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700">Saved Records</span>
-              <h3 className="text-lg font-semibold text-slate-950">
+              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">Saved Records</span>
+              <h3 className="text-lg font-semibold text-foreground">
                 Saved Campaign Goals
-                <span className="ml-2 text-sm font-normal text-slate-500">({savedGoals.length})</span>
+                <span className="ml-2 text-sm font-normal text-muted-foreground">({savedGoals.length})</span>
               </h3>
             </div>
-            <p className="mt-1 text-sm text-slate-600">Saved monthly configurations. Edit one to reload it into the current form.</p>
+            <p className="mt-1 text-sm text-muted-foreground">Saved monthly configurations. Edit one to reload it into the current form.</p>
           </div>
-          <span className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-sm font-medium text-emerald-700 shadow-sm">
+          <span className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-background px-3 py-1.5 text-sm font-medium text-emerald-700 shadow-sm dark:border-emerald-900 dark:text-emerald-300">
             {savedGoalsExpanded ? (
               <>
                 <ChevronUp className="h-5 w-5" />
@@ -1635,16 +1635,16 @@ export default function GoalsManagement() {
           }`}
         >
           <div className="min-h-0 overflow-hidden">
-        <p className="text-sm text-gray-500 mb-4">
+        <p className="mb-4 text-sm text-muted-foreground">
           All saved goal configurations by campaign and month. Click Edit to load one for changes.
         </p>
         {savedGoals.length === 0 ? (
-          <p className="text-sm text-gray-500">No saved goal configurations yet.</p>
+          <p className="text-sm text-muted-foreground">No saved goal configurations yet.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b text-left text-gray-500">
+                <tr className="border-b border-border text-left text-muted-foreground">
                   <th className="py-2 pr-4 font-medium">Campaign</th>
                   <th className="py-2 pr-4 font-medium">Month</th>
                   <th className="py-2 pr-4 font-medium">KPI Metric</th>
@@ -1663,9 +1663,9 @@ export default function GoalsManagement() {
                   return (
                     <tr
                       key={`${row.campaignId}-${row.year}-${row.month}`}
-                      className={`border-b ${isCurrent ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                      className={`border-b border-border ${isCurrent ? 'bg-blue-50 dark:bg-blue-950/30' : 'hover:bg-muted/40'}`}
                     >
-                      <td className="py-2 pr-4 font-medium text-gray-900">{row.campaignName}</td>
+                      <td className="py-2 pr-4 font-medium text-foreground">{row.campaignName}</td>
                       <td className="py-2 pr-4">{MONTHS[row.month - 1]} {row.year}</td>
                       <td className="py-2 pr-4 capitalize">{row.kpiMetric}</td>
                       <td className="py-2 pr-4 text-right">{formatNumberWithCommas(row.monthlyGoal, 2)}</td>
@@ -1724,19 +1724,19 @@ export default function GoalsManagement() {
             onClick={() => setDetailsCampaign(null)}
           >
             <aside
-              className="h-full w-full max-w-xl overflow-y-auto bg-white shadow-2xl"
+              className="h-full w-full max-w-xl overflow-y-auto bg-background text-foreground shadow-2xl"
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 p-5 backdrop-blur">
+              <div className="sticky top-0 z-10 border-b border-border bg-background/95 p-5 backdrop-blur">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Campaign Details</p>
-                    <h3 className="mt-1 text-xl font-bold text-slate-950">{detailsCampaign.campaignName}</h3>
-                    <p className="mt-1 text-sm text-slate-500">{metricLabel(detailsCampaign.kpiMetric)}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">Campaign Details</p>
+                    <h3 className="mt-1 text-xl font-bold text-foreground">{detailsCampaign.campaignName}</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">{metricLabel(detailsCampaign.kpiMetric)}</p>
                   </div>
                   <button
                     type="button"
-                    className="rounded-md border border-slate-200 p-2 text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                    className="rounded-md border border-border p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
                     onClick={() => setDetailsCampaign(null)}
                     aria-label="Close campaign details"
                   >
@@ -1746,16 +1746,16 @@ export default function GoalsManagement() {
               </div>
 
               <div className="space-y-5 p-5">
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-muted/40 p-4">
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Current Status</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Current Status</p>
                     <span className={`mt-2 inline-flex rounded-full border px-3 py-1 text-sm font-semibold ${statusClass(drawerStatus)}`}>
                       {statusLabel(drawerStatus)}
                     </span>
                   </div>
                   <div className="text-right">
-                    <p className="text-xs text-slate-500">Last Updated</p>
-                    <p className="text-sm font-semibold text-slate-900">
+                    <p className="text-xs text-muted-foreground">Last Updated</p>
+                    <p className="text-sm font-semibold text-foreground">
                       {detailsCampaign.updatedAt ? new Date(detailsCampaign.updatedAt).toLocaleString() : 'No update recorded'}
                     </p>
                   </div>
@@ -1768,70 +1768,70 @@ export default function GoalsManagement() {
                     ['Run Rate', formatNumber(detailsCampaign.runRate)],
                     ['Achievement', formatPct(detailsCampaign.achievement)],
                   ].map(([label, value]) => (
-                    <div key={label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                      <p className="mt-2 text-2xl font-bold text-slate-950">{value}</p>
+                    <div key={label} className="rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+                      <p className="mt-2 text-2xl font-bold text-foreground">{value}</p>
                     </div>
                   ))}
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm">
                   <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-slate-950">Trend</p>
-                    <p className="text-sm text-slate-500">RR Achievement {formatPct(detailsCampaign.rrAchievement)}</p>
+                    <p className="text-sm font-semibold text-foreground">Trend</p>
+                    <p className="text-sm text-muted-foreground">RR Achievement {formatPct(detailsCampaign.rrAchievement)}</p>
                   </div>
                   <div className="mt-4 space-y-3">
                     <div>
-                      <div className="mb-1 flex justify-between text-xs text-slate-500">
+                      <div className="mb-1 flex justify-between text-xs text-muted-foreground">
                         <span>Achievement</span>
                         <span>{formatPct(detailsCampaign.achievement)}</span>
                       </div>
-                      <div className="h-2 rounded-full bg-slate-100">
+                      <div className="h-2 rounded-full bg-muted">
                         <div className="h-full rounded-full bg-blue-600" style={{ width: `${achievementProgress}%` }} />
                       </div>
                     </div>
                     <div>
-                      <div className="mb-1 flex justify-between text-xs text-slate-500">
+                      <div className="mb-1 flex justify-between text-xs text-muted-foreground">
                         <span>Run Rate Pace</span>
                         <span>{formatPct(detailsCampaign.rrAchievement)}</span>
                       </div>
-                      <div className="h-2 rounded-full bg-slate-100">
+                      <div className="h-2 rounded-full bg-muted">
                         <div className="h-full rounded-full bg-emerald-500" style={{ width: `${rrProgress}%` }} />
                       </div>
                     </div>
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <p className="text-sm font-semibold text-slate-950">Assigned Users</p>
-                  <p className="mt-1 text-xs text-slate-500">{detailsCampaign.users.length.toLocaleString()} users assigned</p>
+                <div className="rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm">
+                  <p className="text-sm font-semibold text-foreground">Assigned Users</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{detailsCampaign.users.length.toLocaleString()} users assigned</p>
                   <div className="mt-3 max-h-44 space-y-2 overflow-y-auto pr-1">
                     {detailsCampaign.users.length === 0 ? (
-                      <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-500">No assigned users.</p>
+                      <p className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">No assigned users.</p>
                     ) : (
                       detailsCampaign.users.slice(0, 12).map((agent) => (
-                        <div key={agent.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
-                          <span className="font-medium text-slate-900">{agent.name}</span>
-                          <span className="text-slate-500">{agent.monthlyTarget !== null ? formatNumber(agent.monthlyTarget) : 'No target'}</span>
+                        <div key={agent.id} className="flex items-center justify-between rounded-lg bg-muted/40 px-3 py-2 text-sm">
+                          <span className="font-medium text-foreground">{agent.name}</span>
+                          <span className="text-muted-foreground">{agent.monthlyTarget !== null ? formatNumber(agent.monthlyTarget) : 'No target'}</span>
                         </div>
                       ))
                     )}
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <p className="text-sm font-semibold text-slate-950">History</p>
+                <div className="rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm">
+                  <p className="text-sm font-semibold text-foreground">History</p>
                   <div className="mt-3 space-y-2">
                     {campaignHistory.length === 0 ? (
-                      <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-500">No saved history for this campaign yet.</p>
+                      <p className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">No saved history for this campaign yet.</p>
                     ) : (
                       campaignHistory.map((row) => (
-                        <div key={`${row.campaignId}-${row.year}-${row.month}`} className="rounded-lg bg-slate-50 p-3 text-sm">
+                        <div key={`${row.campaignId}-${row.year}-${row.month}`} className="rounded-lg bg-muted/40 p-3 text-sm">
                           <div className="flex justify-between gap-3">
-                            <span className="font-semibold text-slate-900">{MONTHS[row.month - 1]} {row.year}</span>
-                            <span className="text-slate-600">{formatNumber(row.monthlyGoal)}</span>
+                            <span className="font-semibold text-foreground">{MONTHS[row.month - 1]} {row.year}</span>
+                            <span className="text-muted-foreground">{formatNumber(row.monthlyGoal)}</span>
                           </div>
-                          <p className="mt-1 text-xs text-slate-500">
+                          <p className="mt-1 text-xs text-muted-foreground">
                             {metricLabel(row.kpiMetric)} - Updated {new Date(row.updatedAt).toLocaleString()}
                           </p>
                         </div>
@@ -1840,9 +1840,9 @@ export default function GoalsManagement() {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <p className="text-sm font-semibold text-slate-950">Recent Updates</p>
-                  <p className="mt-2 text-sm text-slate-600">
+                <div className="rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm">
+                  <p className="text-sm font-semibold text-foreground">Recent Updates</p>
+                  <p className="mt-2 text-sm text-muted-foreground">
                     {detailsCampaign.updatedAt
                       ? `Latest campaign data was updated on ${new Date(detailsCampaign.updatedAt).toLocaleString()}.`
                       : 'No recent update timestamp is available for this campaign.'}
