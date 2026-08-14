@@ -25,6 +25,8 @@ import {
   type BdoSgmConsolidatedAgent,
   type BdoSgmConsolidatedParseResult,
 } from '@/lib/bdo-sgm-consolidated-import';
+import { calculateKpiAchievements } from '@/lib/kpi-performance';
+import { parseKpiWorkbook, type KpiWorkbookResult, type ParsedKpiRow } from '@/lib/kpi-workbook';
 
 type BdoSgmParseResult = BdoSgmWorksheetParseResult | BdoSgmConsolidatedParseResult;
 
@@ -167,6 +169,7 @@ type SheetPreview = {
   skippedBlankCells?: number;
   warningCount?: number;
   detectedMonths?: string[];
+  detectedMetrics?: string[];
   detectedCardLevels?: string[];
   validationIssues?: Array<{ worksheet: string; row: number; reason: string; warning: boolean }>;
   consolidatedAgents?: BdoSgmConsolidatedAgent[];
@@ -1360,6 +1363,437 @@ function monthSummaryFromRecords(records: any[], sheets: SheetPreview[]) {
   return [...summary.values()].sort((a, b) => a.month.localeCompare(b.month));
 }
 
+function kpiReportDate(record: Pick<ParsedKpiRow, 'year' | 'month'>) {
+  return `${record.year}-${String(record.month).padStart(2, '0')}-01`;
+}
+
+function uniqueKpiPeople<T extends { name: string }>(people: T[]) {
+  return people.filter((person, index) =>
+    people.findIndex((candidate) => agentNameMatches(candidate.name, person.name)) === index
+  );
+}
+
+async function buildKpiBulkPreview(
+  parsed: KpiWorkbookResult,
+  campaign: AssignedCampaign,
+) {
+  const agents = await prisma.user.findMany({
+    where: {
+      role: 'AGENT',
+      OR: [
+        { campaignId: campaign.id },
+        { campaignAssignments: { some: { campaignId: campaign.id } } },
+      ],
+    },
+    select: { id: true, name: true },
+  });
+  const periods = [...new Map(parsed.records.map((record) => [
+    `${record.year}-${record.month}`,
+    { year: record.year, month: record.month },
+  ])).values()];
+  const existing = periods.length
+    ? await prisma.collectorKpiRecord.findMany({
+        where: { campaignId: campaign.id, OR: periods },
+        select: { employeeId: true, year: true, month: true },
+      })
+    : [];
+  const existingKeys = new Set(existing.map((record) => `${record.employeeId}:${record.year}:${record.month}`));
+  const matchedPeople: Array<any> = [];
+  const newPeople: Array<any> = [];
+  const previewRecords: Array<any> = [];
+  const metricDefinitions = [
+    ['qa', 'actualQa', 'goalQa', 'achievementQa'],
+    ['aht', 'actualAht', 'goalAht', 'achievementAht'],
+    ['adherence', 'actualAdherence', 'goalAdherence', 'achievementAdherence'],
+    ['cm', 'actualCm', 'goalCm', 'achievementCm'],
+    ['cd', 'actualCd', 'goalCd', 'achievementCd'],
+  ] as const;
+
+  for (const record of parsed.records) {
+    const agent = agents.find((candidate) => agentNameMatches(candidate.name, record.employeeName));
+    const reportDate = kpiReportDate(record);
+    const existingRecord = Boolean(agent && existingKeys.has(`${agent.id}:${record.year}:${record.month}`));
+    const basePerson = {
+      name: record.employeeName,
+      count: 0,
+      volume: 0,
+      sheet: record.sourceSheet,
+      campaignName: campaign.campaignName,
+      metricType: 'kpi',
+      reportDate,
+      row: record.sourceRow,
+    };
+    if (agent) matchedPeople.push({ ...basePerson, agentId: agent.id, agentName: agent.name });
+    else if (record.errors.length === 0) newPeople.push(basePerson);
+
+    const achievements = calculateKpiAchievements(record);
+    for (const [metricType, actualField, goalField, achievementField] of metricDefinitions) {
+      const actual = record[actualField];
+      const goal = record[goalField];
+      if (actual == null && goal == null) continue;
+      previewRecords.push({
+        sheet: record.sourceSheet,
+        campaignName: campaign.campaignName,
+        agentName: agent?.name || record.employeeName,
+        reportPeriodType: 'monthly',
+        reportDate,
+        metricType,
+        count: null,
+        volume: null,
+        goal,
+        actual,
+        achievement: achievements[achievementField],
+        status: existingRecord ? 'Existing' : record.errors.length ? 'Invalid' : 'New',
+        previewStatus: existingRecord ? 'Existing' : record.errors.length ? 'Invalid' : agent ? 'New' : 'New Agent',
+        validationMessage: record.errors.join(' ') || record.warnings.join(' ') || undefined,
+        row: record.sourceRow,
+      });
+    }
+  }
+
+  const worksheets = parsed.worksheets.map((sheet, index) => {
+    const sheetRecords = parsed.records.filter((record) => record.sourceSheet === sheet.name);
+    const validRows = sheetRecords.filter((record) => record.errors.length === 0).length;
+    const duplicateRows = sheetRecords.filter((record) => {
+      const agent = agents.find((candidate) => agentNameMatches(candidate.name, record.employeeName));
+      return Boolean(agent && existingKeys.has(`${agent.id}:${record.year}:${record.month}`));
+    }).length;
+    const firstRecord = sheetRecords[0];
+    return {
+      key: `kpi::${sheet.name}`,
+      sheetName: sheet.name,
+      hidden: false,
+      selected: sheet.supported && !sheet.error && validRows > 0,
+      format: 'BDO CCC KPI Actuals / Goal',
+      campaignId: campaign.id,
+      campaignName: campaign.campaignName,
+      campaignMapping: 'selected' as const,
+      metricType: 'kpi',
+      metricSource: 'sheet' as const,
+      reportDate: firstRecord ? kpiReportDate(firstRecord) : '',
+      totalRows: sheetRecords.length,
+      validRows,
+      invalidRows: sheetRecords.length - validRows,
+      duplicateRows,
+      detectedMonths: firstRecord ? [`${MONTH_NAMES[firstRecord.month - 1]} ${firstRecord.year}`] : [],
+      detectedMetrics: ['QA', 'AHT', 'Adherence', 'CM', 'CD'],
+      warnings: [],
+      errors: sheet.error ? [sheet.error] : [],
+      matched: [],
+      notFound: [],
+      entries: [],
+    } satisfies SheetPreview;
+  });
+  const supported = worksheets.filter((sheet) => sheet.selected);
+  const uniqueMatched = uniqueKpiPeople(matchedPeople);
+  const uniqueNew = uniqueKpiPeople(newPeople);
+  const uniqueAgentNames = new Set(parsed.records.map((record) => normalizeAgentName(record.employeeName)));
+  return {
+    preview: true,
+    multiSheet: true,
+    kpiWorkbook: true,
+    matched: uniqueMatched,
+    notFound: uniqueNew,
+    metricType: 'kpi',
+    reportPeriodType: 'monthly',
+    reportDate: supported[0]?.reportDate || '',
+    previewRecords,
+    monthSummary: monthSummaryFromRecords(previewRecords.filter((record) => record.metricType === 'qa'), worksheets),
+    workbookSummary: {
+      totalWorksheets: worksheets.length,
+      worksheetsAccepted: supported.length,
+      worksheetsSkipped: worksheets.length - supported.length,
+      totalValidRecords: worksheets.reduce((sum, sheet) => sum + sheet.validRows, 0),
+      totalInvalidRecords: worksheets.reduce((sum, sheet) => sum + sheet.invalidRows, 0),
+      totalDuplicateRecords: worksheets.reduce((sum, sheet) => sum + sheet.duplicateRows, 0),
+      totalUnmappedRecords: 0,
+      workbookYear: parsed.records[0]?.year,
+      supportedWorksheets: supported.map((sheet) => sheet.sheetName),
+      unsupportedWorksheets: worksheets.filter((sheet) => !sheet.selected).map((sheet) => sheet.sheetName),
+      detectedMonths: supported.flatMap((sheet) => sheet.detectedMonths || []),
+      detectedCategories: ['Actuals', 'Goal'],
+      detectedMetrics: ['QA', 'AHT', 'Adherence', 'CM', 'CD'],
+      agentCount: uniqueAgentNames.size,
+      teamLeaderCount: 0,
+      manpowerRecordCount: parsed.records.length,
+    },
+    worksheetPreviews: worksheets,
+    validationWarnings: parsed.records
+      .filter((record) => record.errors.length || record.warnings.length)
+      .slice(0, 200)
+      .map((record) => `${record.sourceSheet} row ${record.sourceRow}: ${[...record.errors, ...record.warnings].join(' ')}`),
+  };
+}
+
+async function persistKpiBulkImport({
+  parsed,
+  campaign,
+  fileName,
+  importedById,
+  selectedWorksheetKeys,
+  confirmedNewAgents,
+  duplicateMode,
+}: {
+  parsed: KpiWorkbookResult;
+  campaign: AssignedCampaign;
+  fileName: string;
+  importedById: string;
+  selectedWorksheetKeys: string[];
+  confirmedNewAgents: string[];
+  duplicateMode: DuplicateMode;
+}) {
+  const selectedSheetNames = new Set(
+    selectedWorksheetKeys.map((key) => key.startsWith('kpi::') ? key.slice(5) : key)
+  );
+  const records = parsed.records.filter((record) => selectedSheetNames.has(record.sourceSheet));
+  if (!records.length) throw new Error('No valid KPI worksheets were selected for import.');
+
+  return prisma.$transaction(async (tx) => {
+    const agents = await tx.user.findMany({
+      where: {
+        role: 'AGENT',
+        OR: [
+          { campaignId: campaign.id },
+          { campaignAssignments: { some: { campaignId: campaign.id } } },
+        ],
+      },
+      select: { id: true, name: true },
+    });
+    const findAgent = (name: string) => agents.find((agent) => agentNameMatches(agent.name, name)) || null;
+    let createdAgents = 0;
+    for (const name of uniqueKpiPeople(confirmedNewAgents.map((value) => ({ name: value }))).map((item) => item.name)) {
+      if (findAgent(name)) continue;
+      const created = await tx.user.create({
+        data: {
+          name: name.trim(),
+          email: nameToEmail(name),
+          password: await bcrypt.hash(crypto.randomUUID(), 10),
+          role: 'AGENT',
+          campaignId: campaign.id,
+        },
+        select: { id: true, name: true },
+      });
+      agents.push(created);
+      createdAgents += 1;
+    }
+
+    const batch = await tx.kpiImportBatch.create({
+      data: {
+        originalFileName: fileName.slice(0, 255),
+        campaignId: campaign.id,
+        uploadedById: importedById,
+        totalRows: records.length,
+        duplicateMode: duplicateMode.toUpperCase(),
+        status: 'IMPORTING',
+      },
+    });
+    const periods = [...new Map(records.map((record) => [
+      `${record.year}-${record.month}`,
+      { year: record.year, month: record.month },
+    ])).values()];
+    if (duplicateMode === 'replace_period' && periods.length) {
+      await tx.collectorKpiRecord.deleteMany({
+        where: { campaignId: campaign.id, OR: periods },
+      });
+    }
+
+    let inserted = 0;
+    let updated = 0;
+    let skipped = 0;
+    let invalid = 0;
+    let duplicates = 0;
+    let unmatched = 0;
+    let warningRows = 0;
+    const details: any[] = [];
+    const issues: Prisma.KpiImportIssueCreateManyInput[] = [];
+    const periodDates: Date[] = [];
+    const seen = new Set<string>();
+
+    for (const record of records) {
+      const agent = findAgent(record.employeeName);
+      if (!agent) {
+        unmatched += 1;
+        skipped += 1;
+        issues.push({
+          batchId: batch.id,
+          sourceSheet: record.sourceSheet,
+          sourceRow: record.sourceRow,
+          employeeName: record.employeeName,
+          kind: 'UNMATCHED_EMPLOYEE',
+          message: 'No approved BDO CCC agent matched this workbook row.',
+        });
+        continue;
+      }
+      const naturalKey = `${agent.id}:${record.year}:${record.month}`;
+      if (seen.has(naturalKey)) {
+        duplicates += 1;
+        skipped += 1;
+        issues.push({
+          batchId: batch.id,
+          sourceSheet: record.sourceSheet,
+          sourceRow: record.sourceRow,
+          employeeName: record.employeeName,
+          kind: 'DUPLICATE_IN_WORKBOOK',
+          message: 'The employee appears more than once in this workbook period.',
+        });
+        continue;
+      }
+      seen.add(naturalKey);
+      if (record.errors.length) {
+        invalid += 1;
+        skipped += 1;
+        issues.push(...record.errors.map((message) => ({
+          batchId: batch.id,
+          sourceSheet: record.sourceSheet,
+          sourceRow: record.sourceRow,
+          employeeName: record.employeeName,
+          kind: 'VALIDATION_ERROR',
+          message,
+        })));
+        continue;
+      }
+      if (record.warnings.length) warningRows += 1;
+      const achievements = calculateKpiAchievements(record);
+      const periodDate = new Date(Date.UTC(record.year, record.month - 1, 1));
+      periodDates.push(periodDate);
+      const recordData = {
+        employeeNameSnapshot: agent.name,
+        month: record.month,
+        year: record.year,
+        periodDate,
+        tenure: record.tenure,
+        actualQa: record.actualQa,
+        actualAht: record.actualAht,
+        actualAdherence: record.actualAdherence,
+        actualCm: record.actualCm,
+        actualCd: record.actualCd,
+        goalQa: record.goalQa,
+        goalAht: record.goalAht,
+        goalAdherence: record.goalAdherence,
+        goalCm: record.goalCm,
+        goalCd: record.goalCd,
+        ...achievements,
+        importBatchId: batch.id,
+        sourceSheet: record.sourceSheet,
+        sourceRow: record.sourceRow,
+      };
+      const existing = await tx.collectorKpiRecord.findUnique({
+        where: {
+          employeeId_campaignId_year_month: {
+            employeeId: agent.id,
+            campaignId: campaign.id,
+            year: record.year,
+            month: record.month,
+          },
+        },
+      });
+      if (existing && duplicateMode === 'skip') {
+        duplicates += 1;
+        skipped += 1;
+        await tx.kpiImportEvent.create({ data: {
+          batchId: batch.id,
+          recordId: existing.id,
+          employeeId: agent.id,
+          employeeName: agent.name,
+          action: 'KPI_RECORD_SKIPPED_EXISTING',
+          reason: 'Existing record preserved by the selected skip policy.',
+          sourceSheet: record.sourceSheet,
+          sourceRow: record.sourceRow,
+        } });
+        continue;
+      }
+      let savedId: string;
+      if (existing) {
+        const saved = await tx.collectorKpiRecord.update({ where: { id: existing.id }, data: recordData });
+        savedId = saved.id;
+        updated += 1;
+      } else {
+        const saved = await tx.collectorKpiRecord.create({
+          data: { ...recordData, employeeId: agent.id, campaignId: campaign.id },
+        });
+        savedId = saved.id;
+        inserted += 1;
+      }
+      await tx.kpiImportEvent.create({ data: {
+        batchId: batch.id,
+        recordId: savedId,
+        employeeId: agent.id,
+        employeeName: agent.name,
+        action: existing ? 'KPI_RECORD_UPDATED' : 'KPI_RECORD_CREATED',
+        newValues: {
+          month: record.month,
+          year: record.year,
+          actualQa: record.actualQa,
+          actualAht: record.actualAht,
+          actualAdherence: record.actualAdherence,
+          actualCm: record.actualCm,
+          actualCd: record.actualCd,
+          goalQa: record.goalQa,
+          goalAht: record.goalAht,
+          goalAdherence: record.goalAdherence,
+          goalCm: record.goalCm,
+          goalCd: record.goalCd,
+          ...achievements,
+        },
+        sourceSheet: record.sourceSheet,
+        sourceRow: record.sourceRow,
+      } });
+      details.push({
+        row: record.sourceRow,
+        agent: agent.name,
+        date: kpiReportDate(record),
+        sheet: record.sourceSheet,
+        qa: record.actualQa,
+        aht: record.actualAht,
+        adherence: record.actualAdherence,
+        cm: record.actualCm,
+        cd: record.actualCd,
+      });
+    }
+
+    if (issues.length) await tx.kpiImportIssue.createMany({ data: issues });
+    await tx.kpiImportBatch.update({
+      where: { id: batch.id },
+      data: {
+        periodStart: periodDates.length ? new Date(Math.min(...periodDates.map(Number))) : null,
+        periodEnd: periodDates.length ? new Date(Math.max(...periodDates.map(Number))) : null,
+        successfulRows: inserted,
+        updatedRows: updated,
+        skippedRows: skipped,
+        failedRows: invalid,
+        duplicateRows: duplicates,
+        unmatchedRows: unmatched,
+        warningRows,
+        status: invalid || unmatched ? 'COMPLETED_WITH_WARNINGS' : 'COMPLETED',
+        completedAt: new Date(),
+      },
+    });
+    return {
+      message: `KPI import completed: ${inserted} inserted, ${updated} updated, ${skipped} skipped, and ${invalid} invalid.`,
+      batchId: batch.id,
+      kpiWorkbook: true,
+      importedCampaignIds: [campaign.id],
+      importedCampaigns: 1,
+      inserted,
+      updated,
+      skipped,
+      invalid,
+      success: inserted + updated,
+      created: createdAgents,
+      normalizedImported: inserted,
+      normalizedDuplicates: duplicates,
+      errors: issues.filter((issue) => issue.kind === 'VALIDATION_ERROR' || issue.kind === 'UNMATCHED_EMPLOYEE').map((issue) => `${issue.sourceSheet} row ${issue.sourceRow}: ${issue.message}`),
+      warnings: issues.filter((issue) => issue.kind !== 'VALIDATION_ERROR' && issue.kind !== 'UNMATCHED_EMPLOYEE').map((issue) => `${issue.sourceSheet} row ${issue.sourceRow}: ${issue.message}`),
+      details,
+      workbookSummary: {
+        supportedWorksheets: [...selectedSheetNames],
+        agentCount: new Set(records.map((record) => normalizeAgentName(record.employeeName))).size,
+      },
+      worksheetPreviews: parsed.worksheets.filter((sheet) => selectedSheetNames.has(sheet.name)),
+    };
+  }, { timeout: 120000 });
+}
+
 async function buildWorkbookPreview({
   workbook,
   selectedCampaigns,
@@ -2350,6 +2784,44 @@ export async function POST(req: NextRequest) {
       }
       if (!workbook.SheetNames.length) {
         return NextResponse.json({ error: 'No worksheets found in Excel file' }, { status: 400 });
+      }
+
+      // KPI workbooks use one worksheet per month and a two-level
+      // Actuals/Goal header. Detect this before the production parsers so the
+      // same Bulk Import screen can read the complete cross-month workbook and
+      // persist it to the KPI monitoring records.
+      const kpiParsed = parseKpiWorkbook(
+        Buffer.from(bytes),
+        file.name,
+        reportYearValue || reportDate.getFullYear(),
+      );
+      const isKpiWorkbook = kpiParsed.worksheets.some(
+        (sheet) => sheet.supported && !sheet.error && sheet.recordCount > 0
+      );
+      if (isKpiWorkbook) {
+        if (selectedCampaigns.length !== 1) {
+          return NextResponse.json({ error: 'KPI workbooks must be imported into exactly one campaign.' }, { status: 400 });
+        }
+        if (mode === 'preview') {
+          return NextResponse.json(await buildKpiBulkPreview(kpiParsed, selectedCampaigns[0]));
+        }
+        const selectedWorksheetKeysValue = formData.get('selectedWorksheetKeys');
+        const selectedWorksheetKeys: string[] = selectedWorksheetKeysValue === null
+          ? kpiParsed.worksheets.filter((sheet) => sheet.supported && !sheet.error && sheet.recordCount > 0).map((sheet) => `kpi::${sheet.name}`)
+          : JSON.parse(String(selectedWorksheetKeysValue || '[]'));
+        const confirmedNewAgents: string[] = JSON.parse(
+          String(formData.get('confirmedNewAgents') || '[]')
+        );
+        const result = await persistKpiBulkImport({
+          parsed: kpiParsed,
+          campaign: selectedCampaigns[0],
+          fileName: file.name,
+          importedById: user.id,
+          selectedWorksheetKeys,
+          confirmedNewAgents,
+          duplicateMode,
+        });
+        return NextResponse.json(result);
       }
 
       let preloadedWorksheetRows: Map<string, any[][]> | undefined;

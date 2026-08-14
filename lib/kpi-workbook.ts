@@ -162,6 +162,15 @@ function locateColumns(rows: string[][]) {
       if (field && !fields.has(field)) fields.set(field, column);
     }
     const kpiCount = [...fields.keys()].filter((field) => field.startsWith("actual") || field.startsWith("goal")).length;
+    // Some client KPI workbooks label column A with the worksheet month
+    // (for example, JANUARY) instead of NAME. The rows immediately below it
+    // still contain employee names, while the remaining columns provide a
+    // complete Actuals/Goal KPI header. Treat that month cell as the employee
+    // column only after the KPI columns have been positively identified.
+    const firstColumnHeader = normalizedWords(rows[headerRow]?.[0]);
+    if (!fields.has("employeeName") && MONTHS[firstColumnHeader] && kpiCount >= 3) {
+      fields.set("employeeName", 0);
+    }
     if (fields.has("employeeName") && kpiCount >= 3) return { headerRow, fields };
   }
   return null;
@@ -169,7 +178,10 @@ function locateColumns(rows: string[][]) {
 
 function parseNumber(value: string, field: KpiField) {
   const text = value.trim();
-  if (!text || /^(N\/?A|NA|-|--|NULL)$/i.test(text)) return null;
+  // Excel formula errors represent unavailable KPI values, not malformed
+  // user-entered numbers. Preserve the rest of the employee row and store the
+  // affected metric as null so other valid KPIs can still be imported.
+  if (!text || /^(?:#?(?:N\/?A|NA)|NO AUDIT|NO DATA|NOT AVAILABLE|-|--|NULL|#(?:DIV\/0|VALUE|REF|NAME|NUM|NULL)!?)$/i.test(text)) return null;
   const isPercent = text.includes("%");
   const negativeByParentheses = /^\(.*\)$/.test(text);
   const cleaned = text.replace(/[%,$\s]/g, "").replace(/[()]/g, "");

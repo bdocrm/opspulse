@@ -37,4 +37,25 @@ assert.equal(parsed.records[0].actualQa, 94.69);
 assert.equal(parsed.records[0].goalAdherence, 93);
 assert.deepEqual(parsed.records[0].errors, []);
 
+const monthHeaderRows = [
+  ["", "", "ACTUALS", "", "", "", "", "GOAL", "", "", "", "", "ACVT"],
+  ["JANUARY", "TENURE", "QA", "AHT", "Adherence", "CM", "CD", "QA", "AHT", "Adherence", "CM", "CD", "QA"],
+  ["TOCA, MARY JOY", "TENURED", "NO AUDIT", 362, "99.95%", "0.85%", "0.49%", "85%", 540, "93%", "1%", "3%", "111%"],
+];
+const monthHeaderSheet = XLSX.utils.aoa_to_sheet(monthHeaderRows);
+monthHeaderSheet["!merges"] = [
+  XLSX.utils.decode_range("C1:G1"),
+  XLSX.utils.decode_range("H1:L1"),
+];
+const monthHeaderWorkbook = XLSX.utils.book_new();
+XLSX.utils.book_append_sheet(monthHeaderWorkbook, monthHeaderSheet, "JAN");
+const monthHeaderBuffer = XLSX.write(monthHeaderWorkbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
+const monthHeaderParsed = parseKpiWorkbook(monthHeaderBuffer, "BDO CCC KPI.xlsx", 2026);
+assert.equal(monthHeaderParsed.records.length, 1);
+assert.equal(monthHeaderParsed.records[0].employeeName, "TOCA, MARY JOY");
+assert.equal(monthHeaderParsed.records[0].month, 1);
+assert.equal(monthHeaderParsed.records[0].actualQa, null);
+assert.deepEqual(monthHeaderParsed.records[0].errors, []);
+assert.equal(monthHeaderParsed.records[0].goalCd, 3);
+
 console.log("KPI parser and calculation checks passed.");

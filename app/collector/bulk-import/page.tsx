@@ -265,6 +265,7 @@ const METRIC_LABELS: Record<string, string> = {
   all: 'ALL METRICS',
   all_metrics: 'All (Transmitted, Approvals, Booked)',
   acq: 'ACQ (NTB & Supplementary)',
+  kpi: 'KPI (QA, AHT, Adherence, CM, CD)',
 };
 
 const formatDateTime = (value?: string | null) =>
@@ -676,6 +677,7 @@ export default function BulkImportPage() {
     invalid: selectedWorksheets.reduce((total, sheet) => total + sheet.invalidRows, 0),
     duplicates: selectedWorksheets.reduce((total, sheet) => total + sheet.duplicateRows, 0),
   };
+  const isKpiPreview = worksheetPreviews.some((sheet) => sheet.metricType === 'kpi');
   const hasAgentReview = matched.length > 0 || newAgents.length > 0;
   const selectedExistingCount = hasAgentReview
     ? selectedMatched.length
@@ -683,7 +685,9 @@ export default function BulkImportPage() {
   const selectedNewCount = hasAgentReview
     ? selectedNewAgents.length
     : selectedPreviewRecords.filter((record) => record.status !== 'Existing').length;
-  const recordsToImport = hasAgentReview
+  const recordsToImport = isKpiPreview
+    ? selectedWorksheetSummary.valid
+    : hasAgentReview
     ? selectedMatched.length + approvedNew.length
     : selectedWorksheetSummary.valid;
 
@@ -910,7 +914,7 @@ export default function BulkImportPage() {
   if (step === 'configure') {
     return (
       <div className="space-y-6 p-6">
-        <PageTitle title="Bulk Data Import" subtitle="Upload BPI PA Excel or CSV production data" />
+        <PageTitle title="Bulk Data Import" subtitle="Upload production dashboards, KPI workbooks, Excel files, or CSV data" />
 
         {error && (
           <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
@@ -929,6 +933,7 @@ export default function BulkImportPage() {
             <p><span className="font-medium text-slate-800">All Metrics (.xlsx) or CSV:</span> Row 1 = BPI/LEVEL/TRANSMITTED/APPROVALS/BOOKED/VOLUME · Row 2 = FULL NAME · Row 3+ = No. | Full Name | Level | Transmitted | Approvals | Booked | Volume</p>
             <p><span className="font-medium text-slate-800">ACQ (.xlsx) or CSV:</span> AGENT CODE | LAST NAME | FIRST NAME | DATE ONBOARD | SEAT CATEGORY | TOTAL + per-date NTB/SUPPLEMENTARY pairs — reads name from Last + First and the highest NTB &amp; Supplementary per agent</p>
             <p><span className="font-medium text-slate-800">BDO Dashboard (.xlsx/.xls):</span> Automatically scans YTD Performance, Manpower Monitoring, CI/Cross Sell agent and HOH monitoring, and TLs Scorecard worksheets. Merged monthly groups and populated months are detected dynamically.</p>
+            <p><span className="font-medium text-slate-800">BDO CCC KPI Workbook (.xlsx):</span> Detects monthly JANâ€“DEC worksheets with merged ACTUALS, GOAL, and ACVT headers, then imports QA, AHT, Adherence, CM, and CD for every populated month.</p>
             <p><span className="font-medium text-slate-800">BPI Dashboard (.xlsx/.xls):</span> Automatically scans YTD Performance, Manpower Monitoring, PA agent/HOH monitoring, PL productivity, and PL HOH monitoring. Campaign sections, month groups, Count, and Volume metrics are mapped independently.</p>
             <p><span className="font-medium text-slate-800">MB PA Monthly Dashboard (.xlsx/.xls):</span> Automatically recognizes month blocks with C2G, BT, and BalCon under TRANS and BILLINGS, including totals, Tier, Target, and Achievement—even when the worksheet is named MOM PROD.</p>
             <p><span className="font-medium text-slate-800">MB ACQ / MB PL Annual Dashboard (.xlsx/.xls):</span> Automatically captures every populated agent/month from merged TARGET, ACTUAL, %, SCORE, and ACHIEVEMENT blocks, including zero values and agent metadata.</p>
@@ -1796,7 +1801,7 @@ export default function BulkImportPage() {
   // ─── STEP: DONE ─────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6 p-6">
-      <PageTitle title="Import Complete" subtitle="Production data has been saved" />
+      <PageTitle title="Import Complete" subtitle={isKpiPreview ? "KPI data has been saved" : "Production data has been saved"} />
 
       <Card className="border-green-200">
         <CardHeader>
@@ -1905,7 +1910,15 @@ export default function BulkImportPage() {
                         onToggle={() => setImportDateSort((direction) => (direction === 'asc' ? 'desc' : 'asc'))}
                       />
                     </th>
-                    {importMode !== 'single' ? (
+                    {isKpiPreview ? (
+                      <>
+                        <th className="text-right p-2">QA</th>
+                        <th className="text-right p-2">AHT</th>
+                        <th className="text-right p-2">Adherence</th>
+                        <th className="text-right p-2">CM</th>
+                        <th className="text-right p-2">CD</th>
+                      </>
+                    ) : importMode !== 'single' ? (
                       <>
                         <th className="text-right p-2">Transmittals</th>
                         <th className="text-right p-2">Approvals</th>
@@ -1920,7 +1933,7 @@ export default function BulkImportPage() {
                     ) : (
                       <th className="text-right p-2">{METRIC_LABELS[metricType]}</th>
                     )}
-                    {metricType !== 'acq' && <th className="text-right p-2">Volume</th>}
+                    {!isKpiPreview && metricType !== 'acq' && <th className="text-right p-2">Volume</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -1928,7 +1941,15 @@ export default function BulkImportPage() {
                     <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
                       <td className="p-2">{d.agent}</td>
                       <td className="p-2">{d.date}</td>
-                      {importMode !== 'single' ? (
+                      {isKpiPreview ? (
+                        <>
+                          <td className="text-right p-2">{d.qa ?? 'â€”'}</td>
+                          <td className="text-right p-2">{d.aht ?? 'â€”'}</td>
+                          <td className="text-right p-2">{d.adherence ?? 'â€”'}</td>
+                          <td className="text-right p-2">{d.cm ?? 'â€”'}</td>
+                          <td className="text-right p-2">{d.cd ?? 'â€”'}</td>
+                        </>
+                      ) : importMode !== 'single' ? (
                         <>
                           <td className="text-right p-2">{(d.transmittals ?? 0).toLocaleString()}</td>
                           <td className="text-right p-2">{(d.approvals ?? 0).toLocaleString()}</td>
@@ -1945,7 +1966,7 @@ export default function BulkImportPage() {
                           {(d.transmittals ?? d.approvals ?? d.booked ?? 0).toLocaleString()}
                         </td>
                       )}
-                      {metricType !== 'acq' && (
+                      {!isKpiPreview && metricType !== 'acq' && (
                         <td className="text-right p-2">
                           {d.volume > 0 ? `₱${Number(d.volume).toLocaleString()}` : '—'}
                         </td>
