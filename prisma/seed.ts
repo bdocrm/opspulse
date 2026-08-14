@@ -56,6 +56,7 @@ async function main() {
     { name: "CBC HPL", goal: 380, metric: "booked" },
     { name: "MEDICARD", goal: 360, metric: "transmittals" },
     { name: "BDO Online", goal: 500, metric: "transmittals" },
+    { name: "BDO CCC", goal: 500, metric: "transmittals" },
   ];
 
   const campaigns = await Promise.all(

@@ -41,6 +41,8 @@ model User {
   targetHistory               AgentTarget[]
   productionDetails           ProductionDetail[] // AGENT produces production details
   normalizedProductionRecords ProductionMetricRecord[]
+  collectorKpiRecords         CollectorKpiRecord[]     @relation("EmployeeKpiRecords")
+  kpiImportBatches            KpiImportBatch[]         @relation("KpiImports")
   createdAt                   DateTime                 @default(now())
 
   @@index([campaignId])
@@ -79,6 +81,8 @@ model Campaign {
   dailySales                  DailySales[]
   productionDetails           ProductionDetail[] // Production details for this campaign
   normalizedProductionRecords ProductionMetricRecord[]
+  collectorKpiRecords         CollectorKpiRecord[]
+  kpiImportBatches            KpiImportBatch[]
   createdAt                   DateTime                 @default(now())
 }
 
@@ -275,6 +279,116 @@ model DashboardImportIssue {
   createdAt       DateTime             @default(now())
 
   @@index([batchId])
+}
+
+// Period snapshots for quality and productivity KPIs imported from workbooks.
+// Goal values live on the record so historical results do not change when a
+// campaign target changes later.
+model CollectorKpiRecord {
+  id                   String           @id @default(uuid())
+  employeeId           String
+  employee             User             @relation("EmployeeKpiRecords", fields: [employeeId], references: [id], onDelete: Cascade)
+  employeeNameSnapshot String
+  campaignId           String
+  campaign             Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  month                Int
+  year                 Int
+  periodDate           DateTime
+  tenure               String?
+  actualQa             Float?
+  actualAht            Float?
+  actualAdherence      Float?
+  actualCm             Float?
+  actualCd             Float?
+  goalQa               Float?
+  goalAht              Float?
+  goalAdherence        Float?
+  goalCm               Float?
+  goalCd               Float?
+  achievementQa        Float?
+  achievementAht       Float?
+  achievementAdherence Float?
+  achievementCm        Float?
+  achievementCd        Float?
+  overallScore         Float?
+  importBatchId        String
+  importBatch          KpiImportBatch   @relation(fields: [importBatchId], references: [id])
+  auditEvents          KpiImportEvent[]
+  sourceSheet          String
+  sourceRow            Int
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  @@unique([employeeId, campaignId, year, month])
+  @@index([campaignId, year, month])
+  @@index([employeeId, periodDate])
+  @@index([importBatchId])
+}
+
+model KpiImportBatch {
+  id               String               @id @default(uuid())
+  originalFileName String
+  campaignId       String
+  campaign         Campaign             @relation(fields: [campaignId], references: [id])
+  uploadedById     String
+  uploadedBy       User                 @relation("KpiImports", fields: [uploadedById], references: [id])
+  periodStart      DateTime?
+  periodEnd        DateTime?
+  totalRows        Int                  @default(0)
+  successfulRows   Int                  @default(0)
+  updatedRows      Int                  @default(0)
+  skippedRows      Int                  @default(0)
+  failedRows       Int                  @default(0)
+  duplicateRows    Int                  @default(0)
+  unmatchedRows    Int                  @default(0)
+  warningRows      Int                  @default(0)
+  duplicateMode    String               @default("SKIP")
+  status           String
+  startedAt        DateTime             @default(now())
+  completedAt      DateTime?
+  createdAt        DateTime             @default(now())
+  records          CollectorKpiRecord[]
+  issues           KpiImportIssue[]
+  events           KpiImportEvent[]
+
+  @@index([campaignId, createdAt])
+  @@index([uploadedById, createdAt])
+}
+
+model KpiImportIssue {
+  id           String         @id @default(uuid())
+  batchId      String
+  batch        KpiImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  sourceSheet  String
+  sourceRow    Int?
+  employeeName String?
+  kind         String
+  message      String
+  rawData      Json?
+  createdAt    DateTime       @default(now())
+
+  @@index([batchId])
+}
+
+model KpiImportEvent {
+  id           String              @id @default(uuid())
+  batchId      String
+  batch        KpiImportBatch      @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  recordId     String?
+  record       CollectorKpiRecord? @relation(fields: [recordId], references: [id], onDelete: SetNull)
+  employeeId   String
+  employeeName String
+  action       String
+  oldValues    Json?
+  newValues    Json?
+  reason       String?
+  sourceSheet  String
+  sourceRow    Int
+  createdAt    DateTime            @default(now())
+
+  @@index([batchId])
+  @@index([recordId])
+  @@index([employeeId, createdAt])
 }
 
 model ProductionDetail {

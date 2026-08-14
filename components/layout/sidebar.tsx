@@ -41,6 +41,7 @@ const defaultLinks: SidebarLink[] = [
   { href: "/analytics/productivity", label: "Productivity Analytics", icon: Activity, roles: ['CEO', 'OM'] },
   { href: "/reports/campaigns", label: "Campaign Reports", icon: BarChart3, roles: ['CEO', 'OM'] },
   { href: "/reports/campaign-performance", label: "Agent Performance", icon: Zap, roles: ['CEO', 'OM'] },
+  { href: "/performance/kpi", label: "KPI Monitoring", icon: Gauge, roles: ['CEO', 'SMT', 'OM', 'AGENT'] },
   { href: "/om-dashboard", label: "OM Dashboard", icon: Gauge, roles: ['OM'] },
   { href: "/presentation", label: "OpsView Deck", icon: Projector, roles: ['CEO', 'OM'] },
   { href: "/my-account", label: "My Account", icon: UserCircle },
@@ -57,6 +58,7 @@ const collectorLinks: SidebarLink[] = [
   { href: "/collector", label: "Collector Dashboard", icon: BarChart3 },
   { href: "/collector/data-entry", label: "Data Entry", icon: ClipboardList },
   { href: "/collector/bulk-import", label: "Bulk Import", icon: Zap },
+  { href: "/performance/kpi", label: "KPI Monitoring", icon: Gauge },
 ];
 
 const groupedLinkSections = [
@@ -69,6 +71,7 @@ const groupedLinkSections = [
       "/reports/campaigns",
       "/reports/campaign-performance",
       "/om-dashboard",
+      "/performance/kpi",
     ],
   },
   {

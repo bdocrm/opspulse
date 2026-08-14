@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Megaphone, Users, UserCircle, BarChart3, ClipboardList } from "lucide-react";
+import { LayoutDashboard, Megaphone, Users, UserCircle, BarChart3, ClipboardList, Gauge } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSession } from "next-auth/react";
 
@@ -16,7 +16,7 @@ const defaultItems = [
 const collectorItems = [
   { href: "/collector", label: "Dashboard", icon: BarChart3 },
   { href: "/collector/data-entry", label: "Entry", icon: ClipboardList },
-  { href: "/agents", label: "Agents", icon: Users },
+  { href: "/performance/kpi", label: "KPI", icon: Gauge },
   { href: "/settings", label: "Profile", icon: UserCircle },
 ];
 

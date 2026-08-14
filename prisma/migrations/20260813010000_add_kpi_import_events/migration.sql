@@ -1,0 +1,3 @@
+-- The audit event table is part of the base KPI migration. This no-op marker
+-- preserves migration history for environments where that base was deployed
+-- before the audit UI was finalized.
