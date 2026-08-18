@@ -213,6 +213,7 @@ function parseSheet(
   let columns: Map<ColumnField, number> | null = null;
   let currentCampaign = "";
   let excludedManagerColumn = false;
+  const detectedWeeks = new Set<number>();
   const records: ParsedProductionRecord[] = [];
 
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
@@ -227,6 +228,9 @@ function parseSheet(
     const header = detectHeader(row);
     if (header) {
       columns = header.fields;
+      for (let week = 1; week <= 5; week += 1) {
+        if (columns.has(`week${week}` as ColumnField)) detectedWeeks.add(week);
+      }
       excludedManagerColumn ||= header.excludedManagerColumn;
       currentCampaign = "";
       continue;
@@ -307,7 +311,7 @@ function parseSheet(
       issues,
     });
   }
-  return { records, excludedManagerColumn };
+  return { records, excludedManagerColumn, detectedWeeks: [...detectedWeeks].sort() };
 }
 
 export function parseProductionWorkbook(
@@ -325,10 +329,12 @@ export function parseProductionWorkbook(
   const records: ParsedProductionRecord[] = [];
   const worksheets: ProductionWorkbookResult["worksheets"] = [];
   let managerColumnFound = false;
+  const detectedWeeks = new Set<number>();
   for (const sheetName of workbook.SheetNames) {
     const parsed = parseSheet(workbook.Sheets[sheetName], sheetName, fileName, fallback);
     records.push(...parsed.records);
     managerColumnFound ||= parsed.excludedManagerColumn;
+    parsed.detectedWeeks.forEach((week) => detectedWeeks.add(week));
     const periods = Array.from(new Set(parsed.records
       .filter((record) => record.reportYear && record.reportMonth)
       .map((record) => `${record.reportYear}-${String(record.reportMonth).padStart(2, "0")}`)));
@@ -337,6 +343,7 @@ export function parseProductionWorkbook(
       supported: parsed.records.length > 0,
       recordCount: parsed.records.length,
       periods,
+      detectedWeeks: parsed.detectedWeeks,
       ...(parsed.records.length ? {} : { error: "No recognizable production monitoring section was found." }),
     });
   }
@@ -357,6 +364,7 @@ export function parseProductionWorkbook(
     fileName,
     worksheets,
     reportingPeriods,
+    detectedWeeks: [...detectedWeeks].sort(),
     excludedFields: managerColumnFound ? ["Operations Manager columns"] : [],
     records,
   };

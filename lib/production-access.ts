@@ -20,6 +20,13 @@ export function canAdminProduction(user: ProductionSessionUser) {
   return user.role === "CEO";
 }
 
+export function canImportProduction(user: ProductionSessionUser) {
+  // Collectors already own the existing Bulk Data Import workflow. They may
+  // import Production Monitoring rows only into campaigns assigned to them;
+  // creating a brand-new campaign remains a CEO-only action.
+  return user.role === "CEO" || user.role === "COLLECTOR";
+}
+
 export function productionCampaignIds(user: ProductionSessionUser) {
   return Array.from(new Set([
     user.campaignId,

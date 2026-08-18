@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { canAdminProduction, getProductionSessionUser } from "@/lib/production-access";
+import { canAdminProduction, canImportProduction, getProductionSessionUser, productionCampaignScope } from "@/lib/production-access";
 import {
   buildBusinessUnitMappings,
   buildCampaignMappings,
@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
   try {
     const user = getProductionSessionUser(await getServerSession(authOptions));
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (!canAdminProduction(user)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (!canImportProduction(user)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     const form = await request.formData();
     const file = form.get("file");
     const fallbackMonth = Number(form.get("reportMonth"));
@@ -37,14 +37,15 @@ export async function POST(request: NextRequest) {
     if (!parsed.records.length) {
       return NextResponse.json({ error: "No recognizable production monitoring rows were found." }, { status: 422 });
     }
+    const scope = productionCampaignScope(user);
     const [campaigns, businessUnits] = await Promise.all([
       prisma.campaign.findMany({
-        where: { isActive: true },
+        where: { isActive: true, ...(scope.campaignId ? { id: scope.campaignId } : {}) },
         include: { productionAliases: true },
         orderBy: { campaignName: "asc" },
       }),
       prisma.businessUnit.findMany({
-        where: { isActive: true },
+        where: { isActive: true, ...(scope.campaignId ? { campaignId: scope.campaignId } : {}) },
         include: { aliases: true },
         orderBy: { businessUnitName: "asc" },
       }),
@@ -84,11 +85,13 @@ export async function POST(request: NextRequest) {
       fileName: parsed.fileName,
       worksheets: parsed.worksheets,
       reportingPeriods: parsed.reportingPeriods,
+      detectedWeeks: parsed.detectedWeeks,
       excludedFields: parsed.excludedFields,
       campaignMappings,
       businessUnitMappings,
       availableCampaigns: campaigns.map((campaign) => ({ id: campaign.id, name: campaign.campaignName })),
       availableBusinessUnits: businessUnits.map((unit) => ({ id: unit.id, campaignId: unit.campaignId, name: unit.businessUnitName })),
+      canCreateCampaigns: canAdminProduction(user),
       records,
       stats: {
         total: records.length,

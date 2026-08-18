@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth/next";
 import { Prisma } from "@prisma/client";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { canAdminProduction, getProductionSessionUser } from "@/lib/production-access";
+import { canAdminProduction, canImportProduction, getProductionSessionUser, hasProductionCampaignAccess } from "@/lib/production-access";
 import {
   parseBusinessUnitCommitMappings,
   parseCommitMappings,
@@ -25,7 +25,7 @@ const sanitizedIssueData = (record: ReturnType<typeof parseProductionWorkbook>["
 export async function POST(request: NextRequest) {
   const user = getProductionSessionUser(await getServerSession(authOptions));
   if (!user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!canAdminProduction(user)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!canImportProduction(user)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   const form = await request.formData();
   const file = form.get("file");
   const fallbackMonth = Number(form.get("reportMonth"));
@@ -48,6 +48,14 @@ export async function POST(request: NextRequest) {
   const campaignSources = new Set(parsed.records.filter((record) => record.campaignNormalized).map((record) => record.campaignNormalized));
   if ([...campaignSources].some((source) => !campaignMappings.some((mapping) => mapping.source === source))) {
     return NextResponse.json({ error: "Review every campaign mapping before importing." }, { status: 400 });
+  }
+  if (!canAdminProduction(user)) {
+    if (campaignMappings.some((mapping) => !mapping.targetId)) {
+      return NextResponse.json({ error: "A CEO must create or confirm unknown campaigns before a Collector can import them." }, { status: 403 });
+    }
+    if (campaignMappings.some((mapping) => mapping.targetId && !hasProductionCampaignAccess(user, mapping.targetId))) {
+      return NextResponse.json({ error: "One or more detected campaigns are outside your assigned campaign access." }, { status: 403 });
+    }
   }
   const businessSources = new Set(parsed.records.filter((record) => record.campaignNormalized && record.businessUnitNormalized).map((record) => `${record.campaignNormalized}:${record.businessUnitNormalized}`));
   if ([...businessSources].some((key) => {

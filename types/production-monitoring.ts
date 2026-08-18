@@ -56,9 +56,11 @@ export interface ProductionWorkbookResult {
     supported: boolean;
     recordCount: number;
     periods: string[];
+    detectedWeeks: number[];
     error?: string;
   }>;
   reportingPeriods: Array<{ year: number; month: number }>;
+  detectedWeeks: number[];
   excludedFields: string[];
   records: ParsedProductionRecord[];
 }

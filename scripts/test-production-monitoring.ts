@@ -26,6 +26,8 @@ const parsed = parseProductionWorkbook(buffer, "production-test.xlsx", { month: 
 
 assert.equal(parsed.records.length, 5, "all data rows should be detected across monthly sections");
 assert.deepEqual(parsed.reportingPeriods, [{ year: 2026, month: 5 }, { year: 2026, month: 6 }]);
+assert.deepEqual(parsed.detectedWeeks, [1, 2, 3, 4, 5], "Week headers must be detected even when their data cells are blank");
+assert.deepEqual(parsed.worksheets[0].detectedWeeks, [1, 2, 3, 4, 5]);
 assert.equal(parsed.records[1].campaignSource, "MEDICARD", "blank campaigns must forward-fill within a section");
 assert.equal(parsed.records[2].campaignSource, "XSELL", "an explicit campaign must override prior campaign context");
 assert.equal(parsed.records[0].metricType, "percentage");

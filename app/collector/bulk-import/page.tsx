@@ -18,6 +18,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Upload, AlertCircle, CheckCircle, Download, UserPlus, Users, ArrowLeft, Eye, FileText, Trash2, X } from 'lucide-react';
+import { formatAchievement, formatProductionMetric } from '@/lib/production-metrics';
 
 type Step = 'configure' | 'previewing' | 'confirm' | 'importing' | 'done';
 type ImportMode = 'all' | 'worksheets' | 'single';
@@ -216,6 +217,66 @@ interface WorkbookSummary {
   }>;
 }
 
+interface ProductionCampaignMapping {
+  source: string;
+  normalizedSource: string;
+  matchedCampaignId: string | null;
+  matchedCampaignName: string | null;
+  suggestion: { id: string; name: string; confidence: number } | null;
+  resolution: 'EXACT' | 'ALIAS' | 'SUGGESTED' | 'CREATE';
+  requiresReview: boolean;
+}
+
+interface ProductionBusinessUnitMapping {
+  key: string;
+  campaignNormalized: string;
+  source: string;
+  normalizedSource: string;
+  matchedBusinessUnitId: string | null;
+  matchedBusinessUnitName: string | null;
+  suggestion: { id: string; name: string; confidence: number } | null;
+  requiresReview: boolean;
+}
+
+interface ProductionBulkPreviewRecord {
+  rowKey: string;
+  campaignSource: string;
+  campaignNormalized: string;
+  businessUnitSource: string;
+  businessUnitNormalized: string;
+  reportYear: number | null;
+  reportMonth: number | null;
+  metricType: string;
+  metricUnit: string | null;
+  target: number | null;
+  week1: number | null;
+  week2: number | null;
+  week3: number | null;
+  week4: number | null;
+  week5: number | null;
+  mtd: number | null;
+  achievement: number | null;
+  runRate: number | null;
+  sourceSheet: string;
+  sourceRow: number;
+  status: 'NEW' | 'UPDATED' | 'UNCHANGED' | 'CONFLICT' | 'WARNING' | 'ERROR';
+  issues: Array<{ level: 'WARNING' | 'ERROR'; code: string; message: string }>;
+}
+
+interface ProductionBulkPreview {
+  fileName: string;
+  reportingPeriods: Array<{ year: number; month: number }>;
+  detectedWeeks: number[];
+  excludedFields: string[];
+  campaignMappings: ProductionCampaignMapping[];
+  businessUnitMappings: ProductionBusinessUnitMapping[];
+  availableCampaigns: Array<{ id: string; name: string }>;
+  availableBusinessUnits: Array<{ id: string; campaignId: string; name: string }>;
+  canCreateCampaigns: boolean;
+  records: ProductionBulkPreviewRecord[];
+  stats: { total: number; valid: number; new: number; updated: number; unchanged: number; conflicts: number; warnings: number; errors: number };
+}
+
 interface ConsolidatedAgentPreview {
   fileName?: string;
   nickname: string;
@@ -377,6 +438,9 @@ export default function BulkImportPage() {
   const [normalizedPreviewRecords, setNormalizedPreviewRecords] = useState<NormalizedPreviewRecord[]>([]);
   const [consolidatedAgentPreviews, setConsolidatedAgentPreviews] = useState<ConsolidatedAgentPreview[]>([]);
   const [monthSummaries, setMonthSummaries] = useState<MonthImportSummary[]>([]);
+  const [productionPreview, setProductionPreview] = useState<ProductionBulkPreview | null>(null);
+  const [productionCampaignSelections, setProductionCampaignSelections] = useState<Record<string, string>>({});
+  const [productionBusinessSelections, setProductionBusinessSelections] = useState<Record<string, string>>({});
   const previewInFlight = useRef(false);
   const campaignAccessRefreshed = useRef(false);
 
@@ -530,11 +594,13 @@ export default function BulkImportPage() {
     if (previewInFlight.current) return;
     const activeFiles = files.filter((item) => selectedFileNames.includes(item.name));
     if (!activeFiles.length) { alert('Please select at least one file'); return; }
-    if (!campaignIds.length) { setError('Select at least one campaign before previewing the file.'); return; }
     previewInFlight.current = true;
     // A reprocessed file must never inherit review state from an earlier file.
     setSelectedWorksheetKeys([]);
     setWorksheetCampaigns({});
+    setProductionPreview(null);
+    setProductionCampaignSelections({});
+    setProductionBusinessSelections({});
     setWorksheetPreviews([]);
     setWorkbookSummary(null);
     setMatched([]);
@@ -545,6 +611,38 @@ export default function BulkImportPage() {
     setStep('previewing');
     setError(null);
     try {
+      // Production Monitoring workbooks are campaign/business-unit based, not
+      // agent based. Detect that structure first so Campaign and Week columns
+      // come directly from the file and no manual campaign selection is needed.
+      if (activeFiles.length === 1 && /\.xlsx$/i.test(activeFiles[0].name)) {
+        const productionForm = new FormData();
+        productionForm.append('file', activeFiles[0]);
+        productionForm.append('reportMonth', String(reportMonth));
+        productionForm.append('reportYear', String(reportYear));
+        const productionResponse = await fetch('/api/production-monitoring/import/preview', { method: 'POST', body: productionForm });
+        const productionData = await productionResponse.json();
+        if (productionResponse.ok) {
+          const detected = productionData as ProductionBulkPreview;
+          setProductionPreview(detected);
+          setPreviewFiles([{ file: activeFiles[0], index: 0 }]);
+          setProductionCampaignSelections(Object.fromEntries(detected.campaignMappings.map((mapping) => [
+            mapping.normalizedSource,
+            mapping.matchedCampaignId || '__create',
+          ])));
+          setProductionBusinessSelections(Object.fromEntries(detected.businessUnitMappings.map((mapping) => [
+            mapping.key,
+            mapping.matchedBusinessUnitId || '__create',
+          ])));
+          setStep('confirm');
+          return;
+        }
+        // A 422 means this is simply another supported workbook layout; let
+        // the existing agent/dashboard import pipeline inspect it next.
+        if (productionResponse.status !== 422) {
+          throw new Error(productionData.error || 'Production workbook preview failed.');
+        }
+      }
+      if (!campaignIds.length) throw new Error('Select at least one campaign for this workbook. Production Monitoring files detect campaigns automatically.');
       const responses = await Promise.all(activeFiles.map(async (activeFile, index) => {
         const fd = new FormData();
         fd.append('file', activeFile);
@@ -731,6 +829,84 @@ export default function BulkImportPage() {
     );
   };
 
+  const handleProductionCampaignChange = (source: string, targetId: string) => {
+    setProductionCampaignSelections((current) => ({ ...current, [source]: targetId }));
+    setProductionBusinessSelections((current) => {
+      if (!productionPreview) return current;
+      const next = { ...current };
+      productionPreview.businessUnitMappings
+        .filter((mapping) => mapping.campaignNormalized === source)
+        .forEach((mapping) => { next[mapping.key] = '__create'; });
+      return next;
+    });
+  };
+
+  const productionWeekValue = (record: ProductionBulkPreviewRecord, week: number) => {
+    const value = record[`week${week}` as keyof ProductionBulkPreviewRecord];
+    return typeof value === 'number' ? value : null;
+  };
+
+  const handleProductionConfirm = async () => {
+    if (!productionPreview || !previewFiles[0]?.file) return;
+    const unresolvedCampaigns = productionPreview.campaignMappings.filter((mapping) =>
+      !productionCampaignSelections[mapping.normalizedSource] ||
+      (productionCampaignSelections[mapping.normalizedSource] === '__create' && !productionPreview.canCreateCampaigns)
+    );
+    if (unresolvedCampaigns.length) {
+      setError(`A CEO must map or create the following campaign${unresolvedCampaigns.length === 1 ? '' : 's'} before import: ${unresolvedCampaigns.map((mapping) => mapping.source).join(', ')}.`);
+      return;
+    }
+    const unresolvedBusinessUnits = productionPreview.businessUnitMappings.filter((mapping) => !productionBusinessSelections[mapping.key]);
+    if (unresolvedBusinessUnits.length) {
+      setError('Review every detected business unit before importing.');
+      return;
+    }
+
+    setStep('importing');
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', previewFiles[0].file);
+      fd.append('reportMonth', String(reportMonth));
+      fd.append('reportYear', String(reportYear));
+      fd.append('campaignMappings', JSON.stringify(productionPreview.campaignMappings.map((mapping) => ({
+        source: mapping.normalizedSource,
+        targetId: productionCampaignSelections[mapping.normalizedSource] === '__create'
+          ? null
+          : productionCampaignSelections[mapping.normalizedSource],
+      }))));
+      fd.append('businessUnitMappings', JSON.stringify(productionPreview.businessUnitMappings.map((mapping) => ({
+        campaignSource: mapping.campaignNormalized,
+        source: mapping.normalizedSource,
+        targetId: productionBusinessSelections[mapping.key] === '__create'
+          ? null
+          : productionBusinessSelections[mapping.key],
+      }))));
+      const response = await fetch('/api/production-monitoring/import/commit', { method: 'POST', body: fd });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Production Monitoring import failed.');
+      setImportResult({
+        productionMonitoring: true,
+        importId: data.importId,
+        message: `Production Monitoring import completed: ${data.imported || 0} inserted, ${data.updated || 0} updated, ${data.unchanged || 0} unchanged, and ${data.skipped || 0} skipped.`,
+        success: data.imported || 0,
+        inserted: data.imported || 0,
+        updated: data.updated || 0,
+        unchanged: data.unchanged || 0,
+        skipped: (data.skipped || 0) + (data.unchanged || 0),
+        invalid: data.errors || 0,
+        errors: [],
+        warnings: data.warnings ? [`${data.warnings} workbook validation warning(s) were recorded in the import history.`] : [],
+        details: [],
+        importedFiles: [previewFiles[0].file.name],
+      });
+      setStep('done');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setStep('confirm');
+    }
+  };
+
   const handleConfirmImport = async () => {
     if (!previewFiles.length) return;
     const unresolved = worksheetPreviews.filter((sheet) => selectedWorksheetKeys.includes(sheet.key) && sheet.validRows > 0 && sheet.campaignMapping === 'unresolved' && !worksheetCampaigns[sheet.key]?.length);
@@ -811,6 +987,9 @@ export default function BulkImportPage() {
     setNormalizedPreviewRecords([]);
     setConsolidatedAgentPreviews([]);
     setMonthSummaries([]);
+    setProductionPreview(null);
+    setProductionCampaignSelections({});
+    setProductionBusinessSelections({});
     setMatched([]);
     setNewAgents([]);
     setWorksheetPreviews([]);
@@ -937,6 +1116,7 @@ export default function BulkImportPage() {
             <p><span className="font-medium text-slate-800">BPI Dashboard (.xlsx/.xls):</span> Automatically scans YTD Performance, Manpower Monitoring, PA agent/HOH monitoring, PL productivity, and PL HOH monitoring. Campaign sections, month groups, Count, and Volume metrics are mapped independently.</p>
             <p><span className="font-medium text-slate-800">MB PA Monthly Dashboard (.xlsx/.xls):</span> Automatically recognizes month blocks with C2G, BT, and BalCon under TRANS and BILLINGS, including totals, Tier, Target, and Achievement—even when the worksheet is named MOM PROD.</p>
             <p><span className="font-medium text-slate-800">MB ACQ / MB PL Annual Dashboard (.xlsx/.xls):</span> Automatically captures every populated agent/month from merged TARGET, ACTUAL, %, SCORE, and ACHIEVEMENT blocks, including zero values and agent metadata.</p>
+            <p><span className="font-medium text-slate-800">Production Monitoring (.xlsx):</span> Automatically detects campaigns, business units, reporting months, and every Week 1â€“Week 5 column present in the workbook. OM-name columns are excluded before preview and import.</p>
             <p className="text-xs text-slate-400">For single metric mode, the COUNT column is stored as the selected type. For all metrics mode, each column is stored separately. Use the Report Month picker to set the period.</p>
             <Button onClick={downloadTemplate} variant="outline" size="sm" className="gap-2 mt-1">
               <Download className="h-4 w-4" /> Download CSV Template
@@ -966,7 +1146,7 @@ export default function BulkImportPage() {
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">Campaign</label>
               <CampaignMultiSelect campaigns={availableCampaigns} value={campaignIds} onChange={setCampaignIds} placeholder="Select one or more campaigns..." />
-              <p className="text-xs text-slate-500">Selected campaigns are used for worksheet detection and confirmed fallback mapping.</p>
+              <p className="text-xs text-slate-500">Optional for Production Monitoring files because campaigns are detected from the workbook. Required for other formats.</p>
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">
@@ -1071,7 +1251,7 @@ export default function BulkImportPage() {
                 <Button type="button" variant="outline" size="sm" onClick={() => { setFiles([]); setSelectedFileNames([]); }}>Clear All Files</Button>
               </div>
             )}
-            <Button onClick={handlePreview} disabled={selectedFileNames.length === 0 || campaignIds.length === 0} className="w-full gap-2">
+            <Button onClick={handlePreview} disabled={selectedFileNames.length === 0} className="w-full gap-2">
               <Upload className="h-4 w-4" />
               {importMode === 'single' ? 'Preview Import' : 'Preview All Data'}
             </Button>
@@ -1276,7 +1456,7 @@ export default function BulkImportPage() {
       <div className="p-6 flex items-center justify-center min-h-64">
         <div className="text-center space-y-3 text-slate-600">
           <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto" />
-          <p className="text-sm">Scanning file and checking agents...</p>
+          <p className="text-sm">Scanning workbook structure and validating data...</p>
         </div>
       </div>
     );
@@ -1284,6 +1464,168 @@ export default function BulkImportPage() {
 
   // ─── STEP: CONFIRM ──────────────────────────────────────────────────────────
   if (step === 'confirm') {
+    if (productionPreview) {
+      const unresolvedCampaigns = productionPreview.campaignMappings.filter((mapping) =>
+        !productionCampaignSelections[mapping.normalizedSource] ||
+        (productionCampaignSelections[mapping.normalizedSource] === '__create' && !productionPreview.canCreateCampaigns)
+      );
+      const unresolvedBusinessUnits = productionPreview.businessUnitMappings.filter((mapping) => !productionBusinessSelections[mapping.key]);
+      const readyRecords = productionPreview.records.filter((record) =>
+        !record.issues.some((issue) => issue.level === 'ERROR') &&
+        !unresolvedCampaigns.some((mapping) => mapping.normalizedSource === record.campaignNormalized)
+      );
+      const periodLabel = (year: number, month: number) => new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString('en-US', {
+        month: 'long', year: 'numeric', timeZone: 'UTC',
+      });
+      const statusStyle = (status: ProductionBulkPreviewRecord['status']) => {
+        if (status === 'ERROR') return 'bg-red-100 text-red-800';
+        if (status === 'UPDATED') return 'bg-blue-100 text-blue-800';
+        if (status === 'UNCHANGED') return 'bg-slate-100 text-slate-700';
+        if (status === 'CONFLICT' || status === 'WARNING') return 'bg-amber-100 text-amber-800';
+        return 'bg-green-100 text-green-800';
+      };
+
+      return (
+        <div className="space-y-6 p-6">
+          <PageTitle
+            title="Review Production Monitoring Import"
+            subtitle="Campaigns, business units, reporting periods, and Week columns were detected from the Excel workbook"
+          />
+
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+            <p className="font-semibold">OM names are excluded</p>
+            <p className="mt-1 text-emerald-800">OM-name columns and values are not shown in this preview and will not be sent to the database.</p>
+          </div>
+
+          {error && (
+            <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              <AlertCircle className="h-4 w-4 shrink-0" />{error}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {[
+              ['Detected', productionPreview.stats.total, 'text-slate-800'],
+              ['Valid', productionPreview.stats.valid, 'text-green-700'],
+              ['New', productionPreview.stats.new, 'text-emerald-700'],
+              ['Updates', productionPreview.stats.updated, 'text-blue-700'],
+              ['Unchanged', productionPreview.stats.unchanged, 'text-slate-600'],
+              ['Errors', productionPreview.stats.errors, 'text-red-700'],
+            ].map(([label, value, color]) => (
+              <Card key={String(label)}><CardContent className="p-4 text-center">
+                <p className={`text-2xl font-bold ${color}`}>{Number(value).toLocaleString()}</p>
+                <p className="text-xs text-slate-500">{label}</p>
+              </CardContent></Card>
+            ))}
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Detected Workbook Structure</CardTitle>
+              <CardDescription>The reporting period and Week columns below came directly from {productionPreview.fileName}.</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              {productionPreview.reportingPeriods.map((period) => (
+                <span key={`${period.year}-${period.month}`} className="rounded-full bg-blue-100 px-3 py-1 text-xs font-medium text-blue-800">{periodLabel(period.year, period.month)}</span>
+              ))}
+              {productionPreview.detectedWeeks.map((week) => (
+                <span key={week} className="rounded-full bg-violet-100 px-3 py-1 text-xs font-medium text-violet-800">Week {week}</span>
+              ))}
+              <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-800">OM names excluded</span>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Campaign Mapping</CardTitle>
+              <CardDescription>Detected campaigns are matched automatically. Unknown campaigns must be mapped to an assigned campaign; only a CEO can create a new campaign.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {productionPreview.campaignMappings.map((mapping) => {
+                const selected = productionCampaignSelections[mapping.normalizedSource] || '';
+                const unresolved = selected === '__create' && !productionPreview.canCreateCampaigns;
+                return (
+                  <div key={mapping.normalizedSource} className={`grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(0,1fr)_minmax(18rem,1fr)] md:items-center ${unresolved ? 'border-amber-300 bg-amber-50' : ''}`}>
+                    <div>
+                      <p className="font-medium text-slate-800">{mapping.source}</p>
+                      <p className="text-xs text-slate-500">{mapping.suggestion ? `Suggested: ${mapping.suggestion.name} (${mapping.suggestion.confidence}% match)` : `Detection: ${mapping.resolution.toLowerCase()}`}</p>
+                    </div>
+                    <select value={selected} onChange={(event) => handleProductionCampaignChange(mapping.normalizedSource, event.target.value)} className="w-full rounded-md border bg-white px-3 py-2 text-sm">
+                      <option value="">Select campaign...</option>
+                      {productionPreview.availableCampaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
+                      <option value="__create" disabled={!productionPreview.canCreateCampaigns}>{productionPreview.canCreateCampaigns ? `Create “${mapping.source}”` : `Needs CEO mapping: “${mapping.source}”`}</option>
+                    </select>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Business Unit Mapping</CardTitle>
+              <CardDescription>Existing business units are matched automatically. A new business unit can be created inside the mapped campaign.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {productionPreview.businessUnitMappings.map((mapping) => {
+                const selectedCampaignId = productionCampaignSelections[mapping.campaignNormalized];
+                const unitOptions = productionPreview.availableBusinessUnits.filter((unit) => unit.campaignId === selectedCampaignId);
+                const selected = productionBusinessSelections[mapping.key] || '';
+                return (
+                  <div key={mapping.key} className="grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(0,1fr)_minmax(18rem,1fr)] md:items-center">
+                    <div>
+                      <p className="font-medium text-slate-800">{mapping.source}</p>
+                      <p className="text-xs text-slate-500">Campaign: {productionPreview.campaignMappings.find((campaign) => campaign.normalizedSource === mapping.campaignNormalized)?.source || mapping.campaignNormalized}{mapping.suggestion ? ` · Suggested: ${mapping.suggestion.name} (${mapping.suggestion.confidence}% match)` : ''}</p>
+                    </div>
+                    <select value={selected} onChange={(event) => setProductionBusinessSelections((current) => ({ ...current, [mapping.key]: event.target.value }))} className="w-full rounded-md border bg-white px-3 py-2 text-sm">
+                      <option value="">Select business unit...</option>
+                      {unitOptions.map((unit) => <option key={unit.id} value={unit.id}>{unit.name}</option>)}
+                      <option value="__create">Create “{mapping.source}” in mapped campaign</option>
+                    </select>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Production Data Preview</CardTitle>
+              <CardDescription>{readyRecords.length.toLocaleString()} valid row(s) are ready. No OM field is included.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="max-h-[34rem] overflow-auto rounded-lg border">
+                <table className="min-w-[1200px] text-xs">
+                  <thead className="sticky top-0 bg-slate-100 text-left"><tr>
+                    <th className="p-2">Campaign</th><th className="p-2">Business Unit</th><th className="p-2">Period</th><th className="p-2">Metric</th><th className="p-2 text-right">Target</th>
+                    {productionPreview.detectedWeeks.map((week) => <th key={week} className="p-2 text-right">Week {week}</th>)}
+                    <th className="p-2 text-right">MTD</th><th className="p-2 text-right">Achievement</th><th className="p-2 text-right">Run Rate</th><th className="p-2">Status</th><th className="p-2">Validation</th>
+                  </tr></thead>
+                  <tbody>{productionPreview.records.map((record) => (
+                    <tr key={record.rowKey} className="border-t">
+                      <td className="p-2 font-medium">{record.campaignSource}</td><td className="p-2">{record.businessUnitSource}</td>
+                      <td className="whitespace-nowrap p-2">{record.reportYear && record.reportMonth ? periodLabel(record.reportYear, record.reportMonth) : 'Invalid'}</td>
+                      <td className="p-2 capitalize">{record.metricType.replace(/_/g, ' ')}</td><td className="p-2 text-right">{formatProductionMetric(record.target, record.metricType, record.metricUnit)}</td>
+                      {productionPreview.detectedWeeks.map((week) => <td key={week} className="p-2 text-right">{formatProductionMetric(productionWeekValue(record, week), record.metricType, record.metricUnit)}</td>)}
+                      <td className="p-2 text-right font-medium">{formatProductionMetric(record.mtd, record.metricType, record.metricUnit)}</td><td className="p-2 text-right">{formatAchievement(record.achievement)}</td><td className="p-2 text-right">{formatAchievement(record.runRate)}</td>
+                      <td className="p-2"><span className={`rounded-full px-2 py-1 font-medium ${statusStyle(record.status)}`}>{record.status}</span></td><td className="max-w-72 p-2 text-slate-600">{record.issues.map((issue) => issue.message).join(' ') || 'Valid'}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Button variant="outline" onClick={handleReset} className="gap-2"><ArrowLeft className="h-4 w-4" />Start Over</Button>
+            <Button onClick={handleProductionConfirm} disabled={!readyRecords.length || unresolvedCampaigns.length > 0 || unresolvedBusinessUnits.length > 0} className="flex-1 gap-2 bg-green-600 hover:bg-green-700">
+              <CheckCircle className="h-4 w-4" />Import {readyRecords.length.toLocaleString()} Valid Production Row{readyRecords.length === 1 ? '' : 's'}
+            </Button>
+          </div>
+        </div>
+      );
+    }
+
     const previewRows: any[] = normalizedPreviewRecords.length ? normalizedPreviewRecords.map((row) => ({
       ...row, name: row.agent, agentName: row.agent, previewStatus: row.status,
     })) : [
@@ -1792,7 +2134,7 @@ export default function BulkImportPage() {
       <div className="p-6 flex items-center justify-center min-h-64">
         <div className="text-center space-y-3 text-slate-600">
           <div className="animate-spin h-8 w-8 border-4 border-green-500 border-t-transparent rounded-full mx-auto" />
-          <p className="text-sm">Creating agents and importing records...</p>
+          <p className="text-sm">{productionPreview ? 'Importing Production Monitoring records...' : 'Creating agents and importing records...'}</p>
         </div>
       </div>
     );
@@ -1801,7 +2143,7 @@ export default function BulkImportPage() {
   // ─── STEP: DONE ─────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6 p-6">
-      <PageTitle title="Import Complete" subtitle={isKpiPreview ? "KPI data has been saved" : "Production data has been saved"} />
+      <PageTitle title="Import Complete" subtitle={importResult?.productionMonitoring ? "Production Monitoring data has been saved" : isKpiPreview ? "KPI data has been saved" : "Production data has been saved"} />
 
       <Card className="border-green-200">
         <CardHeader>
@@ -1983,10 +2325,16 @@ export default function BulkImportPage() {
             </div>
           )}
 
-          <Button onClick={handleReset} variant="outline" className="w-full gap-2">
-            <Upload className="h-4 w-4" />
-            Import Another File
-          </Button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            {importResult?.productionMonitoring && (
+              <Button onClick={() => router.push('/production-monitoring')} className="flex-1 gap-2">
+                <Eye className="h-4 w-4" />Open Production Monitoring
+              </Button>
+            )}
+            <Button onClick={handleReset} variant="outline" className="flex-1 gap-2">
+              <Upload className="h-4 w-4" />Import Another File
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>
