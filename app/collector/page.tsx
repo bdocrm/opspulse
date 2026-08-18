@@ -15,6 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { CampaignSummaryCard } from '@/components/campaign-summary-card';
 import { CollectorPerformanceChart } from '@/components/charts/collector-performance-chart';
 import { DailyLineChart } from '@/components/charts/daily-line-chart';
+import { MonthMultiSelect } from '@/components/month-multi-select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -24,6 +25,7 @@ import {
   AlertTriangle, CalendarDays, Trophy, LayoutGrid, List, BarChart3,
   Clock3, Database, Upload, MoreHorizontal, ArrowRight, Minus
 } from 'lucide-react';
+import { dataCoverage, monthName, normalizeMonthSelection } from '@/lib/month-selection';
 
 interface Agent {
   id: string;
@@ -579,29 +581,32 @@ export default function CollectorDashboard() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
 
-  // Date range filter
+  // Reporting-period filter. URL state is restored after hydration so shared
+  // links never expose or request campaigns outside the server-authorized set.
   const today = new Date().toISOString().split('T')[0];
-  const [dateFrom, setDateFrom] = useState(today);
-  const [dateTo, setDateTo] = useState(today);
-  const [datePreset, setDatePreset] = useState<'today' | 'week' | 'month' | 'custom'>('today');
+  const [selectedYear, setSelectedYear] = useState(() => new Date().getFullYear());
+  const [selectedMonths, setSelectedMonths] = useState<number[]>(() => [new Date().getMonth() + 1]);
+  const [urlFiltersReady, setUrlFiltersReady] = useState(false);
 
-  const handleDatePreset = (preset: 'today' | 'week' | 'month' | 'custom') => {
-    setDatePreset(preset);
-    const now = new Date();
-    if (preset === 'today') {
-      setDateFrom(today);
-      setDateTo(today);
-    } else if (preset === 'week') {
-      const weekAgo = new Date(now);
-      weekAgo.setDate(weekAgo.getDate() - 6);
-      setDateFrom(weekAgo.toISOString().split('T')[0]);
-      setDateTo(today);
-    } else if (preset === 'month') {
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      setDateFrom(monthStart.toISOString().split('T')[0]);
-      setDateTo(today);
-    }
-  };
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlYear = Number(params.get('year'));
+    const urlMonths = normalizeMonthSelection(params.get('months'));
+    if (Number.isInteger(urlYear) && urlYear >= 2000 && urlYear <= 2100) setSelectedYear(urlYear);
+    if (urlMonths.length) setSelectedMonths(urlMonths);
+    const campaign = params.get('campaign');
+    if (campaign) setSelectedCampaignId(campaign === 'all' ? ALL_CAMPAIGNS : campaign);
+    setUrlFiltersReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!urlFiltersReady) return;
+    const params = new URLSearchParams(window.location.search);
+    params.set('campaign', selectedCampaignId === ALL_CAMPAIGNS ? 'all' : selectedCampaignId);
+    params.set('year', String(selectedYear));
+    params.set('months', selectedMonths.join(','));
+    window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+  }, [selectedCampaignId, selectedMonths, selectedYear, urlFiltersReady]);
 
   const fetcher = async (url: string) => {
     const response = await fetch(url, { cache: 'no-store' });
@@ -613,16 +618,16 @@ export default function CollectorDashboard() {
   // grouped by campaign. Avoids per-campaign round-trips (no N+1, no duplicate
   // requests) and returns only campaigns assigned to this collector.
   const { data: dashboardData, error: dashboardError, isLoading: loadingDashboard, isValidating: refreshingDashboard, mutate: mutateDashboard } = useSWR(
-    session?.user && dateFrom && dateTo
-      ? `/api/collectors/dashboard?dateFrom=${dateFrom}&dateTo=${dateTo}&attendanceDate=${dateTo}`
+    session?.user && urlFiltersReady && selectedMonths.length
+      ? `/api/collectors/dashboard?year=${selectedYear}&months=${selectedMonths.join(',')}&attendanceDate=${today}`
       : null,
     fetcher,
     { refreshInterval: 30000 }
   );
 
   const allCampaigns: CampaignBlock[] = useMemo(
-    () => (Array.isArray(dashboardData?.campaigns) ? dashboardData.campaigns : []),
-    [dashboardData]
+    () => (selectedMonths.length && Array.isArray(dashboardData?.campaigns) ? dashboardData.campaigns : []),
+    [dashboardData, selectedMonths.length]
   );
 
   const campaignGroups = useMemo(() => {
@@ -648,6 +653,30 @@ export default function CollectorDashboard() {
     },
     [allCampaigns, selectedCampaignId]
   );
+
+  const availableMonths = useMemo(() => {
+    const byCampaign = dashboardData?.availability?.byCampaign ?? {};
+    return Array.from(new Set(campaigns.flatMap((campaign) => Array.isArray(byCampaign[campaign.id]) ? byCampaign[campaign.id] : []))).sort((a, b) => Number(a) - Number(b)) as number[];
+  }, [campaigns, dashboardData?.availability?.byCampaign]);
+  const coverage = useMemo(() => dataCoverage(availableMonths), [availableMonths]);
+  const selectedPeriodHasData = selectedMonths.some((month) => availableMonths.includes(month));
+  const latestAvailableMonth = availableMonths.at(-1);
+  const selectedPeriodLabel = selectedMonths.length === 12
+    ? `All months ${selectedYear}`
+    : `${selectedMonths.map((month) => monthName(month, true)).join(', ')} ${selectedYear}`;
+  const selectedActivityTrend = useMemo(() => {
+    const byCampaign = dashboardData?.activityTrendByCampaign ?? {};
+    const combined = new Map<string, { date: string; value: number | null; hasData: boolean; month?: number; year?: number }>();
+    for (const campaign of campaigns) {
+      for (const row of (byCampaign[campaign.id] ?? []) as Array<{ date: string; value: number | null; hasData?: boolean; month?: number; year?: number }>) {
+        const current = combined.get(row.date) ?? { date: row.date, value: null, hasData: false, month: row.month, year: row.year };
+        if (row.value != null) current.value = Number(current.value ?? 0) + Number(row.value);
+        current.hasData ||= Boolean(row.hasData);
+        combined.set(row.date, current);
+      }
+    }
+    return [...combined.values()];
+  }, [campaigns, dashboardData?.activityTrendByCampaign]);
 
   // Default the Add-Agent campaign selector to the first assigned campaign.
   useEffect(() => {
@@ -1006,7 +1035,7 @@ export default function CollectorDashboard() {
 
   const campaignExportRows = (campaign: CampaignBlock): Record<string, string | number>[] => {
     const sorted = [...campaign.agents].sort((a, b) => compareCampaignAgents(campaign, a, b));
-    return sorted.map((agent, index): Record<string, string | number> => {
+    const rows = sorted.map((agent, index): Record<string, string | number> => {
       const prod = campaign.production[agent.id] || ZERO_PROD;
       const record = campaign.attendance[agent.id];
       const target = agent.monthlyTarget || 0;
@@ -1089,6 +1118,7 @@ export default function CollectorDashboard() {
         'Progress %': target > 0 ? ((actual / target) * 100).toFixed(1) : '0',
       };
     });
+    return rows.map((row) => ({ 'Filter Year': selectedYear, 'Filter Months': selectedMonths.map((month) => monthName(month, true)).join(' | '), ...row }));
   };
 
   const handleExport = () => {
@@ -1214,35 +1244,35 @@ export default function CollectorDashboard() {
         </Card>
       )}
 
-      {/* Date Filter */}
+      {/* Reporting Period */}
       <Card className="border-border/80 bg-background/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/85">
         <CardContent className="py-3">
-          <div className="flex flex-col md:flex-row md:items-center gap-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center">
             <div className="flex items-center gap-2">
               <CalendarDays className="w-4 h-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Date:</span>
+              <span className="text-sm font-medium">Reporting Period:</span>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant={datePreset === 'today' ? 'default' : 'outline'} onClick={() => handleDatePreset('today')}>Today</Button>
-              <Button size="sm" variant={datePreset === 'week' ? 'default' : 'outline'} onClick={() => handleDatePreset('week')}>Last 7 Days</Button>
-              <Button size="sm" variant={datePreset === 'month' ? 'default' : 'outline'} onClick={() => handleDatePreset('month')}>MTD</Button>
-              <div className="flex items-center gap-2 ml-2">
-                <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setDatePreset('custom'); }} className="w-36 h-8" />
-                <span className="text-muted-foreground">to</span>
-                <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setDatePreset('custom'); }} className="w-36 h-8" />
-              </div>
-            </div>
-            <div className="ml-auto text-sm text-muted-foreground">
-              {dateFrom === dateTo ? (
-                <span>{new Date(dateFrom).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
-              ) : (
-                <span>{new Date(dateFrom).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(dateTo).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-              )}
+            <Select value={String(selectedYear)} onValueChange={(value) => setSelectedYear(Number(value))}>
+              <SelectTrigger className="w-28" aria-label="Reporting year"><SelectValue /></SelectTrigger>
+              <SelectContent>{Array.from(new Set([selectedYear, ...Array.from({ length: 7 }, (_, index) => new Date().getFullYear() + 1 - index)])).sort((a, b) => b - a).map((year) => <SelectItem key={year} value={String(year)}>{year}</SelectItem>)}</SelectContent>
+            </Select>
+            <MonthMultiSelect selectedMonths={selectedMonths} availableMonths={availableMonths} latestAvailableMonth={latestAvailableMonth} onChange={setSelectedMonths} />
+            <div className="ml-auto min-w-56 text-sm">
+              <div className="flex items-center justify-between"><span className="font-medium">Data Coverage</span><span className="text-muted-foreground">{coverage.count} of 12 months</span></div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${coverage.percent}%` }} /></div>
+              <p className="mt-1 text-xs text-muted-foreground">{coverage.percent}% coverage for the selected campaign scope</p>
             </div>
           </div>
         </CardContent>
       </Card>
       </div>
+
+      {selectedMonths.length === 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" /><p>Select at least one month to load dashboard performance.</p></div>
+      )}
+      {selectedMonths.length > 0 && !loadingDashboard && !selectedPeriodHasData && (
+        <div className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-3 text-sm"><Database className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" /><p>No production data available for {selectedMonths.map((month) => monthName(month)).join(', ')} {selectedYear}. Missing reports are not treated as zero production.</p></div>
+      )}
 
       {kpis.latestImportView && (
         <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 dark:border-blue-800/70 dark:bg-blue-950/40 dark:text-blue-200">
@@ -1331,12 +1361,12 @@ export default function CollectorDashboard() {
         <CollectorKpiCard label="Total Agents" value={kpis.totalAgents.toLocaleString()} support={`${kpis.presentCount} present · ${kpis.absentCount} absent`} icon={Users} loading={loadingDashboard} />
         <CollectorKpiCard
           label={kpis.mixedKpis ? 'Imported Volume' : `Total ${kpiLabel(kpis.primaryKpi)}`}
-          value={kpis.mixedKpis ? formatKpiValue('volume', kpis.totalVolume) : formatKpiValue(kpis.primaryKpi, kpis.allAcq ? kpis.totalNtb : kpis.kpiValue)}
-          support={kpis.mixedKpis ? 'Mixed campaign KPIs remain separate below.' : 'Production in the selected range'}
+          value={!selectedPeriodHasData ? 'No data' : kpis.mixedKpis ? formatKpiValue('volume', kpis.totalVolume) : formatKpiValue(kpis.primaryKpi, kpis.allAcq ? kpis.totalNtb : kpis.kpiValue)}
+          support={!selectedPeriodHasData ? 'No production data available for this period.' : kpis.mixedKpis ? 'Mixed campaign KPIs remain separate below.' : 'Production in the selected months'}
           icon={TrendingUp}
           loading={loadingDashboard}
         />
-        <CollectorKpiCard label={kpis.latestImportView ? 'Latest Imported Records' : 'Records in Range'} value={kpis.entriesCount.toLocaleString()} support={dateFrom === dateTo ? dateFrom : `${dateFrom} to ${dateTo}`} icon={ClipboardList} loading={loadingDashboard} />
+        <CollectorKpiCard label="Records in Selected Months" value={selectedPeriodHasData ? kpis.entriesCount.toLocaleString() : 'No data'} support={selectedPeriodLabel} icon={ClipboardList} loading={loadingDashboard} />
         <CollectorKpiCard label="Overall Achievement" value={campaignAchievementSummary.overall == null ? 'Unavailable' : `${campaignAchievementSummary.overall.toFixed(1)}%`} support={campaignAchievementSummary.overall == null ? 'Valid targets are required.' : `${campaignHealth['on-track']} of ${campaigns.length} campaigns on target`} icon={BarChart3} loading={loadingDashboard} />
       </div>
       {/* Collector Focus */}
@@ -1527,7 +1557,7 @@ export default function CollectorDashboard() {
           </div>
           <div className="mb-6 grid gap-4 xl:grid-cols-2">
             <Card><CardHeader className="pb-2"><CardTitle className="text-base">Performance Overview</CardTitle><CardDescription>Achievement by campaign for the active filters.</CardDescription></CardHeader><CardContent>{loadingDashboard ? <Skeleton className="h-64 w-full" /> : filteredCampaignViews.length ? <CollectorPerformanceChart data={filteredCampaignViews.map((item) => ({ name: item.campaign.campaignName, achievement: item.achievement, status: item.status }))} /> : <p className="py-16 text-center text-sm text-muted-foreground">No campaigns match your filters.</p>}</CardContent></Card>
-            <Card><CardHeader className="pb-2"><CardTitle className="text-base">Production Activity</CardTitle><CardDescription>Production records by date for the selected range.</CardDescription></CardHeader><CardContent>{loadingDashboard ? <Skeleton className="h-[300px] w-full" /> : dashboardData?.activityTrend?.length ? <DailyLineChart data={dashboardData.activityTrend} label="Records" /> : <div className="py-16 text-center"><Database className="mx-auto h-8 w-8 text-muted-foreground" /><p className="mt-3 text-sm font-semibold">No production history available</p><p className="mt-1 text-sm text-muted-foreground">Change the date range or import production data.</p></div>}</CardContent></Card>
+            <Card><CardHeader className="pb-2"><CardTitle className="text-base">Performance Trend</CardTitle><CardDescription>{selectedMonths.length === 1 ? `Daily production activity for ${monthName(selectedMonths[0])} ${selectedYear}.` : 'Month-to-month comparison for the selected months.'}</CardDescription></CardHeader><CardContent>{loadingDashboard ? <Skeleton className="h-[300px] w-full" /> : selectedActivityTrend.some((row) => row.value != null) ? <DailyLineChart data={selectedActivityTrend} label="Records" /> : <div className="py-16 text-center"><Database className="mx-auto h-8 w-8 text-muted-foreground" /><p className="mt-3 text-sm font-semibold">No production data available</p><p className="mt-1 text-sm text-muted-foreground">The selected months have no imported production records.</p></div>}</CardContent></Card>
           </div>
           {filteredCampaignViews.length === 0 && !loadingDashboard && <Card><CardContent className="py-10 text-center"><Search className="mx-auto h-8 w-8 text-muted-foreground" /><p className="mt-3 font-semibold">No campaigns match your filters</p><Button variant="outline" className="mt-4" onClick={() => { setCampaignSearch(''); setCampaignStatusFilter('all'); }}>Clear Filters</Button></CardContent></Card>}
           <div className={campaignViewMode === 'cards' ? 'grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3' : 'hidden'}>

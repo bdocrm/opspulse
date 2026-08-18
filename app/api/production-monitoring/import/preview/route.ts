@@ -9,6 +9,7 @@ import {
   validateProductionWorkbookFile,
 } from "@/lib/production-import";
 import { parseProductionWorkbook } from "@/lib/production-workbook";
+import { productionMonthKey } from "@/lib/production-month-import";
 
 export const runtime = "nodejs";
 
@@ -54,10 +55,11 @@ export async function POST(request: NextRequest) {
     const businessUnitMappings = buildBusinessUnitMappings(parsed.records, campaignMappings, businessUnits);
     const periods = parsed.reportingPeriods.map((period) => ({ reportYear: period.year, reportMonth: period.month }));
     const existing = periods.length ? await prisma.productionMonitoring.findMany({
-      where: { OR: periods },
+      where: { campaignId: { in: campaigns.map((campaign) => campaign.id) }, OR: periods },
       select: { id: true, campaignId: true, businessUnitId: true, reportYear: true, reportMonth: true, metricType: true, sourceHash: true },
     }) : [];
     const existingByKey = new Map(existing.map((record) => [[record.campaignId, record.businessUnitId, record.reportYear, record.reportMonth, record.metricType].join(":"), record]));
+    const existingMonthKeys = new Set(existing.map((record) => productionMonthKey(record.campaignId, record.reportYear, record.reportMonth)));
     const records = parsed.records.map((record) => {
       const campaignMapping = campaignMappings.find((mapping) => mapping.normalizedSource === record.campaignNormalized);
       const businessMapping = businessUnitMappings.find((mapping) => mapping.key === `${record.campaignNormalized}:${record.businessUnitNormalized}`);
@@ -78,8 +80,24 @@ export async function POST(request: NextRequest) {
               : hasWarning
                 ? "WARNING"
                 : "NEW";
-      return { ...record, existingRecordId: existingRecord?.id ?? null, status };
+      const monthStatus = campaignMapping?.matchedCampaignId && record.reportYear && record.reportMonth
+        ? existingMonthKeys.has(productionMonthKey(campaignMapping.matchedCampaignId, record.reportYear, record.reportMonth)) ? "EXISTING" : "NEW"
+        : "UNKNOWN";
+      return { ...record, existingRecordId: existingRecord?.id ?? null, status, monthStatus };
     });
+    const monthSummary = [...new Map(records
+      .filter((record) => record.reportYear && record.reportMonth && record.campaignNormalized)
+      .map((record) => {
+        const key = `${record.campaignNormalized}:${record.reportYear}:${record.reportMonth}`;
+        return [key, {
+          key,
+          campaignSource: record.campaignSource,
+          campaignNormalized: record.campaignNormalized,
+          reportYear: record.reportYear as number,
+          reportMonth: record.reportMonth as number,
+          status: record.monthStatus,
+        }];
+      })).values()];
     const count = (status: string) => records.filter((record) => record.status === status).length;
     return NextResponse.json({
       fileName: parsed.fileName,
@@ -92,6 +110,8 @@ export async function POST(request: NextRequest) {
       availableCampaigns: campaigns.map((campaign) => ({ id: campaign.id, name: campaign.campaignName })),
       availableBusinessUnits: businessUnits.map((unit) => ({ id: unit.id, campaignId: unit.campaignId, name: unit.businessUnitName })),
       canCreateCampaigns: canAdminProduction(user),
+      existingMonthKeys: [...existingMonthKeys],
+      monthSummary,
       records,
       stats: {
         total: records.length,

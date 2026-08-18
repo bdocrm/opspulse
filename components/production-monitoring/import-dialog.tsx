@@ -111,6 +111,7 @@ export function ProductionImportDialog({ onImported }: { onImported: () => void 
       const form = new FormData();
       form.set("file", file); form.set("reportMonth", String(reportMonth)); form.set("reportYear", String(reportYear));
       form.set("validRowKeys", JSON.stringify(preview.records.filter((record) => !record.issues.some((issue) => issue.level === "ERROR")).map((record) => record.rowKey)));
+      form.set("importStrategy", "fill_missing");
       form.set("campaignMappings", JSON.stringify(preview.campaignMappings.map((mapping) => ({
         source: mapping.normalizedSource,
         targetId: campaignSelections[mapping.normalizedSource] === "__create" ? null : campaignSelections[mapping.normalizedSource],

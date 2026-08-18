@@ -14,7 +14,8 @@ import {
 interface DailyLineChartProps {
   data: {
     date: string;
-    value: number;
+    value: number | null;
+    hasData?: boolean;
     goal?: number | null;
     actual?: number;
     achievement?: number | null;
@@ -33,6 +34,15 @@ function formatNumber(value: number | null | undefined) {
 function ExecutiveTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   const row = payload[0].payload;
+
+  if (row.hasData === false || row.value == null) {
+    return (
+      <div className="min-w-[180px] rounded-md border bg-card p-3 text-xs shadow-sm">
+        <p className="font-semibold text-foreground">{row.date ?? label}</p>
+        <p className="mt-1 text-muted-foreground">No production data available.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-w-[220px] rounded-md border bg-card p-3 text-xs shadow-sm">

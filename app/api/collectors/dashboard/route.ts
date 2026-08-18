@@ -12,6 +12,7 @@ import {
   BDO_CCC_CAMPAIGN_PATTERN,
   highestBdoCccAchievementPercent,
 } from "@/lib/bdo-ccc-kpi";
+import { isSelectedPeriod, monthName, monthSelectionRange, normalizeMonthSelection } from "@/lib/month-selection";
 
 const BUSINESS_TIME_ZONE = "Asia/Manila";
 const BUSINESS_TIME_ZONE_OFFSET = "+08:00";
@@ -123,13 +124,17 @@ export async function GET(req: NextRequest) {
     }
 
     const { searchParams } = new URL(req.url);
-    const dateFrom = searchParams.get("dateFrom");
-    const dateTo = searchParams.get("dateTo");
+    const requestedYear = Number(searchParams.get("year"));
+    const requestedMonths = normalizeMonthSelection(searchParams.get("months"));
+    const hasExplicitMonthSelection = Number.isInteger(requestedYear) && requestedYear >= 2000 && requestedYear <= 2100 && searchParams.has("months");
+    const explicitRange = hasExplicitMonthSelection ? monthSelectionRange(requestedYear, requestedMonths) : null;
+    const dateFrom = explicitRange?.dateFrom ?? searchParams.get("dateFrom");
+    const dateTo = explicitRange?.dateTo ?? searchParams.get("dateTo");
     const attendanceDate = searchParams.get("attendanceDate") || dateTo;
     const requestedCampaignId = searchParams.get("campaignId");
 
-    if (!dateFrom || !dateTo) {
-      return NextResponse.json({ error: "Date range required" }, { status: 400 });
+    if (!dateFrom || !dateTo || (hasExplicitMonthSelection && !requestedMonths.length)) {
+      return NextResponse.json({ error: "Choose at least one valid reporting month." }, { status: 400 });
     }
 
     const { start: startDate, end: endDate } = businessDayRange(dateFrom, dateTo);
@@ -138,10 +143,20 @@ export async function GET(req: NextRequest) {
     const selectedEndPeriod = monthYearFromYmd(dateTo);
     const selectedStartPeriodIndex = selectedStartPeriod.year * 12 + selectedStartPeriod.month;
     const selectedEndPeriodIndex = selectedEndPeriod.year * 12 + selectedEndPeriod.month;
+    const selectedYear = hasExplicitMonthSelection ? requestedYear : selectedEndPeriod.year;
+    const selectedMonths = hasExplicitMonthSelection
+      ? requestedMonths
+      : Array.from({ length: selectedEndPeriodIndex - selectedStartPeriodIndex + 1 }, (_, index) => ((selectedStartPeriod.month - 1 + index) % 12) + 1);
+    const periodSelected = (year: number, month: number | null | undefined) => hasExplicitMonthSelection
+      ? isSelectedPeriod(year, month, selectedYear, selectedMonths)
+      : month != null && year * 12 + month >= selectedStartPeriodIndex && year * 12 + month <= selectedEndPeriodIndex;
     const isImportedRecordInSelectedRange = (record: { year: number; month: number | null; reportDate: Date }) => {
       if (record.month != null) {
-        const periodIndex = record.year * 12 + record.month;
-        return periodIndex >= selectedStartPeriodIndex && periodIndex <= selectedEndPeriodIndex;
+        return periodSelected(record.year, record.month);
+      }
+      if (hasExplicitMonthSelection) {
+        const [year, month] = businessMonthKey(record.reportDate).split("-").map(Number);
+        return periodSelected(year, month);
       }
       return record.reportDate >= startDate && record.reportDate <= endDate;
     };
@@ -358,6 +373,25 @@ export async function GET(req: NextRequest) {
       }).catch(() => []),
     ]);
 
+    if (hasExplicitMonthSelection) {
+      const selectedDetails = rawDetails.filter((detail) => {
+        const [year, month] = businessMonthKey(detail.productionEntry.date).split("-").map(Number);
+        return periodSelected(year, month);
+      });
+      rawDetails.splice(0, rawDetails.length, ...selectedDetails);
+      const selectedEntries = rawEntries.filter((entry) => {
+        const [year, month] = businessMonthKey(entry.date).split("-").map(Number);
+        return periodSelected(year, month);
+      });
+      rawEntries.splice(0, rawEntries.length, ...selectedEntries);
+    }
+
+    const availabilityRange = businessMonthRange(`${selectedYear}-01-01`, `${selectedYear}-12-31`);
+    const availabilityEntries = await prisma.productionEntry.findMany({
+      where: { campaignId: { in: assignedIds }, date: { gte: availabilityRange.start, lte: availabilityRange.end } },
+      select: { campaignId: true, date: true },
+    });
+
     const importedFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
     const importedAgentFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
     const bdoCccCampaignIds = new Set(
@@ -368,11 +402,10 @@ export async function GET(req: NextRequest) {
     const bdoCccKpiFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
     const selectedBdoCccKpiRecords = rawKpiRecords.filter((record) => {
       if (!bdoCccCampaignIds.has(record.campaignId)) return false;
-      const periodIndex = record.year * 12 + record.month;
-      return periodIndex >= selectedStartPeriodIndex && periodIndex <= selectedEndPeriodIndex;
+      return periodSelected(record.year, record.month);
     });
     const bdoCccKpiRecords = [...selectedBdoCccKpiRecords];
-    for (const campaignId of bdoCccCampaignIds) {
+    for (const campaignId of hasExplicitMonthSelection ? [] : bdoCccCampaignIds) {
       if (selectedBdoCccKpiRecords.some((record) => record.campaignId === campaignId)) continue;
       const latest = rawKpiRecords
         .filter((record) => record.campaignId === campaignId)
@@ -392,7 +425,9 @@ export async function GET(req: NextRequest) {
       .filter((campaign) => /^BDO\s+SGM$/i.test(campaign.campaignName.trim()))
       .map((campaign) => campaign.id);
     const selectedDetailCampaignIds = new Set(rawDetails.map((detail) => detail.campaignId));
-    const fallbackCampaignIds = bdoSgmCampaignIds.filter((campaignId) => !selectedDetailCampaignIds.has(campaignId));
+    const fallbackCampaignIds = hasExplicitMonthSelection
+      ? []
+      : bdoSgmCampaignIds.filter((campaignId) => !selectedDetailCampaignIds.has(campaignId));
 
     // BDO SGM ranking workbooks contain monthly data. When a daily range such
     // as "Today" has no matching rows, use the campaign's latest imported
@@ -538,11 +573,15 @@ export async function GET(req: NextRequest) {
       const key = `${entry.campaignId}|${businessMonthKey(entry.date)}`;
       return !dashboardAgentImportPeriodKeys.has(key) && (isMonthlyImport || !monthlyImportKeys.has(key));
     });
-    const monthlyGoalsByCampaignId = new Map(
-      monthlyGoalRows
-        .filter((row) => Number(row.month) === goalMonth && Number(row.year) === goalYear)
-        .map((row) => [row.campaignId, row])
-    );
+    const monthlyGoalsByCampaignId = new Map<string, any>();
+    for (const row of monthlyGoalRows.filter((item) => periodSelected(Number(item.year), Number(item.month)))) {
+      const current = monthlyGoalsByCampaignId.get(row.campaignId);
+      monthlyGoalsByCampaignId.set(row.campaignId, current ? {
+        ...row,
+        monthlyGoal: Number(current.monthlyGoal ?? 0) + Number(row.monthlyGoal ?? 0),
+        supplementaryGoal: Number(current.supplementaryGoal ?? 0) + Number(row.supplementaryGoal ?? 0),
+      } : row);
+    }
     const monthlyGoalsByCampaignPeriod = new Map(
       monthlyGoalRows.map((row) => [`${row.campaignId}|${row.year}|${row.month}`, row])
     );
@@ -654,8 +693,7 @@ export async function GET(req: NextRequest) {
     const importedSummaryByCampaignPeriod = new Map<string, { goal: number; actual: number }>();
     for (const metric of rawMetricRecords) {
       if (!metric.sourceFile || metric.reportMonth == null) continue;
-      const periodIndex = metric.reportYear * 12 + metric.reportMonth;
-      if (periodIndex < selectedStartPeriodIndex || periodIndex > selectedEndPeriodIndex) continue;
+      if (!periodSelected(metric.reportYear, metric.reportMonth)) continue;
       if (metric.goal != null) {
         const byAgent = importedMetricGoalsByCampaign.get(metric.campaignId) ?? {};
         const goals = byAgent[metric.agentId] ?? {};
@@ -846,8 +884,7 @@ export async function GET(req: NextRequest) {
     for (const metric of rawMetricRecords) {
       if (!mbPlCampaignIds.has(metric.campaignId) || !metric.sourceFile) continue;
       if (metric.reportMonth == null) continue;
-      const periodIndex = metric.reportYear * 12 + metric.reportMonth;
-      if (periodIndex < selectedStartPeriodIndex || periodIndex > selectedEndPeriodIndex) continue;
+      if (!periodSelected(metric.reportYear, metric.reportMonth)) continue;
 
       const byAgent = mbPlPerformanceByCampaign.get(metric.campaignId) ?? {};
       const performance = byAgent[metric.agentId] ?? emptyMbPlPerformance();
@@ -1092,13 +1129,7 @@ export async function GET(req: NextRequest) {
     const metricCountByCampaign = new Map<string, number>();
     for (const metric of rawMetricRecords) {
       if (!metric.sourceFile || metric.reportMonth == null) continue;
-      const periodIndex = metric.reportYear * 12 + metric.reportMonth;
-      if (
-        periodIndex < selectedStartPeriodIndex ||
-        periodIndex > selectedEndPeriodIndex
-      ) {
-        continue;
-      }
+      if (!periodSelected(metric.reportYear, metric.reportMonth)) continue;
       metricCountByCampaign.set(
         metric.campaignId,
         (metricCountByCampaign.get(metric.campaignId) ?? 0) + 1
@@ -1132,8 +1163,7 @@ export async function GET(req: NextRequest) {
     for (const record of preferredAgentDetailRecords.values()) registerSourceUpdate(record.campaignId, record.updatedAt);
     for (const metric of rawMetricRecords) {
       if (metric.reportMonth == null) continue;
-      const periodIndex = metric.reportYear * 12 + metric.reportMonth;
-      if (periodIndex >= selectedStartPeriodIndex && periodIndex <= selectedEndPeriodIndex) {
+      if (periodSelected(metric.reportYear, metric.reportMonth)) {
         registerSourceUpdate(metric.campaignId, metric.createdAt);
       }
     }
@@ -1142,9 +1172,16 @@ export async function GET(req: NextRequest) {
     }
 
     const activityByDate = new Map<string, number>();
+    const activityByCampaign = new Map<string, Map<string, number>>();
+    const registerActivity = (campaignId: string, key: string) => {
+      activityByDate.set(key, (activityByDate.get(key) ?? 0) + 1);
+      const campaignActivity = activityByCampaign.get(campaignId) ?? new Map<string, number>();
+      campaignActivity.set(key, (campaignActivity.get(key) ?? 0) + 1);
+      activityByCampaign.set(campaignId, campaignActivity);
+    };
     for (const entry of entries) {
       const key = businessDateKey(entry.date);
-      activityByDate.set(key, (activityByDate.get(key) ?? 0) + 1);
+      registerActivity(entry.campaignId, key);
     }
     const importedActivityKeys = new Set<string>();
     for (const record of preferredAgentDetailRecords.values()) {
@@ -1152,12 +1189,54 @@ export async function GET(req: NextRequest) {
       if (importedActivityKeys.has(identity)) continue;
       importedActivityKeys.add(identity);
       const key = businessDateKey(record.reportDate);
-      activityByDate.set(key, (activityByDate.get(key) ?? 0) + 1);
+      registerActivity(record.campaignId, key);
     }
     for (const record of bdoCccKpiRecords) {
       const key = `${record.year}-${String(record.month).padStart(2, "0")}-01`;
-      activityByDate.set(key, (activityByDate.get(key) ?? 0) + 1);
+      registerActivity(record.campaignId, key);
     }
+
+    const availableMonthSets = new Map<string, Set<number>>();
+    const registerAvailableMonth = (campaignId: string, year: number, month: number | null | undefined) => {
+      if (year !== selectedYear || month == null || month < 1 || month > 12) return;
+      const months = availableMonthSets.get(campaignId) ?? new Set<number>();
+      months.add(month);
+      availableMonthSets.set(campaignId, months);
+    };
+    for (const entry of availabilityEntries) {
+      const [year, month] = businessMonthKey(entry.date).split("-").map(Number);
+      registerAvailableMonth(entry.campaignId, year, month);
+    }
+    for (const record of usableDashboardAgentRecords) registerAvailableMonth(record.campaignId, record.year, record.month);
+    for (const metric of rawMetricRecords) {
+      if (metric.sourceFile) registerAvailableMonth(metric.campaignId, metric.reportYear, metric.reportMonth);
+    }
+    for (const record of rawKpiRecords) registerAvailableMonth(record.campaignId, record.year, record.month);
+    const availableMonthsByCampaign = Object.fromEntries(campaigns.map((campaign) => [
+      campaign.id,
+      [...(availableMonthSets.get(campaign.id) ?? new Set<number>())].sort((a, b) => a - b),
+    ]));
+    const availableMonths = Array.from(new Set(Object.values(availableMonthsByCampaign).flat())).sort((a, b) => a - b);
+
+    const formatActivityTrend = (activity: Map<string, number>, available: number[]) => {
+      if (hasExplicitMonthSelection && selectedMonths.length > 1) {
+        const valuesByMonth = new Map<number, number>();
+        for (const [date, value] of activity) {
+          const [year, month] = date.split("-").map(Number);
+          if (year === selectedYear && selectedMonths.includes(month)) valuesByMonth.set(month, (valuesByMonth.get(month) ?? 0) + value);
+        }
+        return selectedMonths.map((month) => ({
+          date: monthName(month, true),
+          value: available.includes(month) ? valuesByMonth.get(month) ?? 0 : null,
+          hasData: available.includes(month),
+          year: selectedYear,
+          month,
+        }));
+      }
+      return [...activity.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([date, value]) => ({ date, value, hasData: true }));
+    };
 
     const result = campaigns.map((c) => {
       const savedGoal = monthlyGoalsByCampaignId.get(c.id);
@@ -1178,21 +1257,21 @@ export async function GET(req: NextRequest) {
           transactionActual: performance.transactionActual,
           volumeGoal: performance.volumeGoal,
           volumeActual: performance.volumeActual,
-          transactionAchievement: performance.transactionAchievementCount > 0
-            ? (performance.transactionAchievementTotal / performance.transactionAchievementCount) * 100
-            : 0,
-          volumeAchievement: performance.volumeAchievementCount > 0
-            ? (performance.volumeAchievementTotal / performance.volumeAchievementCount) * 100
-            : 0,
+          transactionAchievement: performance.transactionGoal > 0
+            ? (performance.transactionActual / performance.transactionGoal) * 100
+            : performance.transactionAchievementCount > 0 ? (performance.transactionAchievementTotal / performance.transactionAchievementCount) * 100 : 0,
+          volumeAchievement: performance.volumeGoal > 0
+            ? (performance.volumeActual / performance.volumeGoal) * 100
+            : performance.volumeAchievementCount > 0 ? (performance.volumeAchievementTotal / performance.volumeAchievementCount) * 100 : 0,
           transactionScore: performance.transactionScoreCount > 0
             ? (performance.transactionScoreTotal / performance.transactionScoreCount) * 100
             : 0,
           volumeScore: performance.volumeScoreCount > 0
             ? (performance.volumeScoreTotal / performance.volumeScoreCount) * 100
             : 0,
-          achievement: performance.achievementCount > 0
-            ? (performance.achievementTotal / performance.achievementCount) * 100
-            : performance.transactionGoal > 0 ? (performance.transactionActual / performance.transactionGoal) * 100 : 0,
+          achievement: performance.transactionGoal > 0
+            ? (performance.transactionActual / performance.transactionGoal) * 100
+            : performance.achievementCount > 0 ? (performance.achievementTotal / performance.achievementCount) * 100 : 0,
         },
       ]));
       const hasMbPlImport = Object.keys(mbPlPerformance).length > 0;
@@ -1211,9 +1290,9 @@ export async function GET(req: NextRequest) {
       const mbPlImportedVolumeActual = Object.values(mbPlPerformance).reduce((sum, performance) => sum + performance.volumeActual, 0);
       const mbPlAchievementTotal = Object.values(rawMbPlPerformance).reduce((sum, performance) => sum + performance.achievementTotal, 0);
       const mbPlAchievementCount = Object.values(rawMbPlPerformance).reduce((sum, performance) => sum + performance.achievementCount, 0);
-      const mbPlImportedAchievement = mbPlAchievementCount > 0
-        ? (mbPlAchievementTotal / mbPlAchievementCount) * 100
-        : mbPlImportedGoal > 0 ? (mbPlImportedActual / mbPlImportedGoal) * 100 : 0;
+      const mbPlImportedAchievement = mbPlImportedGoal > 0
+        ? (mbPlImportedActual / mbPlImportedGoal) * 100
+        : mbPlAchievementCount > 0 ? (mbPlAchievementTotal / mbPlAchievementCount) * 100 : 0;
       const hasDashboardAgentImport = campaignsWithSelectedImportedAgentMonitoring.has(c.id);
       const hasDashboardAgentTargetImport = [...preferredAgentDetailRecords.values()].some((record) =>
         record.campaignId === c.id &&
@@ -1296,7 +1375,11 @@ export async function GET(req: NextRequest) {
           .filter((record) => record.campaignId === c.id && record.month != null)
           .map((record) => [`${record.year}-${record.month}`, { year: record.year, month: record.month as number }])
       ).values()];
-      const goalPeriods = importedPeriods.length > 0 ? importedPeriods : [{ year: goalYear, month: goalMonth }];
+      const goalPeriods = importedPeriods.length > 0
+        ? importedPeriods
+        : hasExplicitMonthSelection
+          ? selectedMonths.map((month) => ({ year: selectedYear, month }))
+          : [{ year: goalYear, month: goalMonth }];
       const ceoGoal = isBdoCampaign
         ? goalPeriods.reduce((sum, period) => {
             const configured = monthlyGoalsByCampaignPeriod.get(`${c.id}|${period.year}|${period.month}`);
@@ -1513,18 +1596,30 @@ export async function GET(req: NextRequest) {
       filters: {
         campaign: requestedCampaignId || "all",
         month: selectedEndPeriod.month,
-        year: selectedEndPeriod.year,
+        months: selectedMonths,
+        year: selectedYear,
         dateFrom,
         dateTo,
+      },
+      availability: {
+        year: selectedYear,
+        months: availableMonths,
+        byCampaign: availableMonthsByCampaign,
+        availableCount: availableMonths.length,
+        totalMonths: 12,
+        coveragePercent: Math.round((availableMonths.length / 12) * 100),
       },
       summary,
       campaigns: result,
       lastUpdated: sourceUpdateByCampaign.size > 0
         ? new Date(Math.max(...[...sourceUpdateByCampaign.values()].map((timestamp) => timestamp.getTime()))).toISOString()
         : null,
-      activityTrend: [...activityByDate.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([date, value]) => ({ date, value })),
+      activityTrendMode: hasExplicitMonthSelection && selectedMonths.length > 1 ? "monthly" : "daily",
+      activityTrend: formatActivityTrend(activityByDate, availableMonths),
+      activityTrendByCampaign: Object.fromEntries(campaigns.map((campaign) => [
+        campaign.id,
+        formatActivityTrend(activityByCampaign.get(campaign.id) ?? new Map<string, number>(), availableMonthsByCampaign[campaign.id] ?? []),
+      ])),
     }, {
       headers: {
         "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",

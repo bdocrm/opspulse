@@ -3227,19 +3227,19 @@ export async function POST(req: NextRequest) {
             const existing = storedMetricByKey.get(key);
             if (!existing) continue;
             const enrichment: Record<string, any> = {};
-            if (existing.id) {
-              if ((duplicateMode !== 'skip' || existing.count == null) && metric.count != null) enrichment.count = BigInt(Math.round(metric.count));
-              if ((duplicateMode !== 'skip' || existing.volume == null) && metric.volume != null) enrichment.volume = BigInt(Math.round(metric.volume));
-              if ((duplicateMode !== 'skip' || existing.goal == null) && metric.goal != null) enrichment.goal = metric.goal;
-              if ((duplicateMode !== 'skip' || existing.actual == null) && metric.actual != null) enrichment.actual = metric.actual;
-              if ((duplicateMode !== 'skip' || existing.achievement == null) && metric.achievement != null) enrichment.achievement = metric.achievement;
-              if ((duplicateMode !== 'skip' || existing.sourceNickname == null) && row.nickname !== undefined) enrichment.sourceNickname = row.nickname;
-              if ((duplicateMode !== 'skip' || existing.finalTotal == null) && row.finalTotal !== undefined) enrichment.finalTotal = BigInt(Math.round(row.finalTotal));
-              if ((duplicateMode !== 'skip' || existing.firstPeriodTotal == null) && row.firstPeriodTotal !== undefined) enrichment.firstPeriodTotal = BigInt(Math.round(row.firstPeriodTotal));
-              if ((duplicateMode !== 'skip' || existing.secondPeriodTotal == null) && row.secondPeriodTotal !== undefined) enrichment.secondPeriodTotal = BigInt(Math.round(row.secondPeriodTotal));
-              if ((duplicateMode !== 'skip' || existing.workbookGrandTotal == null) && row.workbookGrandTotal !== undefined) enrichment.workbookGrandTotal = BigInt(Math.round(row.workbookGrandTotal));
-              if ((duplicateMode !== 'skip' || existing.ranking == null) && row.ranking !== undefined) enrichment.ranking = Math.round(row.ranking);
-              if ((duplicateMode !== 'skip' || existing.monthValues == null) && row.monthValues !== undefined) enrichment.monthValues = row.monthValues;
+            if (existing.id && duplicateMode !== 'skip') {
+              if (metric.count != null) enrichment.count = BigInt(Math.round(metric.count));
+              if (metric.volume != null) enrichment.volume = BigInt(Math.round(metric.volume));
+              if (metric.goal != null) enrichment.goal = metric.goal;
+              if (metric.actual != null) enrichment.actual = metric.actual;
+              if (metric.achievement != null) enrichment.achievement = metric.achievement;
+              if (row.nickname !== undefined) enrichment.sourceNickname = row.nickname;
+              if (row.finalTotal !== undefined) enrichment.finalTotal = BigInt(Math.round(row.finalTotal));
+              if (row.firstPeriodTotal !== undefined) enrichment.firstPeriodTotal = BigInt(Math.round(row.firstPeriodTotal));
+              if (row.secondPeriodTotal !== undefined) enrichment.secondPeriodTotal = BigInt(Math.round(row.secondPeriodTotal));
+              if (row.workbookGrandTotal !== undefined) enrichment.workbookGrandTotal = BigInt(Math.round(row.workbookGrandTotal));
+              if (row.ranking !== undefined) enrichment.ranking = Math.round(row.ranking);
+              if (row.monthValues !== undefined) enrichment.monthValues = row.monthValues;
             }
             if (Object.keys(enrichment).length) {
               await tx.productionMetricRecord.update({ where: { id: existing.id }, data: enrichment });
@@ -3282,11 +3282,9 @@ export async function POST(req: NextRequest) {
             insertedLegacyDetails++;
             rowChanged = true;
           } else if (existingDetail && hasMbPaBreakdown) {
-            // Older MB PA imports may already have normalized totals but no
-            // category breakdown. Backfill those fields even in Skip mode;
-            // Update/Replace explicitly refresh the imported breakdown.
-            const storedHasBreakdown = MB_PA_DETAIL_KEYS.some((key) => Number(existingDetail[key] ?? 0) !== 0);
-            if (duplicateMode !== 'skip' || !storedHasBreakdown) {
+            // Existing detail rows are immutable in Skip/Fill Missing mode.
+            // Update/Replace explicitly refreshes the imported breakdown.
+            if (duplicateMode !== 'skip') {
               const breakdown = Object.fromEntries(MB_PA_DETAIL_KEYS.map((key) => [key, BigInt(row[key] || 0)]));
               await tx.productionDetail.update({ where: { id: existingDetail.id }, data: breakdown });
               Object.assign(existingDetail, breakdown);
@@ -3294,10 +3292,10 @@ export async function POST(req: NextRequest) {
               rowChanged = true;
             }
             const metadata: Record<string, any> = {};
-            if ((duplicateMode !== 'skip' || existingDetail.agentLevel == null) && row.agentLevel) metadata.agentLevel = row.agentLevel;
-            if ((duplicateMode !== 'skip' || existingDetail.monthlyGoal == null) && row.monthlyGoal !== undefined) metadata.monthlyGoal = row.monthlyGoal;
-            if ((duplicateMode !== 'skip' || existingDetail.monthlyActual == null) && row.monthlyActual !== undefined) metadata.monthlyActual = row.monthlyActual;
-            if ((duplicateMode !== 'skip' || existingDetail.monthlyAchievement == null) && row.monthlyAchievement !== undefined) metadata.monthlyAchievement = row.monthlyAchievement;
+            if (duplicateMode !== 'skip' && row.agentLevel) metadata.agentLevel = row.agentLevel;
+            if (duplicateMode !== 'skip' && row.monthlyGoal !== undefined) metadata.monthlyGoal = row.monthlyGoal;
+            if (duplicateMode !== 'skip' && row.monthlyActual !== undefined) metadata.monthlyActual = row.monthlyActual;
+            if (duplicateMode !== 'skip' && row.monthlyAchievement !== undefined) metadata.monthlyAchievement = row.monthlyAchievement;
             if (Object.keys(metadata).length) {
               await tx.productionDetail.update({ where: { id: existingDetail.id }, data: metadata });
               Object.assign(existingDetail, metadata);
@@ -3307,13 +3305,13 @@ export async function POST(req: NextRequest) {
           }
           if (existingDetail && row.nickname !== undefined) {
             const metadata: Record<string, any> = {};
-            if (duplicateMode !== 'skip' || existingDetail.sourceNickname == null) metadata.sourceNickname = row.nickname;
-            if ((duplicateMode !== 'skip' || existingDetail.cardLevelFinalTotal == null) && row.finalTotal !== undefined) metadata.cardLevelFinalTotal = BigInt(Math.round(row.finalTotal));
-            if ((duplicateMode !== 'skip' || existingDetail.cardLevelFirstPeriodTotal == null) && row.firstPeriodTotal !== undefined) metadata.cardLevelFirstPeriodTotal = BigInt(Math.round(row.firstPeriodTotal));
-            if ((duplicateMode !== 'skip' || existingDetail.cardLevelSecondPeriodTotal == null) && row.secondPeriodTotal !== undefined) metadata.cardLevelSecondPeriodTotal = BigInt(Math.round(row.secondPeriodTotal));
-            if ((duplicateMode !== 'skip' || existingDetail.cardLevelWorkbookGrandTotal == null) && row.workbookGrandTotal !== undefined) metadata.cardLevelWorkbookGrandTotal = BigInt(Math.round(row.workbookGrandTotal));
-            if ((duplicateMode !== 'skip' || existingDetail.cardLevelRanking == null) && row.ranking !== undefined) metadata.cardLevelRanking = Math.round(row.ranking);
-            if ((duplicateMode !== 'skip' || existingDetail.cardLevelMonthValues == null) && row.monthValues !== undefined) metadata.cardLevelMonthValues = row.monthValues;
+            if (duplicateMode !== 'skip') metadata.sourceNickname = row.nickname;
+            if (duplicateMode !== 'skip' && row.finalTotal !== undefined) metadata.cardLevelFinalTotal = BigInt(Math.round(row.finalTotal));
+            if (duplicateMode !== 'skip' && row.firstPeriodTotal !== undefined) metadata.cardLevelFirstPeriodTotal = BigInt(Math.round(row.firstPeriodTotal));
+            if (duplicateMode !== 'skip' && row.secondPeriodTotal !== undefined) metadata.cardLevelSecondPeriodTotal = BigInt(Math.round(row.secondPeriodTotal));
+            if (duplicateMode !== 'skip' && row.workbookGrandTotal !== undefined) metadata.cardLevelWorkbookGrandTotal = BigInt(Math.round(row.workbookGrandTotal));
+            if (duplicateMode !== 'skip' && row.ranking !== undefined) metadata.cardLevelRanking = Math.round(row.ranking);
+            if (duplicateMode !== 'skip' && row.monthValues !== undefined) metadata.cardLevelMonthValues = row.monthValues;
             if (Object.keys(metadata).length) {
               await tx.productionDetail.update({ where: { id: existingDetail.id }, data: metadata });
               Object.assign(existingDetail, metadata);
@@ -3788,12 +3786,12 @@ export async function POST(req: NextRequest) {
           const existing = csvMetricByKey.get(key);
           if (!existing) continue;
           const enrichment: Record<string, any> = {};
-          if (existing.id) {
-            if ((duplicateMode !== 'skip' || existing.count == null) && metric.count != null) enrichment.count = BigInt(Math.round(metric.count));
-            if ((duplicateMode !== 'skip' || existing.volume == null) && metric.volume != null) enrichment.volume = BigInt(Math.round(metric.volume));
-            if ((duplicateMode !== 'skip' || existing.goal == null) && metric.goal != null) enrichment.goal = metric.goal;
-            if ((duplicateMode !== 'skip' || existing.actual == null) && metric.actual != null) enrichment.actual = metric.actual;
-            if ((duplicateMode !== 'skip' || existing.achievement == null) && metric.achievement != null) enrichment.achievement = metric.achievement;
+          if (existing.id && duplicateMode !== 'skip') {
+            if (metric.count != null) enrichment.count = BigInt(Math.round(metric.count));
+            if (metric.volume != null) enrichment.volume = BigInt(Math.round(metric.volume));
+            if (metric.goal != null) enrichment.goal = metric.goal;
+            if (metric.actual != null) enrichment.actual = metric.actual;
+            if (metric.achievement != null) enrichment.achievement = metric.achievement;
           }
           if (Object.keys(enrichment).length) {
             await tx.productionMetricRecord.update({ where: { id: existing.id }, data: enrichment });

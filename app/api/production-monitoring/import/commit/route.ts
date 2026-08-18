@@ -11,6 +11,7 @@ import {
 } from "@/lib/production-import";
 import { normalizeProductionName, productionDisplayName } from "@/lib/production-normalization";
 import { parseProductionWorkbook } from "@/lib/production-workbook";
+import { productionMonthImportAction, productionMonthKey, type ProductionMonthImportStrategy } from "@/lib/production-month-import";
 
 export const runtime = "nodejs";
 
@@ -83,6 +84,7 @@ export async function POST(request: NextRequest) {
   }
   const campaignMappings = parseCommitMappings(form.get("campaignMappings"));
   const businessMappings = parseBusinessUnitCommitMappings(form.get("businessUnitMappings"));
+  const importStrategy: ProductionMonthImportStrategy = form.get("importStrategy") === "update_existing" ? "update_existing" : "fill_missing";
   const requestedRowKeys = parseRequestedRowKeys(form.get("validRowKeys"));
   const isRequested = (record: ParsedRecord) => requestedRowKeys == null || requestedRowKeys.has(record.rowKey);
   const requestedBaseValidRecords = parsed.records.filter((record) =>
@@ -211,8 +213,6 @@ export async function POST(request: NextRequest) {
       const existingRecords = importableRecords.length
         ? await tx.productionMonitoring.findMany({ where: {
           campaignId: { in: Array.from(new Set(importableRecords.map(({ campaignId }) => campaignId as string))) },
-          businessUnitId: { in: Array.from(new Set(importableRecords.map(({ businessUnitId }) => businessUnitId as string))) },
-          metricType: { in: Array.from(new Set(importableRecords.map(({ record }) => record.metricType))) },
           OR: existingPeriods,
         } })
         : [];
@@ -220,6 +220,18 @@ export async function POST(request: NextRequest) {
         [record.campaignId, record.businessUnitId, record.reportYear, record.reportMonth, record.metricType].join(":"),
         record,
       ]));
+      const existingMonthKeys = new Set(existingRecords.map((record) => productionMonthKey(record.campaignId, record.reportYear, record.reportMonth)));
+      const importedMonthKeys = new Set<string>();
+      const updatedMonthKeys = new Set<string>();
+      const skippedMonthKeys = new Set<string>();
+      if (importStrategy === "fill_missing") {
+        for (const { record, campaignId } of resolvedRecords) {
+          if (campaignId && record.reportYear && record.reportMonth) {
+            const monthKey = productionMonthKey(campaignId, record.reportYear, record.reportMonth);
+            if (existingMonthKeys.has(monthKey)) skippedMonthKeys.add(monthKey);
+          }
+        }
+      }
 
       for (const { record, recordIssues, campaignId, businessUnitId } of resolvedRecords) {
         const recordErrors = recordIssues.filter((issue) => issue.level === "ERROR");
@@ -241,6 +253,12 @@ export async function POST(request: NextRequest) {
         }
         if (!campaignId || !businessUnitId) {
           skipped += 1;
+          continue;
+        }
+        const monthKey = productionMonthKey(campaignId, record.reportYear, record.reportMonth);
+        if (productionMonthImportAction(existingMonthKeys.has(monthKey), importStrategy) === "SKIP") {
+          skipped += 1;
+          skippedMonthKeys.add(monthKey);
           continue;
         }
         const key = {
@@ -290,9 +308,11 @@ export async function POST(request: NextRequest) {
             },
           });
           updated += 1;
+          updatedMonthKeys.add(monthKey);
         } else {
           await tx.productionMonitoring.create({ data });
           imported += 1;
+          importedMonthKeys.add(monthKey);
         }
       }
       if (issues.length) await tx.productionImportIssue.createMany({ data: issues });
@@ -325,6 +345,12 @@ export async function POST(request: NextRequest) {
         warnings: warningCount,
         errors: errorCount,
         validationErrors,
+        importStrategy,
+        months: {
+          imported: importedMonthKeys.size,
+          updated: updatedMonthKeys.size,
+          skipped: skippedMonthKeys.size,
+        },
         status,
         summary: {
           detected: parsed.records.length,

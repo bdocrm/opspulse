@@ -24,6 +24,7 @@ type Step = 'configure' | 'previewing' | 'confirm' | 'importing' | 'done';
 type ImportMode = 'all' | 'worksheets' | 'single';
 type ReportPeriodType = 'daily' | 'monthly' | 'yearly';
 type DuplicateMode = 'skip' | 'update' | 'replace_period';
+type ProductionImportStrategy = 'fill_missing' | 'update_existing';
 
 interface NormalizedPreviewRecord {
   fileName?: string;
@@ -260,6 +261,7 @@ interface ProductionBulkPreviewRecord {
   sourceSheet: string;
   sourceRow: number;
   status: 'NEW' | 'UPDATED' | 'UNCHANGED' | 'CONFLICT' | 'WARNING' | 'ERROR';
+  monthStatus: 'NEW' | 'EXISTING' | 'UNKNOWN';
   issues: Array<{ level: 'WARNING' | 'ERROR'; code: string; message: string }>;
 }
 
@@ -273,6 +275,8 @@ interface ProductionBulkPreview {
   availableCampaigns: Array<{ id: string; name: string }>;
   availableBusinessUnits: Array<{ id: string; campaignId: string; name: string }>;
   canCreateCampaigns: boolean;
+  existingMonthKeys: string[];
+  monthSummary: Array<{ key: string; campaignSource: string; campaignNormalized: string; reportYear: number; reportMonth: number; status: 'NEW' | 'EXISTING' | 'UNKNOWN' }>;
   records: ProductionBulkPreviewRecord[];
   stats: { total: number; valid: number; new: number; updated: number; unchanged: number; conflicts: number; warnings: number; errors: number };
 }
@@ -445,6 +449,8 @@ export default function BulkImportPage() {
   const [productionBusinessSelections, setProductionBusinessSelections] = useState<Record<string, string>>({});
   const [productionPreviewFilter, setProductionPreviewFilter] = useState<ProductionPreviewFilter>('ALL');
   const [productionConfirmationOpen, setProductionConfirmationOpen] = useState(false);
+  const [productionImportStrategy, setProductionImportStrategy] = useState<ProductionImportStrategy>('fill_missing');
+  const [genericImportConfirmationOpen, setGenericImportConfirmationOpen] = useState(false);
   const previewInFlight = useRef(false);
   const productionImportInFlight = useRef(false);
   const campaignAccessRefreshed = useRef(false);
@@ -608,6 +614,8 @@ export default function BulkImportPage() {
     setProductionBusinessSelections({});
     setProductionPreviewFilter('ALL');
     setProductionConfirmationOpen(false);
+    setProductionImportStrategy('fill_missing');
+    setGenericImportConfirmationOpen(false);
     setWorksheetPreviews([]);
     setWorkbookSummary(null);
     setMatched([]);
@@ -863,8 +871,12 @@ export default function BulkImportPage() {
     else if (!businessResolved) messages.push('Business Unit mapping is required.');
     const hasError = record.issues.some((issue) => issue.level === 'ERROR') || !campaignResolved || !businessResolved;
     const hasWarning = record.issues.some((issue) => issue.level === 'WARNING') || record.status === 'CONFLICT' || record.status === 'WARNING';
+    const monthStatus: ProductionBulkPreviewRecord['monthStatus'] = campaignSelection && campaignSelection !== '__create' && record.reportYear && record.reportMonth
+      ? productionPreview?.existingMonthKeys.includes(`${campaignSelection}:${record.reportYear}:${record.reportMonth}`) ? 'EXISTING' : 'NEW'
+      : campaignSelection === '__create' ? 'NEW' : 'UNKNOWN';
     return {
       ...record,
+      monthStatus,
       isValid: !hasError,
       displayStatus: hasError ? 'ERROR' : hasWarning ? 'WARNING' : record.status,
       validationMessages: messages,
@@ -897,7 +909,9 @@ export default function BulkImportPage() {
 
   const handleProductionConfirm = async () => {
     if (!productionPreview || !previewFiles[0]?.file || productionImportInFlight.current) return;
-    const readyRecords = productionPreview.records.map(productionRecordReview).filter((record) => record.isValid);
+    const readyRecords = productionPreview.records.map(productionRecordReview).filter((record) =>
+      record.isValid && (productionImportStrategy === 'update_existing' || record.monthStatus !== 'EXISTING')
+    );
     if (!readyRecords.length) {
       setProductionConfirmationOpen(false);
       setError('No valid production rows are available to import. Review the row errors and mappings first.');
@@ -914,6 +928,7 @@ export default function BulkImportPage() {
       fd.append('reportMonth', String(reportMonth));
       fd.append('reportYear', String(reportYear));
       fd.append('validRowKeys', JSON.stringify(readyRecords.map((record) => record.rowKey)));
+      fd.append('importStrategy', productionImportStrategy);
       fd.append('campaignMappings', JSON.stringify(productionPreview.campaignMappings.map((mapping) => ({
         source: mapping.normalizedSource,
         targetId: productionCampaignSelections[mapping.normalizedSource] === '__create'
@@ -933,7 +948,7 @@ export default function BulkImportPage() {
       setImportResult({
         productionMonitoring: true,
         importId: data.importId,
-        message: `Production import completed: ${(data.imported || 0) + (data.updated || 0) + (data.unchanged || 0)} successfully processed and ${data.invalidRows || 0} invalid row${data.invalidRows === 1 ? '' : 's'} skipped.`,
+        message: `Production import completed: ${data.months?.imported || 0} new month${data.months?.imported === 1 ? '' : 's'} imported, ${data.months?.updated || 0} updated, and ${data.months?.skipped || 0} existing month${data.months?.skipped === 1 ? '' : 's'} preserved.`,
         success: (data.imported || 0) + (data.updated || 0) + (data.unchanged || 0),
         inserted: data.imported || 0,
         updated: data.updated || 0,
@@ -1040,6 +1055,8 @@ export default function BulkImportPage() {
     setProductionBusinessSelections({});
     setProductionPreviewFilter('ALL');
     setProductionConfirmationOpen(false);
+    setProductionImportStrategy('fill_missing');
+    setGenericImportConfirmationOpen(false);
     setMatched([]);
     setNewAgents([]);
     setWorksheetPreviews([]);
@@ -1233,11 +1250,11 @@ export default function BulkImportPage() {
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">Duplicate Handling</label>
               <select value={duplicateMode} onChange={(event) => setDuplicateMode(event.target.value as DuplicateMode)} className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="skip">Skip Existing Records</option>
+                <option value="skip">Fill Missing Months (Recommended)</option>
                 <option value="update">Update Existing Records</option>
                 <option value="replace_period">Replace Matching Period Data</option>
               </select>
-              <p className="text-xs text-slate-500">Applied using campaign, source, entity, metric, month, and year.</p>
+              <p className="text-xs text-slate-500">The default preserves matching historical records. Update and replace actions require explicit confirmation.</p>
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">{reportPeriodType === 'daily' ? 'Report Date' : reportPeriodType === 'monthly' ? 'Report Month' : 'Report Year'}</label>
@@ -1516,8 +1533,18 @@ export default function BulkImportPage() {
   if (step === 'confirm') {
     if (productionPreview) {
       const reviewedRecords = productionPreview.records.map(productionRecordReview);
-      const readyRecords = reviewedRecords.filter((record) => record.isValid);
+      const validRecords = reviewedRecords.filter((record) => record.isValid);
+      const readyRecords = validRecords.filter((record) => productionImportStrategy === 'update_existing' || record.monthStatus !== 'EXISTING');
       const invalidRecords = reviewedRecords.filter((record) => !record.isValid);
+      const effectiveMonthSummary = productionPreview.monthSummary.map((month) => {
+        const campaignSelection = productionCampaignSelections[month.campaignNormalized];
+        const status = campaignSelection && campaignSelection !== '__create'
+          ? productionPreview.existingMonthKeys.includes(`${campaignSelection}:${month.reportYear}:${month.reportMonth}`) ? 'EXISTING' as const : 'NEW' as const
+          : campaignSelection === '__create' ? 'NEW' as const : 'UNKNOWN' as const;
+        return { ...month, status };
+      });
+      const existingMonths = effectiveMonthSummary.filter((month) => month.status === 'EXISTING');
+      const newMonths = effectiveMonthSummary.filter((month) => month.status === 'NEW');
       const filteredProductionRecords = reviewedRecords.filter((record) => {
         if (productionPreviewFilter === 'ALL') return true;
         if (productionPreviewFilter === 'VALID') return record.isValid;
@@ -1584,6 +1611,23 @@ export default function BulkImportPage() {
               </Button>
             </div>
           )}
+
+          <Card>
+            <CardHeader><CardTitle className="text-lg">Import Preview</CardTitle><CardDescription>Compared with production records currently stored in OpsView.</CardDescription></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <button type="button" onClick={() => setProductionImportStrategy('fill_missing')} className={`rounded-lg border p-4 text-left ${productionImportStrategy === 'fill_missing' ? 'border-green-500 bg-green-50 ring-1 ring-green-500 dark:bg-green-950/20' : ''}`}>
+                  <p className="font-semibold">Fill Missing Months <span className="text-xs text-green-700">Recommended</span></p><p className="mt-1 text-xs text-slate-500">Preserve every existing month and import only missing months.</p>
+                </button>
+                <button type="button" onClick={() => setProductionImportStrategy('update_existing')} className={`rounded-lg border p-4 text-left ${productionImportStrategy === 'update_existing' ? 'border-amber-500 bg-amber-50 ring-1 ring-amber-500 dark:bg-amber-950/20' : ''}`}>
+                  <p className="font-semibold">Update Existing Months</p><p className="mt-1 text-xs text-slate-500">Explicitly update matching historical records and import new ones.</p>
+                </button>
+              </div>
+              <div className="max-h-64 overflow-auto rounded-lg border"><table className="w-full text-sm"><thead className="sticky top-0 bg-slate-100 text-left dark:bg-slate-900"><tr><th className="p-2">Campaign</th><th className="p-2">Year</th><th className="p-2">Month</th><th className="p-2">Status</th><th className="p-2">Action</th></tr></thead><tbody>{effectiveMonthSummary.map((month) => <tr key={month.key} className="border-t"><td className="p-2 font-medium">{month.campaignSource}</td><td className="p-2">{month.reportYear}</td><td className="p-2">{periodLabel(month.reportYear, month.reportMonth).replace(` ${month.reportYear}`, '')}</td><td className="p-2"><span className={`rounded-full px-2 py-1 text-xs font-medium ${month.status === 'EXISTING' ? 'bg-blue-100 text-blue-800' : month.status === 'NEW' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>{month.status === 'EXISTING' ? 'Existing' : month.status === 'NEW' ? 'New' : 'Needs Mapping'}</span></td><td className="p-2 font-medium">{month.status === 'EXISTING' && productionImportStrategy === 'fill_missing' ? 'Skip' : month.status === 'EXISTING' ? 'Update' : month.status === 'NEW' ? 'Import' : 'Review'}</td></tr>)}</tbody></table></div>
+              <div className="grid gap-2 text-sm sm:grid-cols-2"><p><strong>{existingMonths.length}</strong> existing month{existingMonths.length === 1 ? '' : 's'} will be {productionImportStrategy === 'fill_missing' ? 'skipped' : 'updated where records differ'}.</p><p><strong>{newMonths.length}</strong> missing month{newMonths.length === 1 ? '' : 's'} will be imported.</p></div>
+              {productionImportStrategy === 'update_existing' && existingMonths.length > 0 && <div className="flex gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"><AlertTriangle className="h-4 w-4 shrink-0" /><span>Updating existing months may change historical KPI calculations. You will be asked to confirm.</span></div>}
+            </CardContent>
+          </Card>
 
           <Card>
             <CardHeader>
@@ -1657,7 +1701,7 @@ export default function BulkImportPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Production Data Preview</CardTitle>
-              <CardDescription>{readyRecords.length.toLocaleString()} valid row(s) are ready. No OM field is included.</CardDescription>
+              <CardDescription>{readyRecords.length.toLocaleString()} row(s) will be submitted using the selected import strategy. No OM field is included.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
@@ -1701,7 +1745,7 @@ export default function BulkImportPage() {
             <Button variant="outline" onClick={handleReset} className="gap-2"><ArrowLeft className="h-4 w-4" />Start Over</Button>
             <Button onClick={() => setProductionConfirmationOpen(true)} disabled={!readyRecords.length} className="flex-1 gap-2 bg-green-600 hover:bg-green-700">
               <CheckCircle className="h-4 w-4" />{readyRecords.length === 0
-                ? 'No Valid Rows to Import'
+                ? productionImportStrategy === 'fill_missing' && validRecords.length > 0 ? 'No Missing Months to Import' : 'No Valid Rows to Import'
                 : invalidRecords.length === 0
                   ? `Import ${readyRecords.length.toLocaleString()} Production Row${readyRecords.length === 1 ? '' : 's'}`
                   : `Import ${readyRecords.length.toLocaleString()} Valid Production Row${readyRecords.length === 1 ? '' : 's'}`}
@@ -1714,12 +1758,15 @@ export default function BulkImportPage() {
             description={(
               <span className="mt-2 block space-y-2 text-left">
                 <span className="block">{productionPreview.stats.total.toLocaleString()} rows were detected.</span>
-                <span className="block font-medium text-slate-800">{readyRecords.length.toLocaleString()} valid row{readyRecords.length === 1 ? '' : 's'} will be imported.</span>
+                <span className="block font-medium text-slate-800">{readyRecords.length.toLocaleString()} valid row{readyRecords.length === 1 ? '' : 's'} will be submitted.</span>
+                {productionImportStrategy === 'fill_missing' && existingMonths.length > 0 && <span className="block text-blue-700">{existingMonths.length} existing month{existingMonths.length === 1 ? '' : 's'} will be preserved and skipped.</span>}
+                {productionImportStrategy === 'update_existing' && existingMonths.length > 0 && <span className="block text-amber-700">Existing historical records may be updated.</span>}
                 {invalidRecords.length > 0 && <span className="block text-amber-700">{invalidRecords.length.toLocaleString()} row{invalidRecords.length === 1 ? '' : 's'} contain validation errors and will be skipped.</span>}
                 <span className="block">Campaigns affected: {affectedCampaigns.toLocaleString()} · Business units affected: {affectedBusinessUnits.toLocaleString()}</span>
               </span>
             )}
             actionLabel={`Import ${readyRecords.length.toLocaleString()} Valid Row${readyRecords.length === 1 ? '' : 's'}`}
+            isDangerous={productionImportStrategy === 'update_existing' && existingMonths.length > 0}
             onConfirm={handleProductionConfirm}
             onCancel={() => setProductionConfirmationOpen(false)}
           />
@@ -2217,7 +2264,7 @@ export default function BulkImportPage() {
             Start Over
           </Button>
           <Button
-            onClick={handleConfirmImport}
+            onClick={() => duplicateMode === 'skip' ? void handleConfirmImport() : setGenericImportConfirmationOpen(true)}
             disabled={recordsToImport === 0 || (worksheetPreviews.length > 0 && selectedValidWorksheetCount === 0)}
             className="flex-1 gap-2 bg-green-600 hover:bg-green-700"
           >
@@ -2225,6 +2272,17 @@ export default function BulkImportPage() {
             Import Selected Data{approvedNew.length > 0 ? ` (+ Create ${approvedNew.length} New Agent${approvedNew.length > 1 ? 's' : ''})` : ''}
           </Button>
         </div>
+        <ConfirmDialog
+          open={genericImportConfirmationOpen}
+          title={duplicateMode === 'replace_period' ? 'Replace Existing Period Data?' : 'Update Existing Production Data?'}
+          description={duplicateMode === 'replace_period'
+            ? 'Matching reporting-period data will be replaced. This may change historical KPI calculations and cannot be undone from this screen.'
+            : 'Matching existing records may be updated. This may change historical KPI calculations.'}
+          actionLabel={duplicateMode === 'replace_period' ? 'Replace Period Data' : 'Update Existing Records'}
+          isDangerous
+          onConfirm={async () => { setGenericImportConfirmationOpen(false); await handleConfirmImport(); }}
+          onCancel={() => setGenericImportConfirmationOpen(false)}
+        />
       </div>
     );
   }
