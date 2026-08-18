@@ -237,10 +237,13 @@ function parseSheet(
     }
     if (!columns) continue;
 
-    const businessUnitSource = String(row[columns.get("businessUnit") as number] ?? "").replace(/\s+/g, " ").trim();
-    if (!businessUnitSource || /^(TOTAL|GRAND TOTAL|SUMMARY|BUSINESS UNIT)$/i.test(businessUnitSource)) continue;
     const explicitCampaign = String(row[columns.get("campaign") as number] ?? "").replace(/\s+/g, " ").trim();
+    const businessUnitSource = String(row[columns.get("businessUnit") as number] ?? "").replace(/\s+/g, " ").trim();
+    if (/^(TOTAL|GRAND TOTAL|SUMMARY|BUSINESS UNIT)$/i.test(businessUnitSource)) continue;
+    const hasProductionValues = (["metricType", "target", "week1", "week2", "week3", "week4", "week5", "mtd", "achievement", "runRate"] as ColumnField[])
+      .some((field) => String(row[columns?.get(field) ?? -1] ?? "").trim());
     if (explicitCampaign) currentCampaign = explicitCampaign;
+    if (!businessUnitSource && !hasProductionValues) continue;
 
     const issues: ProductionValidationIssue[] = [];
     const metricType = inferMetricType(row, columns);
@@ -271,7 +274,9 @@ function parseSheet(
     const recordPeriod = period ?? datePeriod ?? fallback ?? null;
 
     if (!currentCampaign) issues.push({ level: "ERROR", code: "MISSING_CAMPAIGN", message: "Campaign is missing and cannot be inherited from a previous data row." });
+    if (!businessUnitSource) issues.push({ level: "ERROR", code: "MISSING_BUSINESS_UNIT", message: "Business Unit is missing or invalid." });
     if (target == null) issues.push({ level: "ERROR", code: "MISSING_TARGET", message: "Target is missing or invalid." });
+    if (target != null && target < 0) issues.push({ level: "ERROR", code: "NEGATIVE_TARGET", message: "Target must be zero or greater." });
     if (!recordPeriod) issues.push({ level: "ERROR", code: "MISSING_PERIOD", message: "Reporting month could not be detected; select a fallback period." });
     if (dateText && !dateUpdated) issues.push({ level: "WARNING", code: "INVALID_DATE", message: "Date updated could not be parsed and was left blank." });
     if (workingDays != null && workingDays < 0) issues.push({ level: "ERROR", code: "INVALID_WORKING_DAYS", message: "Working days cannot be negative." });

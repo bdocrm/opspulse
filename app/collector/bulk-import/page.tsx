@@ -17,7 +17,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Upload, AlertCircle, CheckCircle, Download, UserPlus, Users, ArrowLeft, Eye, FileText, Trash2, X } from 'lucide-react';
+import { Upload, AlertCircle, AlertTriangle, CheckCircle, Download, UserPlus, Users, ArrowLeft, Eye, FileText, Trash2, X } from 'lucide-react';
 import { formatAchievement, formatProductionMetric } from '@/lib/production-metrics';
 
 type Step = 'configure' | 'previewing' | 'confirm' | 'importing' | 'done';
@@ -277,6 +277,8 @@ interface ProductionBulkPreview {
   stats: { total: number; valid: number; new: number; updated: number; unchanged: number; conflicts: number; warnings: number; errors: number };
 }
 
+type ProductionPreviewFilter = 'ALL' | 'VALID' | 'NEW' | 'UPDATED' | 'WARNING' | 'ERROR';
+
 interface ConsolidatedAgentPreview {
   fileName?: string;
   nickname: string;
@@ -441,7 +443,10 @@ export default function BulkImportPage() {
   const [productionPreview, setProductionPreview] = useState<ProductionBulkPreview | null>(null);
   const [productionCampaignSelections, setProductionCampaignSelections] = useState<Record<string, string>>({});
   const [productionBusinessSelections, setProductionBusinessSelections] = useState<Record<string, string>>({});
+  const [productionPreviewFilter, setProductionPreviewFilter] = useState<ProductionPreviewFilter>('ALL');
+  const [productionConfirmationOpen, setProductionConfirmationOpen] = useState(false);
   const previewInFlight = useRef(false);
+  const productionImportInFlight = useRef(false);
   const campaignAccessRefreshed = useRef(false);
 
   const fetcher = (url: string) => fetch(url).then((res) => res.json());
@@ -601,6 +606,8 @@ export default function BulkImportPage() {
     setProductionPreview(null);
     setProductionCampaignSelections({});
     setProductionBusinessSelections({});
+    setProductionPreviewFilter('ALL');
+    setProductionConfirmationOpen(false);
     setWorksheetPreviews([]);
     setWorkbookSummary(null);
     setMatched([]);
@@ -846,22 +853,59 @@ export default function BulkImportPage() {
     return typeof value === 'number' ? value : null;
   };
 
+  const productionRecordReview = (record: ProductionBulkPreviewRecord) => {
+    const messages = record.issues.map((issue) => issue.message);
+    const campaignSelection = productionCampaignSelections[record.campaignNormalized];
+    const campaignResolved = Boolean(campaignSelection) && (campaignSelection !== '__create' || Boolean(productionPreview?.canCreateCampaigns));
+    const businessKey = `${record.campaignNormalized}:${record.businessUnitNormalized}`;
+    const businessResolved = Boolean(productionBusinessSelections[businessKey]);
+    if (!campaignResolved) messages.push('Campaign mapping is required.');
+    else if (!businessResolved) messages.push('Business Unit mapping is required.');
+    const hasError = record.issues.some((issue) => issue.level === 'ERROR') || !campaignResolved || !businessResolved;
+    const hasWarning = record.issues.some((issue) => issue.level === 'WARNING') || record.status === 'CONFLICT' || record.status === 'WARNING';
+    return {
+      ...record,
+      isValid: !hasError,
+      displayStatus: hasError ? 'ERROR' : hasWarning ? 'WARNING' : record.status,
+      validationMessages: messages,
+    };
+  };
+
+  const downloadProductionErrors = () => {
+    if (!productionPreview) return;
+    const rows = [['Excel Row', 'Worksheet', 'Campaign', 'Business Unit', 'Period', 'Metric', 'Field', 'Original Value', 'Validation Error']];
+    productionPreview.records.map(productionRecordReview).forEach((record) => {
+      if (record.isValid) return;
+      record.validationMessages.forEach((message) => {
+        const field = /campaign mapping/i.test(message) ? 'Campaign' : /business unit mapping/i.test(message) ? 'Business Unit' : /target/i.test(message) ? 'Target' : 'Row';
+        const originalValue = field === 'Target' ? (record.target == null ? '(blank)' : String(record.target)) : '';
+        rows.push([
+          String(record.sourceRow), record.sourceSheet, record.campaignSource, record.businessUnitSource,
+          record.reportYear && record.reportMonth ? `${record.reportYear}-${String(record.reportMonth).padStart(2, '0')}` : '',
+          record.metricType, field, originalValue, message,
+        ]);
+      });
+    });
+    const csv = rows.map((row) => row.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(',')).join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'production-import-errors.csv';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleProductionConfirm = async () => {
-    if (!productionPreview || !previewFiles[0]?.file) return;
-    const unresolvedCampaigns = productionPreview.campaignMappings.filter((mapping) =>
-      !productionCampaignSelections[mapping.normalizedSource] ||
-      (productionCampaignSelections[mapping.normalizedSource] === '__create' && !productionPreview.canCreateCampaigns)
-    );
-    if (unresolvedCampaigns.length) {
-      setError(`A CEO must map or create the following campaign${unresolvedCampaigns.length === 1 ? '' : 's'} before import: ${unresolvedCampaigns.map((mapping) => mapping.source).join(', ')}.`);
-      return;
-    }
-    const unresolvedBusinessUnits = productionPreview.businessUnitMappings.filter((mapping) => !productionBusinessSelections[mapping.key]);
-    if (unresolvedBusinessUnits.length) {
-      setError('Review every detected business unit before importing.');
+    if (!productionPreview || !previewFiles[0]?.file || productionImportInFlight.current) return;
+    const readyRecords = productionPreview.records.map(productionRecordReview).filter((record) => record.isValid);
+    if (!readyRecords.length) {
+      setProductionConfirmationOpen(false);
+      setError('No valid production rows are available to import. Review the row errors and mappings first.');
       return;
     }
 
+    productionImportInFlight.current = true;
+    setProductionConfirmationOpen(false);
     setStep('importing');
     setError(null);
     try {
@@ -869,6 +913,7 @@ export default function BulkImportPage() {
       fd.append('file', previewFiles[0].file);
       fd.append('reportMonth', String(reportMonth));
       fd.append('reportYear', String(reportYear));
+      fd.append('validRowKeys', JSON.stringify(readyRecords.map((record) => record.rowKey)));
       fd.append('campaignMappings', JSON.stringify(productionPreview.campaignMappings.map((mapping) => ({
         source: mapping.normalizedSource,
         targetId: productionCampaignSelections[mapping.normalizedSource] === '__create'
@@ -888,13 +933,14 @@ export default function BulkImportPage() {
       setImportResult({
         productionMonitoring: true,
         importId: data.importId,
-        message: `Production Monitoring import completed: ${data.imported || 0} inserted, ${data.updated || 0} updated, ${data.unchanged || 0} unchanged, and ${data.skipped || 0} skipped.`,
-        success: data.imported || 0,
+        message: `Production import completed: ${(data.imported || 0) + (data.updated || 0) + (data.unchanged || 0)} successfully processed and ${data.invalidRows || 0} invalid row${data.invalidRows === 1 ? '' : 's'} skipped.`,
+        success: (data.imported || 0) + (data.updated || 0) + (data.unchanged || 0),
         inserted: data.imported || 0,
         updated: data.updated || 0,
         unchanged: data.unchanged || 0,
-        skipped: (data.skipped || 0) + (data.unchanged || 0),
-        invalid: data.errors || 0,
+        skipped: data.skipped || 0,
+        invalid: data.invalidRows || 0,
+        validationErrors: data.validationErrors || [],
         errors: [],
         warnings: data.warnings ? [`${data.warnings} workbook validation warning(s) were recorded in the import history.`] : [],
         details: [],
@@ -904,6 +950,8 @@ export default function BulkImportPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setStep('confirm');
+    } finally {
+      productionImportInFlight.current = false;
     }
   };
 
@@ -990,6 +1038,8 @@ export default function BulkImportPage() {
     setProductionPreview(null);
     setProductionCampaignSelections({});
     setProductionBusinessSelections({});
+    setProductionPreviewFilter('ALL');
+    setProductionConfirmationOpen(false);
     setMatched([]);
     setNewAgents([]);
     setWorksheetPreviews([]);
@@ -1465,19 +1515,20 @@ export default function BulkImportPage() {
   // ─── STEP: CONFIRM ──────────────────────────────────────────────────────────
   if (step === 'confirm') {
     if (productionPreview) {
-      const unresolvedCampaigns = productionPreview.campaignMappings.filter((mapping) =>
-        !productionCampaignSelections[mapping.normalizedSource] ||
-        (productionCampaignSelections[mapping.normalizedSource] === '__create' && !productionPreview.canCreateCampaigns)
-      );
-      const unresolvedBusinessUnits = productionPreview.businessUnitMappings.filter((mapping) => !productionBusinessSelections[mapping.key]);
-      const readyRecords = productionPreview.records.filter((record) =>
-        !record.issues.some((issue) => issue.level === 'ERROR') &&
-        !unresolvedCampaigns.some((mapping) => mapping.normalizedSource === record.campaignNormalized)
-      );
+      const reviewedRecords = productionPreview.records.map(productionRecordReview);
+      const readyRecords = reviewedRecords.filter((record) => record.isValid);
+      const invalidRecords = reviewedRecords.filter((record) => !record.isValid);
+      const filteredProductionRecords = reviewedRecords.filter((record) => {
+        if (productionPreviewFilter === 'ALL') return true;
+        if (productionPreviewFilter === 'VALID') return record.isValid;
+        return record.displayStatus === productionPreviewFilter;
+      });
+      const affectedCampaigns = new Set(readyRecords.map((record) => record.campaignNormalized)).size;
+      const affectedBusinessUnits = new Set(readyRecords.map((record) => `${record.campaignNormalized}:${record.businessUnitNormalized}`)).size;
       const periodLabel = (year: number, month: number) => new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString('en-US', {
         month: 'long', year: 'numeric', timeZone: 'UTC',
       });
-      const statusStyle = (status: ProductionBulkPreviewRecord['status']) => {
+      const statusStyle = (status: string) => {
         if (status === 'ERROR') return 'bg-red-100 text-red-800';
         if (status === 'UPDATED') return 'bg-blue-100 text-blue-800';
         if (status === 'UNCHANGED') return 'bg-slate-100 text-slate-700';
@@ -1506,11 +1557,11 @@ export default function BulkImportPage() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             {[
               ['Detected', productionPreview.stats.total, 'text-slate-800'],
-              ['Valid', productionPreview.stats.valid, 'text-green-700'],
-              ['New', productionPreview.stats.new, 'text-emerald-700'],
-              ['Updates', productionPreview.stats.updated, 'text-blue-700'],
-              ['Unchanged', productionPreview.stats.unchanged, 'text-slate-600'],
-              ['Errors', productionPreview.stats.errors, 'text-red-700'],
+              ['Ready', readyRecords.length, 'text-green-700'],
+              ['New', reviewedRecords.filter((record) => record.displayStatus === 'NEW').length, 'text-emerald-700'],
+              ['Updates', reviewedRecords.filter((record) => record.displayStatus === 'UPDATED').length, 'text-blue-700'],
+              ['Warnings', reviewedRecords.filter((record) => record.displayStatus === 'WARNING').length, 'text-amber-700'],
+              ['Errors', invalidRecords.length, 'text-red-700'],
             ].map(([label, value, color]) => (
               <Card key={String(label)}><CardContent className="p-4 text-center">
                 <p className={`text-2xl font-bold ${color}`}>{Number(value).toLocaleString()}</p>
@@ -1518,6 +1569,21 @@ export default function BulkImportPage() {
               </CardContent></Card>
             ))}
           </div>
+
+          {invalidRecords.length > 0 && (
+            <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex gap-3">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                <div>
+                  <p className="font-semibold">{invalidRecords.length} row{invalidRecords.length === 1 ? '' : 's'} require{invalidRecords.length === 1 ? 's' : ''} attention</p>
+                  <p className="mt-1">{readyRecords.length.toLocaleString()} valid row{readyRecords.length === 1 ? '' : 's'} can still be imported. Invalid rows will be skipped.</p>
+                </div>
+              </div>
+              <Button variant="outline" size="sm" onClick={() => setProductionPreviewFilter('ERROR')} className="shrink-0 border-amber-400 bg-white">
+                View {invalidRecords.length} Error{invalidRecords.length === 1 ? '' : 's'}
+              </Button>
+            </div>
+          )}
 
           <Card>
             <CardHeader>
@@ -1593,7 +1659,21 @@ export default function BulkImportPage() {
               <CardTitle className="text-lg">Production Data Preview</CardTitle>
               <CardDescription>{readyRecords.length.toLocaleString()} valid row(s) are ready. No OM field is included.</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {([
+                  ['ALL', 'All'], ['VALID', 'Valid'], ['NEW', 'New'], ['UPDATED', 'Updates'], ['WARNING', 'Warnings'], ['ERROR', 'Errors'],
+                ] as Array<[ProductionPreviewFilter, string]>).map(([value, label]) => (
+                  <Button key={value} type="button" size="sm" variant={productionPreviewFilter === value ? 'default' : 'outline'} onClick={() => setProductionPreviewFilter(value)}>
+                    {label}
+                  </Button>
+                ))}
+                {invalidRecords.length > 0 && (
+                  <Button type="button" size="sm" variant="outline" onClick={downloadProductionErrors} className="gap-2 sm:ml-auto">
+                    <Download className="h-4 w-4" />Download Error Report
+                  </Button>
+                )}
+              </div>
               <div className="max-h-[34rem] overflow-auto rounded-lg border">
                 <table className="min-w-[1200px] text-xs">
                   <thead className="sticky top-0 bg-slate-100 text-left"><tr>
@@ -1601,27 +1681,48 @@ export default function BulkImportPage() {
                     {productionPreview.detectedWeeks.map((week) => <th key={week} className="p-2 text-right">Week {week}</th>)}
                     <th className="p-2 text-right">MTD</th><th className="p-2 text-right">Achievement</th><th className="p-2 text-right">Run Rate</th><th className="p-2">Status</th><th className="p-2">Validation</th>
                   </tr></thead>
-                  <tbody>{productionPreview.records.map((record) => (
+                  <tbody>{filteredProductionRecords.map((record) => (
                     <tr key={record.rowKey} className="border-t">
                       <td className="p-2 font-medium">{record.campaignSource}</td><td className="p-2">{record.businessUnitSource}</td>
                       <td className="whitespace-nowrap p-2">{record.reportYear && record.reportMonth ? periodLabel(record.reportYear, record.reportMonth) : 'Invalid'}</td>
                       <td className="p-2 capitalize">{record.metricType.replace(/_/g, ' ')}</td><td className="p-2 text-right">{formatProductionMetric(record.target, record.metricType, record.metricUnit)}</td>
                       {productionPreview.detectedWeeks.map((week) => <td key={week} className="p-2 text-right">{formatProductionMetric(productionWeekValue(record, week), record.metricType, record.metricUnit)}</td>)}
                       <td className="p-2 text-right font-medium">{formatProductionMetric(record.mtd, record.metricType, record.metricUnit)}</td><td className="p-2 text-right">{formatAchievement(record.achievement)}</td><td className="p-2 text-right">{formatAchievement(record.runRate)}</td>
-                      <td className="p-2"><span className={`rounded-full px-2 py-1 font-medium ${statusStyle(record.status)}`}>{record.status}</span></td><td className="max-w-72 p-2 text-slate-600">{record.issues.map((issue) => issue.message).join(' ') || 'Valid'}</td>
+                      <td className="p-2"><span className={`rounded-full px-2 py-1 font-medium ${statusStyle(record.displayStatus)}`}>{record.displayStatus}</span></td><td className="max-w-72 p-2 text-slate-600">{record.validationMessages.join(' ') || 'Valid'}</td>
                     </tr>
                   ))}</tbody>
                 </table>
               </div>
+              {!filteredProductionRecords.length && <p className="py-4 text-center text-sm text-slate-500">No rows match this filter.</p>}
             </CardContent>
           </Card>
 
           <div className="flex flex-col gap-3 sm:flex-row">
             <Button variant="outline" onClick={handleReset} className="gap-2"><ArrowLeft className="h-4 w-4" />Start Over</Button>
-            <Button onClick={handleProductionConfirm} disabled={!readyRecords.length || unresolvedCampaigns.length > 0 || unresolvedBusinessUnits.length > 0} className="flex-1 gap-2 bg-green-600 hover:bg-green-700">
-              <CheckCircle className="h-4 w-4" />Import {readyRecords.length.toLocaleString()} Valid Production Row{readyRecords.length === 1 ? '' : 's'}
+            <Button onClick={() => setProductionConfirmationOpen(true)} disabled={!readyRecords.length} className="flex-1 gap-2 bg-green-600 hover:bg-green-700">
+              <CheckCircle className="h-4 w-4" />{readyRecords.length === 0
+                ? 'No Valid Rows to Import'
+                : invalidRecords.length === 0
+                  ? `Import ${readyRecords.length.toLocaleString()} Production Row${readyRecords.length === 1 ? '' : 's'}`
+                  : `Import ${readyRecords.length.toLocaleString()} Valid Production Row${readyRecords.length === 1 ? '' : 's'}`}
             </Button>
           </div>
+
+          <ConfirmDialog
+            open={productionConfirmationOpen}
+            title="Confirm Production Import"
+            description={(
+              <span className="mt-2 block space-y-2 text-left">
+                <span className="block">{productionPreview.stats.total.toLocaleString()} rows were detected.</span>
+                <span className="block font-medium text-slate-800">{readyRecords.length.toLocaleString()} valid row{readyRecords.length === 1 ? '' : 's'} will be imported.</span>
+                {invalidRecords.length > 0 && <span className="block text-amber-700">{invalidRecords.length.toLocaleString()} row{invalidRecords.length === 1 ? '' : 's'} contain validation errors and will be skipped.</span>}
+                <span className="block">Campaigns affected: {affectedCampaigns.toLocaleString()} · Business units affected: {affectedBusinessUnits.toLocaleString()}</span>
+              </span>
+            )}
+            actionLabel={`Import ${readyRecords.length.toLocaleString()} Valid Row${readyRecords.length === 1 ? '' : 's'}`}
+            onConfirm={handleProductionConfirm}
+            onCancel={() => setProductionConfirmationOpen(false)}
+          />
         </div>
       );
     }
@@ -2135,6 +2236,7 @@ export default function BulkImportPage() {
         <div className="text-center space-y-3 text-slate-600">
           <div className="animate-spin h-8 w-8 border-4 border-green-500 border-t-transparent rounded-full mx-auto" />
           <p className="text-sm">{productionPreview ? 'Importing Production Monitoring records...' : 'Creating agents and importing records...'}</p>
+          {productionPreview && <p className="text-xs text-slate-500">Validating on the server · Saving valid rows · Finalizing the audit trail</p>}
         </div>
       </div>
     );
@@ -2160,16 +2262,22 @@ export default function BulkImportPage() {
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
               <p className="text-xl font-bold text-green-700">{importResult?.inserted ?? importResult?.success ?? 0}</p>
-              <p className="text-xs text-green-600">Records Inserted</p>
+              <p className="text-xs text-green-600">{importResult?.productionMonitoring ? 'New Records' : 'Records Inserted'}</p>
             </div>
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-center">
               <p className="text-xl font-bold text-blue-700">{importResult?.skipped ?? 0}</p>
-              <p className="text-xs text-blue-600">Existing Skipped</p>
+              <p className="text-xs text-blue-600">{importResult?.productionMonitoring ? 'Rows Skipped' : 'Existing Skipped'}</p>
             </div>
             {importResult?.updated > 0 && (
               <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-center">
                 <p className="text-xl font-bold text-indigo-700">{importResult.updated}</p>
                 <p className="text-xs text-indigo-600">Records Updated</p>
+              </div>
+            )}
+            {importResult?.productionMonitoring && importResult?.unchanged > 0 && (
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
+                <p className="text-xl font-bold text-slate-700">{importResult.unchanged}</p>
+                <p className="text-xs text-slate-600">Unchanged</p>
               </div>
             )}
             {importResult?.unmapped > 0 && (
@@ -2329,6 +2437,11 @@ export default function BulkImportPage() {
             {importResult?.productionMonitoring && (
               <Button onClick={() => router.push('/production-monitoring')} className="flex-1 gap-2">
                 <Eye className="h-4 w-4" />Open Production Monitoring
+              </Button>
+            )}
+            {importResult?.productionMonitoring && importResult?.invalid > 0 && (
+              <Button onClick={() => { setProductionPreviewFilter('ERROR'); setStep('confirm'); }} variant="outline" className="flex-1 gap-2">
+                <AlertTriangle className="h-4 w-4" />Review Skipped Rows
               </Button>
             )}
             <Button onClick={handleReset} variant="outline" className="flex-1 gap-2">

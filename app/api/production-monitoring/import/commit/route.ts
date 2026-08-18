@@ -20,7 +20,45 @@ const sanitizedIssueData = (record: ReturnType<typeof parseProductionWorkbook>["
   reportYear: record.reportYear,
   reportMonth: record.reportMonth,
   metricType: record.metricType,
+  target: record.target,
 });
+
+type ParsedRecord = ReturnType<typeof parseProductionWorkbook>["records"][number];
+
+function parseRequestedRowKeys(value: FormDataEntryValue | null) {
+  if (value == null) return null;
+  try {
+    const parsed = JSON.parse(String(value));
+    if (!Array.isArray(parsed)) return new Set<string>();
+    return new Set(parsed.slice(0, 10_000).filter((item): item is string => typeof item === "string" && item.length <= 500));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function issueInput(importId: string, record: ParsedRecord, issue: { level: "WARNING" | "ERROR"; code: string; message: string }) {
+  return {
+    importId,
+    sourceSheet: record.sourceSheet.slice(0, 255),
+    sourceRow: record.sourceRow,
+    level: issue.level,
+    code: issue.code,
+    message: issue.message,
+    rawData: sanitizedIssueData(record) as Prisma.InputJsonObject,
+  } satisfies Prisma.ProductionImportIssueCreateManyInput;
+}
+
+function validationField(code: string) {
+  if (code.includes("CAMPAIGN")) return "campaign";
+  if (code.includes("BUSINESS_UNIT") || code === "UNRESOLVED_MAPPING") return "businessUnit";
+  if (code.includes("TARGET")) return "target";
+  if (code.includes("PERIOD")) return "period";
+  if (code.includes("WEEK")) return "week";
+  if (code.includes("MTD")) return "mtd";
+  if (code.includes("ACHIEVEMENT")) return "achievement";
+  if (code.includes("RUN_RATE")) return "runRate";
+  return "row";
+}
 
 export async function POST(request: NextRequest) {
   const user = getProductionSessionUser(await getServerSession(authOptions));
@@ -45,24 +83,19 @@ export async function POST(request: NextRequest) {
   }
   const campaignMappings = parseCommitMappings(form.get("campaignMappings"));
   const businessMappings = parseBusinessUnitCommitMappings(form.get("businessUnitMappings"));
-  const campaignSources = new Set(parsed.records.filter((record) => record.campaignNormalized).map((record) => record.campaignNormalized));
-  if ([...campaignSources].some((source) => !campaignMappings.some((mapping) => mapping.source === source))) {
-    return NextResponse.json({ error: "Review every campaign mapping before importing." }, { status: 400 });
-  }
+  const requestedRowKeys = parseRequestedRowKeys(form.get("validRowKeys"));
+  const isRequested = (record: ParsedRecord) => requestedRowKeys == null || requestedRowKeys.has(record.rowKey);
+  const requestedBaseValidRecords = parsed.records.filter((record) =>
+    isRequested(record) && !record.issues.some((issue) => issue.level === "ERROR")
+  );
+  const requestedCampaignSources = new Set(requestedBaseValidRecords.map((record) => record.campaignNormalized).filter(Boolean));
+  const requestedBusinessSources = new Set(requestedBaseValidRecords
+    .filter((record) => record.campaignNormalized && record.businessUnitNormalized)
+    .map((record) => `${record.campaignNormalized}:${record.businessUnitNormalized}`));
   if (!canAdminProduction(user)) {
-    if (campaignMappings.some((mapping) => !mapping.targetId)) {
-      return NextResponse.json({ error: "A CEO must create or confirm unknown campaigns before a Collector can import them." }, { status: 403 });
-    }
-    if (campaignMappings.some((mapping) => mapping.targetId && !hasProductionCampaignAccess(user, mapping.targetId))) {
+    if (campaignMappings.some((mapping) => requestedCampaignSources.has(mapping.source) && mapping.targetId && !hasProductionCampaignAccess(user, mapping.targetId))) {
       return NextResponse.json({ error: "One or more detected campaigns are outside your assigned campaign access." }, { status: 403 });
     }
-  }
-  const businessSources = new Set(parsed.records.filter((record) => record.campaignNormalized && record.businessUnitNormalized).map((record) => `${record.campaignNormalized}:${record.businessUnitNormalized}`));
-  if ([...businessSources].some((key) => {
-    const [campaignSource, businessSource] = key.split(":");
-    return !businessMappings.some((mapping) => mapping.campaignSource === campaignSource && mapping.source === businessSource);
-  })) {
-    return NextResponse.json({ error: "Review every business unit mapping before importing." }, { status: 400 });
   }
 
   try {
@@ -76,15 +109,15 @@ export async function POST(request: NextRequest) {
           status: "IMPORTING",
         },
       });
-      const targetCampaignIds = campaignMappings.map((mapping) => mapping.targetId).filter(Boolean) as string[];
+      const usedCampaignMappings = campaignMappings.filter((mapping) => requestedCampaignSources.has(mapping.source));
+      const targetCampaignIds = usedCampaignMappings.map((mapping) => mapping.targetId).filter(Boolean) as string[];
       const validCampaigns = await tx.campaign.findMany({ where: { id: { in: targetCampaignIds } } });
       const validCampaignById = new Map(validCampaigns.map((campaign) => [campaign.id, campaign]));
       const campaignIdBySource = new Map<string, string>();
 
-      for (const mapping of campaignMappings) {
+      for (const mapping of usedCampaignMappings) {
         let campaign = mapping.targetId ? validCampaignById.get(mapping.targetId) : null;
-        if (mapping.targetId && !campaign) throw new Error("A selected campaign mapping is no longer available.");
-        if (!campaign) {
+        if (!campaign && !mapping.targetId && canAdminProduction(user)) {
           const sourceRecord = parsed.records.find((record) => record.campaignNormalized === mapping.source);
           if (!sourceRecord) continue;
           campaign = await tx.campaign.upsert({
@@ -100,6 +133,7 @@ export async function POST(request: NextRequest) {
             },
           });
         }
+        if (!campaign) continue;
         campaignIdBySource.set(mapping.source, campaign.id);
         const targetNormalized = campaign.normalizedName || normalizeProductionName(campaign.campaignName);
         if (mapping.source !== targetNormalized) {
@@ -111,18 +145,17 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      const targetBusinessIds = businessMappings.map((mapping) => mapping.targetId).filter(Boolean) as string[];
+      const usedBusinessMappings = businessMappings.filter((mapping) => requestedBusinessSources.has(`${mapping.campaignSource}:${mapping.source}`));
+      const targetBusinessIds = usedBusinessMappings.map((mapping) => mapping.targetId).filter(Boolean) as string[];
       const validBusinessUnits = await tx.businessUnit.findMany({ where: { id: { in: targetBusinessIds } } });
       const validBusinessById = new Map(validBusinessUnits.map((unit) => [unit.id, unit]));
       const businessIdBySource = new Map<string, string>();
-      for (const mapping of businessMappings) {
+      for (const mapping of usedBusinessMappings) {
         const campaignId = campaignIdBySource.get(mapping.campaignSource);
         if (!campaignId) continue;
         let businessUnit = mapping.targetId ? validBusinessById.get(mapping.targetId) : null;
-        if (mapping.targetId && (!businessUnit || businessUnit.campaignId !== campaignId)) {
-          throw new Error("A selected business unit does not belong to the mapped campaign.");
-        }
-        if (!businessUnit) {
+        if (businessUnit && businessUnit.campaignId !== campaignId) businessUnit = null;
+        if (!businessUnit && !mapping.targetId) {
           const sourceRecord = parsed.records.find((record) => record.campaignNormalized === mapping.campaignSource && record.businessUnitNormalized === mapping.source);
           if (!sourceRecord) continue;
           businessUnit = await tx.businessUnit.upsert({
@@ -131,6 +164,7 @@ export async function POST(request: NextRequest) {
             create: { campaignId, businessUnitName: productionDisplayName(sourceRecord.businessUnitSource), normalizedName: mapping.source },
           });
         }
+        if (!businessUnit) continue;
         businessIdBySource.set(`${mapping.campaignSource}:${mapping.source}`, businessUnit.id);
         if (mapping.source !== businessUnit.normalizedName) {
           const sourceLabel = parsed.records.find((record) => record.campaignNormalized === mapping.campaignSource && record.businessUnitNormalized === mapping.source)?.businessUnitSource || mapping.source;
@@ -149,39 +183,64 @@ export async function POST(request: NextRequest) {
       let warningCount = 0;
       let errorCount = 0;
       const issues: Prisma.ProductionImportIssueCreateManyInput[] = [];
+      const validationErrors: Array<{ row: number; sheet: string; campaign: string; businessUnit: string; field: string; message: string }> = [];
 
-      for (const record of parsed.records) {
-        const recordErrors = record.issues.filter((issue) => issue.level === "ERROR");
-        const recordWarnings = record.issues.filter((issue) => issue.level === "WARNING");
+      const resolvedRecords = parsed.records.map((record) => {
+        const recordIssues = [...record.issues];
+        const campaignId = campaignIdBySource.get(record.campaignNormalized);
+        const businessUnitId = businessIdBySource.get(`${record.campaignNormalized}:${record.businessUnitNormalized}`);
+        if (!recordIssues.some((issue) => issue.level === "ERROR")) {
+          if (!campaignId) {
+            recordIssues.push({ level: "ERROR", code: "CAMPAIGN_MAPPING_REQUIRED", message: "Campaign mapping is required." });
+          } else if (!businessUnitId) {
+            recordIssues.push({ level: "ERROR", code: "BUSINESS_UNIT_MAPPING_REQUIRED", message: "Business Unit mapping is required." });
+          }
+        }
+        return { record, recordIssues, campaignId, businessUnitId };
+      });
+
+      const importableRecords = resolvedRecords.filter(({ record, recordIssues, campaignId, businessUnitId }) =>
+        isRequested(record) &&
+        Boolean(campaignId && businessUnitId && record.reportYear && record.reportMonth) &&
+        !recordIssues.some((issue) => issue.level === "ERROR")
+      );
+      const existingPeriods = Array.from(new Map(importableRecords.map(({ record }) => [
+        `${record.reportYear}:${record.reportMonth}`,
+        { reportYear: record.reportYear as number, reportMonth: record.reportMonth as number },
+      ])).values());
+      const existingRecords = importableRecords.length
+        ? await tx.productionMonitoring.findMany({ where: {
+          campaignId: { in: Array.from(new Set(importableRecords.map(({ campaignId }) => campaignId as string))) },
+          businessUnitId: { in: Array.from(new Set(importableRecords.map(({ businessUnitId }) => businessUnitId as string))) },
+          metricType: { in: Array.from(new Set(importableRecords.map(({ record }) => record.metricType))) },
+          OR: existingPeriods,
+        } })
+        : [];
+      const existingByKey = new Map(existingRecords.map((record) => [
+        [record.campaignId, record.businessUnitId, record.reportYear, record.reportMonth, record.metricType].join(":"),
+        record,
+      ]));
+
+      for (const { record, recordIssues, campaignId, businessUnitId } of resolvedRecords) {
+        const recordErrors = recordIssues.filter((issue) => issue.level === "ERROR");
+        const recordWarnings = recordIssues.filter((issue) => issue.level === "WARNING");
         warningCount += recordWarnings.length;
         errorCount += recordErrors.length;
-        issues.push(...record.issues.map((issue) => ({
-          importId: batch.id,
-          sourceSheet: record.sourceSheet.slice(0, 255),
-          sourceRow: record.sourceRow,
-          level: issue.level,
-          code: issue.code,
+        issues.push(...recordIssues.map((issue) => issueInput(batch.id, record, issue)));
+        validationErrors.push(...recordErrors.map((issue) => ({
+          row: record.sourceRow,
+          sheet: record.sourceSheet,
+          campaign: record.campaignSource,
+          businessUnit: record.businessUnitSource,
+          field: validationField(issue.code),
           message: issue.message,
-          rawData: sanitizedIssueData(record) as Prisma.InputJsonObject,
         })));
-        if (recordErrors.length || !record.reportYear || !record.reportMonth) {
+        if (recordErrors.length || !record.reportYear || !record.reportMonth || !isRequested(record)) {
           skipped += 1;
           continue;
         }
-        const campaignId = campaignIdBySource.get(record.campaignNormalized);
-        const businessUnitId = businessIdBySource.get(`${record.campaignNormalized}:${record.businessUnitNormalized}`);
         if (!campaignId || !businessUnitId) {
           skipped += 1;
-          errorCount += 1;
-          issues.push({
-            importId: batch.id,
-            sourceSheet: record.sourceSheet,
-            sourceRow: record.sourceRow,
-            level: "ERROR",
-            code: "UNRESOLVED_MAPPING",
-            message: "Campaign or business unit mapping could not be resolved.",
-            rawData: sanitizedIssueData(record) as Prisma.InputJsonObject,
-          });
           continue;
         }
         const key = {
@@ -191,9 +250,7 @@ export async function POST(request: NextRequest) {
           reportMonth: record.reportMonth,
           metricType: record.metricType,
         };
-        const existing = await tx.productionMonitoring.findUnique({
-          where: { campaignId_businessUnitId_reportYear_reportMonth_metricType: key },
-        });
+        const existing = existingByKey.get([campaignId, businessUnitId, record.reportYear, record.reportMonth, record.metricType].join(":"));
         if (existing?.sourceHash === record.sourceHash) {
           unchanged += 1;
           continue;
@@ -239,7 +296,11 @@ export async function POST(request: NextRequest) {
         }
       }
       if (issues.length) await tx.productionImportIssue.createMany({ data: issues });
-      const status = errorCount ? (imported || updated || unchanged ? "COMPLETED_WITH_ERRORS" : "FAILED_VALIDATION") : warningCount ? "COMPLETED_WITH_WARNINGS" : "COMPLETED";
+      const processed = imported + updated + unchanged;
+      const invalidRows = resolvedRecords.filter(({ recordIssues }) => recordIssues.some((issue) => issue.level === "ERROR")).length;
+      const status = skipped
+        ? (processed ? "COMPLETED_WITH_SKIPPED_ROWS" : "FAILED_VALIDATION")
+        : warningCount ? "COMPLETED_WITH_WARNINGS" : "COMPLETED";
       await tx.productionImport.update({
         where: { id: batch.id },
         data: {
@@ -253,7 +314,28 @@ export async function POST(request: NextRequest) {
           completedAt: new Date(),
         },
       });
-      return { importId: batch.id, imported, updated, unchanged, skipped, warnings: warningCount, errors: errorCount, status };
+      return {
+        success: true,
+        importId: batch.id,
+        imported,
+        updated,
+        unchanged,
+        skipped,
+        invalidRows,
+        warnings: warningCount,
+        errors: errorCount,
+        validationErrors,
+        status,
+        summary: {
+          detected: parsed.records.length,
+          submitted: importableRecords.length,
+          inserted: imported,
+          updated,
+          unchanged,
+          skipped,
+          failed: 0,
+        },
+      };
     }, { timeout: 30_000 });
     return NextResponse.json(result);
   } catch (error) {
