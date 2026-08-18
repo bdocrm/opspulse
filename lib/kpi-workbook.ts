@@ -1,5 +1,9 @@
 import * as XLSX from "xlsx";
-import { validateKpiValues, type KpiValueSet } from "./kpi-performance";
+import {
+  validateKpiValues,
+  type KpiAchievements,
+  type KpiValueSet,
+} from "./kpi-performance";
 
 const MONTHS: Record<string, number> = {
   JAN: 1,
@@ -29,9 +33,11 @@ const MONTHS: Record<string, number> = {
 };
 
 type KpiField = keyof KpiValueSet;
-type ColumnField = "employeeName" | "employeeCode" | "tenure" | KpiField;
+type KpiAchievementField = Exclude<keyof KpiAchievements, "overallScore">;
+type KpiNumericField = KpiField | KpiAchievementField;
+type ColumnField = "employeeName" | "employeeCode" | "tenure" | KpiNumericField;
 
-export interface ParsedKpiRow extends KpiValueSet {
+export interface ParsedKpiRow extends KpiValueSet, Partial<Omit<KpiAchievements, "overallScore">> {
   rowKey: string;
   employeeName: string;
   employeeCode: string | null;
@@ -112,9 +118,8 @@ function sheetMatrix(sheet: XLSX.WorkSheet) {
   return rows;
 }
 
-function metricField(header: string): KpiField | null {
+function metricField(header: string): KpiNumericField | null {
   const text = normalizedWords(header);
-  if (/\b(ACHIEVEMENT|ACHIEVED|ACVT|ACHV|SCORE)\b/.test(text)) return null;
   let metric: "Qa" | "Aht" | "Adherence" | "Cm" | "Cd" | null = null;
   if (/\b(ADHERENCE|ADH)\b/.test(text)) metric = "Adherence";
   else if (/\bAHT\b/.test(text)) metric = "Aht";
@@ -122,6 +127,9 @@ function metricField(header: string): KpiField | null {
   else if (/\bCM\b/.test(text)) metric = "Cm";
   else if (/\bCD\b/.test(text)) metric = "Cd";
   if (!metric) return null;
+  if (/\b(ACHIEVEMENT|ACHIEVED|ACVT|ACHV|SCORE)\b/.test(text)) {
+    return `achievement${metric}` as KpiAchievementField;
+  }
   const goal = /\b(GOAL|TARGET|STANDARD|BENCHMARK)\b/.test(text);
   return `${goal ? "goal" : "actual"}${metric}` as KpiField;
 }
@@ -161,7 +169,9 @@ function locateColumns(rows: string[][]) {
       const field = identifyField(headerForColumn(rows, headerRow, column));
       if (field && !fields.has(field)) fields.set(field, column);
     }
-    const kpiCount = [...fields.keys()].filter((field) => field.startsWith("actual") || field.startsWith("goal")).length;
+    const kpiCount = [...fields.keys()].filter((field) =>
+      field.startsWith("actual") || field.startsWith("goal") || field.startsWith("achievement")
+    ).length;
     // Some client KPI workbooks label column A with the worksheet month
     // (for example, JANUARY) instead of NAME. The rows immediately below it
     // still contain employee names, while the remaining columns provide a
@@ -176,7 +186,7 @@ function locateColumns(rows: string[][]) {
   return null;
 }
 
-function parseNumber(value: string, field: KpiField) {
+function parseNumber(value: string, field: KpiNumericField) {
   const text = value.trim();
   // Excel formula errors represent unavailable KPI values, not malformed
   // user-entered numbers. Preserve the rest of the employee row and store the
@@ -188,6 +198,10 @@ function parseNumber(value: string, field: KpiField) {
   const numeric = Number(cleaned);
   if (!Number.isFinite(numeric)) return Number.NaN;
   let result = negativeByParentheses ? -numeric : numeric;
+  if (field.startsWith("achievement")) {
+    if (isPercent || Math.abs(result) > 2) result /= 100;
+    return result;
+  }
   if (!isPercent && (field.endsWith("Qa") || field.endsWith("Adherence")) && result > 0 && result <= 1) {
     result *= 100;
   }
@@ -222,11 +236,12 @@ function parseSheet(
     const row = rows[rowIndex] ?? [];
     const employeeName = cleanEmployeeName(row[columns.fields.get("employeeName") as number] ?? "");
     if (isDecorativeEmployee(employeeName)) continue;
-    const values = {} as Record<KpiField, number | null>;
+    const values = {} as Record<KpiNumericField, number | null>;
     const parseErrors: string[] = [];
-    const kpiFields: KpiField[] = [
+    const kpiFields: KpiNumericField[] = [
       "actualQa", "actualAht", "actualAdherence", "actualCm", "actualCd",
       "goalQa", "goalAht", "goalAdherence", "goalCm", "goalCd",
+      "achievementQa", "achievementAht", "achievementAdherence", "achievementCm", "achievementCd",
     ];
     for (const field of kpiFields) {
       const column = columns.fields.get(field);

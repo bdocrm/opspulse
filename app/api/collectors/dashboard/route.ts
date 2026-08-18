@@ -8,6 +8,10 @@ import {
   calculateCampaignAchievement,
   summarizeCampaignAchievements,
 } from "@/lib/campaign-achievement";
+import {
+  BDO_CCC_CAMPAIGN_PATTERN,
+  highestBdoCccAchievementPercent,
+} from "@/lib/bdo-ccc-kpi";
 
 const BUSINESS_TIME_ZONE = "Asia/Manila";
 const BUSINESS_TIME_ZONE_OFFSET = "+08:00";
@@ -166,7 +170,7 @@ export async function GET(req: NextRequest) {
     await ensureCampaignGoalTable();
 
     // Pull everything in a few batched queries scoped to the assigned set.
-    const [campaigns, agents, rawDetails, rawEntries, monthlyGoalRows, dashboardAgentRecords, rawMetricRecords] = await Promise.all([
+    const [campaigns, agents, rawDetails, rawEntries, monthlyGoalRows, dashboardAgentRecords, rawMetricRecords, rawKpiRecords] = await Promise.all([
       prisma.campaign.findMany({
         where: { id: { in: assignedIds } },
         select: {
@@ -335,10 +339,55 @@ export async function GET(req: NextRequest) {
           createdAt: true,
         },
       }).catch(() => []),
+      prisma.collectorKpiRecord.findMany({
+        where: { campaignId: { in: assignedIds } },
+        select: {
+          campaignId: true,
+          employeeId: true,
+          employeeNameSnapshot: true,
+          month: true,
+          year: true,
+          achievementQa: true,
+          achievementAht: true,
+          achievementAdherence: true,
+          achievementCm: true,
+          achievementCd: true,
+          updatedAt: true,
+        },
+        orderBy: [{ year: "asc" }, { month: "asc" }, { sourceRow: "asc" }],
+      }).catch(() => []),
     ]);
 
     const importedFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
     const importedAgentFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
+    const bdoCccCampaignIds = new Set(
+      campaigns
+        .filter((campaign) => BDO_CCC_CAMPAIGN_PATTERN.test(campaign.campaignName.trim()))
+        .map((campaign) => campaign.id)
+    );
+    const bdoCccKpiFallbackPeriodByCampaign = new Map<string, { year: number; month: number }>();
+    const selectedBdoCccKpiRecords = rawKpiRecords.filter((record) => {
+      if (!bdoCccCampaignIds.has(record.campaignId)) return false;
+      const periodIndex = record.year * 12 + record.month;
+      return periodIndex >= selectedStartPeriodIndex && periodIndex <= selectedEndPeriodIndex;
+    });
+    const bdoCccKpiRecords = [...selectedBdoCccKpiRecords];
+    for (const campaignId of bdoCccCampaignIds) {
+      if (selectedBdoCccKpiRecords.some((record) => record.campaignId === campaignId)) continue;
+      const latest = rawKpiRecords
+        .filter((record) => record.campaignId === campaignId)
+        .sort((left, right) => right.year - left.year || right.month - left.month)[0];
+      if (!latest) continue;
+      bdoCccKpiRecords.push(...rawKpiRecords.filter((record) =>
+        record.campaignId === campaignId &&
+        record.year === latest.year &&
+        record.month === latest.month
+      ));
+      bdoCccKpiFallbackPeriodByCampaign.set(campaignId, {
+        year: latest.year,
+        month: latest.month,
+      });
+    }
     const bdoSgmCampaignIds = campaigns
       .filter((campaign) => /^BDO\s+SGM$/i.test(campaign.campaignName.trim()))
       .map((campaign) => campaign.id);
@@ -567,6 +616,30 @@ export async function GET(req: NextRequest) {
       });
       importedRosterByCampaign.set(record.campaignId, list);
     }
+    for (const record of bdoCccKpiRecords) {
+      const normalizedName = normalizeImportedAgentName(record.employeeNameSnapshot);
+      if (!normalizedName) continue;
+      const identity = `${record.campaignId}|${normalizedName}`;
+      if (actualAgentIdByCampaignAndName.has(identity) || importedRosterSeen.has(identity)) continue;
+      importedRosterSeen.add(identity);
+      const list = importedRosterByCampaign.get(record.campaignId) ?? [];
+      list.push({
+        id: record.employeeId,
+        name: record.employeeNameSnapshot,
+        email: "",
+        seatNumber: null,
+        monthlyTarget: null,
+        monthlyTargetSupplementary: null,
+        mbLevel: null,
+        disbursedTxnTarget: null,
+        disbursedVolTarget: null,
+        grossTurnInsTxnTarget: null,
+        grossTurnInsVolTarget: null,
+        campaignId: record.campaignId,
+        importedOnly: true,
+      });
+      importedRosterByCampaign.set(record.campaignId, list);
+    }
 
     const campaignsWithMonthlyProductionImport = new Set(
       details
@@ -682,6 +755,33 @@ export async function GET(req: NextRequest) {
       for (const k of CATEGORY_KEYS) cur[k] += Number((d as any)[k] ?? 0);
       byAgent[d.agentId] = cur;
       prodByCampaign.set(d.campaignId, byAgent);
+    }
+    const bdoCccActualByCampaign = new Map<string, number>();
+    const bdoCccPerformanceByCampaign = new Map<
+      string,
+      Record<string, { actual: number; achievement: number }>
+    >();
+    for (const record of bdoCccKpiRecords) {
+      const percentage = highestBdoCccAchievementPercent(record);
+      if (percentage == null) continue;
+      const byAgent = prodByCampaign.get(record.campaignId) ?? {};
+      const cur = byAgent[record.employeeId] ?? emptyProduction();
+      // Multiple months can be in range. BDO CCC explicitly uses the highest
+      // imported ACVT percentage, so never add monthly percentages together.
+      cur.transmittals = Math.max(Number(cur.transmittals || 0), percentage);
+      byAgent[record.employeeId] = cur;
+      prodByCampaign.set(record.campaignId, byAgent);
+
+      const performance = bdoCccPerformanceByCampaign.get(record.campaignId) ?? {};
+      const existing = performance[record.employeeId];
+      if (!existing || percentage > existing.actual) {
+        performance[record.employeeId] = { actual: percentage, achievement: 0 };
+      }
+      bdoCccPerformanceByCampaign.set(record.campaignId, performance);
+      bdoCccActualByCampaign.set(
+        record.campaignId,
+        Math.max(bdoCccActualByCampaign.get(record.campaignId) ?? 0, percentage)
+      );
     }
     // Whole-year totals and source identity are annual metadata. Merge them
     // independently of the active month so an agent with a blank latest month
@@ -1011,6 +1111,17 @@ export async function GET(req: NextRequest) {
         (dashboardRecordCountByCampaign.get(record.campaignId) ?? 0) + 1
       );
     }
+    const kpiRecordCountByCampaign = new Map<string, number>();
+    const kpiPeriodCountByCampaign = new Map<string, Set<string>>();
+    for (const record of bdoCccKpiRecords) {
+      kpiRecordCountByCampaign.set(
+        record.campaignId,
+        (kpiRecordCountByCampaign.get(record.campaignId) ?? 0) + 1
+      );
+      const periods = kpiPeriodCountByCampaign.get(record.campaignId) ?? new Set<string>();
+      periods.add(`${record.year}-${record.month}`);
+      kpiPeriodCountByCampaign.set(record.campaignId, periods);
+    }
 
     const sourceUpdateByCampaign = new Map<string, Date>();
     const registerSourceUpdate = (campaignId: string, timestamp: Date) => {
@@ -1026,6 +1137,9 @@ export async function GET(req: NextRequest) {
         registerSourceUpdate(metric.campaignId, metric.createdAt);
       }
     }
+    for (const record of bdoCccKpiRecords) {
+      registerSourceUpdate(record.campaignId, record.updatedAt);
+    }
 
     const activityByDate = new Map<string, number>();
     for (const entry of entries) {
@@ -1040,6 +1154,10 @@ export async function GET(req: NextRequest) {
       const key = businessDateKey(record.reportDate);
       activityByDate.set(key, (activityByDate.get(key) ?? 0) + 1);
     }
+    for (const record of bdoCccKpiRecords) {
+      const key = `${record.year}-${String(record.month).padStart(2, "0")}-01`;
+      activityByDate.set(key, (activityByDate.get(key) ?? 0) + 1);
+    }
 
     const result = campaigns.map((c) => {
       const savedGoal = monthlyGoalsByCampaignId.get(c.id);
@@ -1047,6 +1165,7 @@ export async function GET(req: NextRequest) {
       const isAcqCampaign = /\bACQ\b/i.test(c.campaignName);
       const isMbPaCampaign = /\bMB\s*PA\b/i.test(c.campaignName);
       const isMbPlCampaign = /\bMB\s*PL\b/i.test(c.campaignName);
+      const isBdoCccCampaign = BDO_CCC_CAMPAIGN_PATTERN.test(c.campaignName.trim());
       const production = prodByCampaign.get(c.id) ?? {};
       const normalizedGoalsByAgent = importedMetricGoalsByCampaign.get(c.id) ?? {};
       const rawMbPlPerformance = mbPlPerformanceByCampaign.get(c.id) ?? {};
@@ -1101,10 +1220,12 @@ export async function GET(req: NextRequest) {
         record.recordKind === "agent_monitoring" &&
         record.target != null
       );
+      const hasBdoCccImport = bdoCccKpiRecords.some((record) => record.campaignId === c.id);
       const hasCampaignAgentImport = campaignsWithMonthlyProductionImport.has(c.id)
         || hasDashboardAgentImport
         || hasDashboardAgentTargetImport
-        || hasMbPlImport;
+        || hasMbPlImport
+        || hasBdoCccImport;
       const syntheticTotalName = normalizeImportedAgentName(`${c.campaignName} Total`);
       const importedGoalForAgent = (agentId: string) => {
         const goals = normalizedGoalsByAgent[agentId] ?? {};
@@ -1212,7 +1333,17 @@ export async function GET(req: NextRequest) {
             }];
           }))
         : undefined;
-      const bdoPerformance = isBdoCampaign ? importedPerformance ?? bdoSgmPerformance : undefined;
+      const rawBdoCccPerformance = bdoCccPerformanceByCampaign.get(c.id);
+      const bdoCccPerformance = rawBdoCccPerformance
+        ? Object.fromEntries(Object.entries(rawBdoCccPerformance).map(([agentId, row]) => [agentId, {
+            goal: ceoGoal,
+            actual: row.actual,
+            achievement: ceoGoal > 0 ? (row.actual / ceoGoal) * 100 : 0,
+          }]))
+        : undefined;
+      const bdoPerformance = isBdoCampaign
+        ? bdoCccPerformance ?? importedPerformance ?? bdoSgmPerformance
+        : undefined;
       const bdoActualFromAgents = Object.values(rawImportedPerformance).reduce((sum, row) => sum + row.actual, 0);
       const hasBdoAgentImport = Object.keys(rawImportedPerformance).length > 0;
       const normalizedPrimaryGoalTotal = campaignAgents.reduce((sum, agent) => {
@@ -1249,7 +1380,9 @@ export async function GET(req: NextRequest) {
       // multiply the same target.
       const resolvedGoalValue = importedCampaignGoal || fallbackGoal;
       const resolvedGoal = resolvedGoalValue > 0 ? resolvedGoalValue : null;
-      const resolvedActual = isBdoCampaign
+      const resolvedActual = isBdoCccCampaign && bdoCccActualByCampaign.has(c.id)
+        ? bdoCccActualByCampaign.get(c.id)!
+        : isBdoCampaign
         ? hasBdoAgentImport
           ? bdoActualFromAgents
           : importedActualByCampaign.get(c.id) ??
@@ -1284,7 +1417,8 @@ export async function GET(req: NextRequest) {
       const recordCount =
         (detailCountByCampaign.get(c.id) ?? 0) +
         (dashboardRecordCountByCampaign.get(c.id) ?? 0) +
-        (metricCountByCampaign.get(c.id) ?? 0);
+        (metricCountByCampaign.get(c.id) ?? 0) +
+        (kpiRecordCountByCampaign.get(c.id) ?? 0);
       const campaignAchievement = calculateCampaignAchievement({
         campaignId: c.id,
         campaignName: c.campaignName,
@@ -1331,13 +1465,19 @@ export async function GET(req: NextRequest) {
         } : undefined,
         production,
         attendance: attByCampaign.get(c.id) ?? {},
-        entriesCount: (entryCountByCampaign.get(c.id) ?? 0) + (importedEntryKeysByCampaign.get(c.id)?.size ?? 0),
-        dataPeriod: isBdoCampaign && importedAgentFallbackPeriodByCampaign.has(c.id)
+        entriesCount: (entryCountByCampaign.get(c.id) ?? 0)
+          + (importedEntryKeysByCampaign.get(c.id)?.size ?? 0)
+          + (kpiPeriodCountByCampaign.get(c.id)?.size ?? 0),
+        dataPeriod: bdoCccKpiFallbackPeriodByCampaign.has(c.id)
+          ? { source: "latest_import", ...bdoCccKpiFallbackPeriodByCampaign.get(c.id)! }
+          : isBdoCampaign && importedAgentFallbackPeriodByCampaign.has(c.id)
           ? { source: "latest_import", ...importedAgentFallbackPeriodByCampaign.get(c.id)! }
           : importedFallbackPeriodByCampaign.has(c.id)
             ? { source: "latest_import", ...importedFallbackPeriodByCampaign.get(c.id)! }
           : { source: "selected_range" },
-        agentDataPeriod: importedAgentFallbackPeriodByCampaign.has(c.id)
+        agentDataPeriod: bdoCccKpiFallbackPeriodByCampaign.has(c.id)
+          ? { source: "latest_import", ...bdoCccKpiFallbackPeriodByCampaign.get(c.id)! }
+          : importedAgentFallbackPeriodByCampaign.has(c.id)
           ? { source: "latest_import", ...importedAgentFallbackPeriodByCampaign.get(c.id)! }
           : { source: "selected_range" },
         lastUpdated: sourceUpdateByCampaign.get(c.id)?.toISOString() ?? null,

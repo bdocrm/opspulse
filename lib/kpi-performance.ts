@@ -48,12 +48,47 @@ function lowerIsBetter(goal: number | null, actual: number | null, zeroIsPerfect
   return safeRatio(goal, actual);
 }
 
-export function calculateKpiAchievements(values: KpiValueSet): KpiAchievements {
-  const achievementQa = safeRatio(values.actualQa, values.goalQa);
-  const achievementAht = lowerIsBetter(values.goalAht, values.actualAht);
-  const achievementAdherence = safeRatio(values.actualAdherence, values.goalAdherence);
-  const achievementCm = lowerIsBetter(values.goalCm, values.actualCm, true);
-  const achievementCd = lowerIsBetter(values.goalCd, values.actualCd, true);
+export type SuppliedKpiAchievements = Partial<
+  Pick<
+    KpiAchievements,
+    | "achievementQa"
+    | "achievementAht"
+    | "achievementAdherence"
+    | "achievementCm"
+    | "achievementCd"
+  >
+>;
+
+function suppliedOrCalculated(supplied: number | null | undefined, calculated: number | null) {
+  return supplied != null && Number.isFinite(supplied) ? supplied : calculated;
+}
+
+export function calculateKpiAchievements(
+  values: KpiValueSet & SuppliedKpiAchievements
+): KpiAchievements {
+  // ACVT columns are authoritative when they are present in the uploaded
+  // workbook. Falling back to a ratio keeps older Actuals/Goal-only templates
+  // compatible while preserving the exact percentage shown in BDO CCC files.
+  const achievementQa = suppliedOrCalculated(
+    values.achievementQa,
+    safeRatio(values.actualQa, values.goalQa)
+  );
+  const achievementAht = suppliedOrCalculated(
+    values.achievementAht,
+    lowerIsBetter(values.goalAht, values.actualAht)
+  );
+  const achievementAdherence = suppliedOrCalculated(
+    values.achievementAdherence,
+    safeRatio(values.actualAdherence, values.goalAdherence)
+  );
+  const achievementCm = suppliedOrCalculated(
+    values.achievementCm,
+    lowerIsBetter(values.goalCm, values.actualCm, true)
+  );
+  const achievementCd = suppliedOrCalculated(
+    values.achievementCd,
+    lowerIsBetter(values.goalCd, values.actualCd, true)
+  );
   const byMetric: Record<KpiMetric, number | null> = {
     qa: achievementQa,
     aht: achievementAht,

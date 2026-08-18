@@ -57,6 +57,19 @@ async function main() {
     { name: "MEDICARD", goal: 360, metric: "transmittals" },
     { name: "BDO Online", goal: 500, metric: "transmittals" },
     { name: "BDO CCC", goal: 500, metric: "transmittals" },
+    { name: "RBSC", goal: 350, metric: "transmittals" },
+    { name: "MEDICARD PPN", goal: 350, metric: "transmittals" },
+    { name: "MEDICARD DENTAL", goal: 350, metric: "transmittals" },
+    { name: "MEDICARD DOC CONCIERGE", goal: 350, metric: "transmittals" },
+    { name: "MEDICARD CLAIMS BACKFILL", goal: 350, metric: "transmittals" },
+    { name: "MEDICARD REIMBURSEMENT", goal: 350, metric: "transmittals" },
+    { name: "MEDICARD CLAIMS PAYMENT", goal: 350, metric: "transmittals" },
+    { name: "MEDICARD DENTAL BO", goal: 350, metric: "transmittals" },
+    { name: "MEDICARD COLLECTION", goal: 350, metric: "transmittals" },
+    { name: "MEDICARD PRD", goal: 350, metric: "transmittals" },
+    { name: "AC MOBILITY", goal: 350, metric: "transmittals" },
+    { name: "GAOC", goal: 350, metric: "transmittals" },
+    { name: "BDO SUPPLE INVI", goal: 350, metric: "transmittals" },
   ];
 
   const campaigns = await Promise.all(

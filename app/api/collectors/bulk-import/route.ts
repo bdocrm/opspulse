@@ -27,6 +27,7 @@ import {
 } from '@/lib/bdo-sgm-consolidated-import';
 import { calculateKpiAchievements } from '@/lib/kpi-performance';
 import { parseKpiWorkbook, type KpiWorkbookResult, type ParsedKpiRow } from '@/lib/kpi-workbook';
+import { BDO_CCC_CAMPAIGN_PATTERN } from '@/lib/bdo-ccc-kpi';
 
 type BdoSgmParseResult = BdoSgmWorksheetParseResult | BdoSgmConsolidatedParseResult;
 
@@ -2799,11 +2800,25 @@ export async function POST(req: NextRequest) {
         (sheet) => sheet.supported && !sheet.error && sheet.recordCount > 0
       );
       if (isKpiWorkbook) {
-        if (selectedCampaigns.length !== 1) {
-          return NextResponse.json({ error: 'KPI workbooks must be imported into exactly one campaign.' }, { status: 400 });
+        // This workbook layout is the BDO CCC Actuals / Goal / ACVT report.
+        // Resolve it to the collector's assigned BDO CCC campaign instead of
+        // silently using their legacy/default primary campaign.
+        const selectedBdoCccCampaign = selectedCampaigns.find((campaign) =>
+          BDO_CCC_CAMPAIGN_PATTERN.test(campaign.campaignName.trim())
+        );
+        const assignedBdoCccCampaigns = assignedCampaigns.filter((campaign) =>
+          BDO_CCC_CAMPAIGN_PATTERN.test(campaign.campaignName.trim())
+        );
+        const kpiCampaign = selectedBdoCccCampaign ?? (
+          assignedBdoCccCampaigns.length === 1 ? assignedBdoCccCampaigns[0] : null
+        );
+        if (!kpiCampaign) {
+          return NextResponse.json({
+            error: 'Assign or select exactly one BDO CCC campaign before importing this KPI workbook.',
+          }, { status: 400 });
         }
         if (mode === 'preview') {
-          return NextResponse.json(await buildKpiBulkPreview(kpiParsed, selectedCampaigns[0]));
+          return NextResponse.json(await buildKpiBulkPreview(kpiParsed, kpiCampaign));
         }
         const selectedWorksheetKeysValue = formData.get('selectedWorksheetKeys');
         const selectedWorksheetKeys: string[] = selectedWorksheetKeysValue === null
@@ -2814,7 +2829,7 @@ export async function POST(req: NextRequest) {
         );
         const result = await persistKpiBulkImport({
           parsed: kpiParsed,
-          campaign: selectedCampaigns[0],
+          campaign: kpiCampaign,
           fileName: file.name,
           importedById: user.id,
           selectedWorksheetKeys,
