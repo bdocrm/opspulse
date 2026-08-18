@@ -477,7 +477,7 @@ export default function AgentsPage() {
                     </Button>
                   </>
                 ) : (
-                  <p>No agents match "{agentSearch}"</p>
+                  <p>No agents match &ldquo;{agentSearch}&rdquo;</p>
                 )}
               </div>
             ) : (

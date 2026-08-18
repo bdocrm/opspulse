@@ -43,6 +43,8 @@ model User {
   normalizedProductionRecords ProductionMetricRecord[]
   collectorKpiRecords         CollectorKpiRecord[]     @relation("EmployeeKpiRecords")
   kpiImportBatches            KpiImportBatch[]         @relation("KpiImports")
+  productionImports           ProductionImport[]          @relation("ProductionImports")
+  productionMonitoringAudits  ProductionMonitoringAudit[] @relation("ProductionMonitoringChanges")
   createdAt                   DateTime                 @default(now())
 
   @@index([campaignId])
@@ -68,6 +70,8 @@ model UserCampaign {
 model Campaign {
   id                          String                   @id @default(uuid())
   campaignName                String
+  normalizedName              String?                  @unique
+  isActive                    Boolean                  @default(true)
   goalType                    String
   monthlyGoal                 Float // Legacy field, kept for backwards compatibility
   supplementaryGoal           Float                    @default(0) // ACQ: monthly Supplementary goal (NTB uses monthlyGoal)
@@ -83,7 +87,155 @@ model Campaign {
   normalizedProductionRecords ProductionMetricRecord[]
   collectorKpiRecords         CollectorKpiRecord[]
   kpiImportBatches            KpiImportBatch[]
+  businessUnits               BusinessUnit[]
+  productionMonitoringRecords ProductionMonitoring[]
+  productionAliases           CampaignAlias[]
   createdAt                   DateTime                 @default(now())
+  updatedAt                   DateTime                 @default(now()) @updatedAt
+}
+
+// Production Monitoring is deliberately campaign/business-unit centric. No
+// Operations Manager identity or assignment is stored anywhere in this model
+// graph so historical production remains independent from staffing changes.
+model BusinessUnit {
+  id                String                 @id @default(uuid())
+  campaignId        String
+  campaign          Campaign               @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  businessUnitName  String
+  normalizedName    String
+  isActive          Boolean                @default(true)
+  aliases           BusinessUnitAlias[]
+  productionRecords ProductionMonitoring[]
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @default(now()) @updatedAt
+
+  @@unique([campaignId, normalizedName])
+  @@index([campaignId, isActive])
+}
+
+model CampaignAlias {
+  id              String   @id @default(uuid())
+  campaignId      String
+  campaign        Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  alias           String
+  normalizedAlias String   @unique
+  createdAt       DateTime @default(now())
+
+  @@index([campaignId])
+}
+
+model BusinessUnitAlias {
+  id              String       @id @default(uuid())
+  businessUnitId  String
+  businessUnit    BusinessUnit @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  campaignId      String
+  alias           String
+  normalizedAlias String
+  createdAt       DateTime     @default(now())
+
+  @@unique([campaignId, normalizedAlias])
+  @@index([businessUnitId])
+}
+
+model ProductionMonitoring {
+  id             String                      @id @default(uuid())
+  campaignId     String
+  campaign       Campaign                    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  businessUnitId String
+  businessUnit   BusinessUnit                @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  reportYear     Int
+  reportMonth    Int
+  reportPeriod   DateTime
+  metricType     String
+  metricUnit     String?
+  target         Float?
+  week1          Float?
+  week2          Float?
+  week3          Float?
+  week4          Float?
+  week5          Float?
+  mtd            Float?
+  achievement    Float?
+  runRate        Float?
+  workingDays    Int?
+  daysLapse      Int?
+  dateUpdated    DateTime?
+  sourceType     String                      @default("EXCEL")
+  sourceFile     String?
+  sourceSheet    String?
+  sourceRow      Int?
+  sourceHash     String?
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @default(now()) @updatedAt
+  audits         ProductionMonitoringAudit[]
+
+  @@unique([campaignId, businessUnitId, reportYear, reportMonth, metricType])
+  @@index([campaignId, reportYear, reportMonth])
+  @@index([businessUnitId, reportYear, reportMonth])
+  @@index([metricType])
+  @@index([dateUpdated])
+}
+
+model ProductionImport {
+  id               String                  @id @default(uuid())
+  fileName         String
+  reportingPeriods Json
+  recordsDetected  Int                     @default(0)
+  recordsImported  Int                     @default(0)
+  recordsUpdated   Int                     @default(0)
+  recordsUnchanged Int                     @default(0)
+  recordsSkipped   Int                     @default(0)
+  warningCount     Int                     @default(0)
+  errorCount       Int                     @default(0)
+  status           String
+  importedById     String
+  importedBy       User                    @relation("ProductionImports", fields: [importedById], references: [id])
+  issues           ProductionImportIssue[]
+  createdAt        DateTime                @default(now())
+  completedAt      DateTime?
+
+  @@index([importedById, createdAt])
+  @@index([status, createdAt])
+}
+
+model ProductionImportIssue {
+  id          String           @id @default(uuid())
+  importId    String
+  import      ProductionImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  sourceSheet String?
+  sourceRow   Int?
+  level       String
+  code        String
+  message     String
+  rawData     Json?
+  createdAt   DateTime         @default(now())
+
+  @@index([importId, level])
+}
+
+model ProductionMonitoringAudit {
+  id                     String               @id @default(uuid())
+  productionMonitoringId String
+  productionMonitoring   ProductionMonitoring @relation(fields: [productionMonitoringId], references: [id], onDelete: Cascade)
+  fieldChanged           String
+  oldValue               String?
+  newValue               String?
+  changedById            String
+  changedBy              User                 @relation("ProductionMonitoringChanges", fields: [changedById], references: [id])
+  reason                 String
+  createdAt              DateTime             @default(now())
+
+  @@index([productionMonitoringId, createdAt])
+  @@index([changedById, createdAt])
+}
+
+model ProductionMetricTypeConfig {
+  metricType  String   @id
+  label       String
+  defaultUnit String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
 }
 
 // Per-(campaign, month, year) goal configuration. Lets the same campaign keep

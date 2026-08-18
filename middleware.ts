@@ -38,6 +38,7 @@ export const config = {
     "/agents/:path*",
     "/collector/:path*",
     "/performance/:path*",
+    "/production-monitoring/:path*",
     "/manage-campaigns/:path*",
     "/settings/:path*",
     "/api/((?!auth|dev).*)",
