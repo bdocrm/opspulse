@@ -141,6 +141,26 @@ interface ImportFileSummary {
     ntb: number;
     supplementary: number;
   };
+  sourceKind?: 'production_entry' | 'dashboard' | 'production_monitoring' | 'kpi';
+  status?: string;
+  deletable?: boolean;
+  batchStats?: {
+    detected: number;
+    imported: number;
+    updated: number;
+    unchanged: number;
+    skipped: number;
+    warnings: number;
+    errors: number;
+  };
+  issues?: Array<{
+    id: string;
+    level: string;
+    code?: string;
+    message: string;
+    sourceSheet?: string | null;
+    sourceRow?: number | null;
+  }>;
   details?: Array<{
     id: string;
     agent: string;
@@ -1058,6 +1078,7 @@ export default function BulkImportPage() {
         importedFiles: [previewFiles[0].file.name],
       });
       setStep('done');
+      await mutateImportHistory();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setStep('confirm');
@@ -1463,7 +1484,10 @@ export default function BulkImportPage() {
                       <tr key={item.id} className={index % 2 === 0 ? 'bg-card' : 'bg-muted/30'}>
                         <td className="max-w-[260px] p-2">
                           <p className="truncate font-medium text-foreground">{item.fileName}</p>
-                          <p className="text-xs capitalize text-muted-foreground">{metricLabel(item.metricType)}</p>
+                          <p className="text-xs capitalize text-muted-foreground">
+                            {metricLabel(item.metricType)}
+                            {item.status ? ` · ${item.status.replace(/_/g, ' ').toLowerCase()}` : ''}
+                          </p>
                         </td>
                         <td className="p-2">{item.campaignName}</td>
                         <td className="p-2">{formatDateTime(item.importedAt)}</td>
@@ -1489,16 +1513,18 @@ export default function BulkImportPage() {
                               <Eye className="h-4 w-4" />
                               View
                             </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="gap-1 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/60 dark:hover:text-red-300"
-                              onClick={() => setDeleteTarget(item)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                              Delete
-                            </Button>
+                            {item.deletable !== false && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="gap-1 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/60 dark:hover:text-red-300"
+                                onClick={() => setDeleteTarget(item)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                Delete
+                              </Button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -1518,7 +1544,62 @@ export default function BulkImportPage() {
                 Imported {formatDateTime(selectedImport?.importedAt)} into {selectedImport?.campaignName}
               </DialogDescription>
             </DialogHeader>
-            {selectedImport && (
+            {selectedImport && (selectedImport.sourceKind === 'production_monitoring' || selectedImport.sourceKind === 'kpi') ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-3">
+                  {[
+                    ['Detected', selectedImport.batchStats?.detected ?? selectedImport.detailCount],
+                    ['Imported', selectedImport.batchStats?.imported ?? selectedImport.detailCount],
+                    ['Updated', selectedImport.batchStats?.updated ?? 0],
+                    ['Skipped', selectedImport.batchStats?.skipped ?? 0],
+                    ['Warnings', selectedImport.batchStats?.warnings ?? 0],
+                    ['Errors', selectedImport.batchStats?.errors ?? 0],
+                  ].map(([label, value]) => (
+                    <div key={String(label)} className="rounded-lg border bg-muted/40 p-3">
+                      <p className="text-xs text-muted-foreground">{label}</p>
+                      <p className="text-lg font-semibold">{Number(value).toLocaleString()}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-medium">Status:</span>
+                  <span className="rounded-full border bg-muted px-2.5 py-1 capitalize text-muted-foreground">
+                    {(selectedImport.status || 'completed').replace(/_/g, ' ').toLowerCase()}
+                  </span>
+                  {selectedImport.batchStats?.unchanged ? (
+                    <span className="text-muted-foreground">
+                      {selectedImport.batchStats.unchanged.toLocaleString()} unchanged
+                    </span>
+                  ) : null}
+                </div>
+
+                {(selectedImport.issues?.length ?? 0) > 0 && (
+                  <div className="overflow-hidden rounded-lg border">
+                    <div className="border-b bg-muted/60 px-3 py-2">
+                      <p className="font-medium">Import issues</p>
+                      <p className="text-xs text-muted-foreground">Warnings and skipped rows recorded during this import.</p>
+                    </div>
+                    <div className="max-h-72 overflow-y-auto divide-y">
+                      {selectedImport.issues?.map((issue) => (
+                        <div key={issue.id} className="flex gap-3 p-3 text-sm">
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden="true" />
+                          <div className="min-w-0">
+                            <p className="font-medium capitalize">{issue.level.toLowerCase()}</p>
+                            <p className="text-muted-foreground">{issue.message}</p>
+                            {(issue.sourceSheet || issue.sourceRow) && (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {[issue.sourceSheet, issue.sourceRow ? `row ${issue.sourceRow}` : null].filter(Boolean).join(' · ')}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : selectedImport ? (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
                   <div className="rounded-lg border bg-muted/40 p-3">
@@ -1591,7 +1672,7 @@ export default function BulkImportPage() {
                   </table>
                 </div>
               </div>
-            )}
+            ) : null}
           </DialogContent>
         </Dialog>
 

@@ -2523,8 +2523,99 @@ export async function GET(req: NextRequest) {
           LIMIT 1
         `;
         const batch = dashboardBatches[0];
-        if (!batch) return NextResponse.json({ error: 'Import file not found' }, { status: 404 });
-        return NextResponse.json({ importFile: { id: batch.id, campaignId: batch.campaignId, campaignName: batch.campaignName, fileName: batch.fileName, metricType: 'all_metrics', reportDate: batch.reportDate, importedAt: batch.createdAt, detailCount: Number(batch.detailCount || 0), totals: { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 }, details: [] } });
+        if (batch) {
+          return NextResponse.json({ importFile: { id: batch.id, campaignId: batch.campaignId, campaignName: batch.campaignName, fileName: batch.fileName, metricType: 'all_metrics', reportDate: batch.reportDate, importedAt: batch.createdAt, detailCount: Number(batch.detailCount || 0), totals: { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 }, details: [], sourceKind: 'dashboard', deletable: true } });
+        }
+
+        const productionBatch = await prisma.productionImport.findFirst({
+          where: { id: entryId, importedById: user.id },
+          include: {
+            issues: { orderBy: { createdAt: 'asc' }, take: 100 },
+            productionRecords: {
+              distinct: ['campaignId'],
+              select: { campaign: { select: { campaignName: true } } },
+              orderBy: { campaignId: 'asc' },
+            },
+          },
+        });
+        if (productionBatch) {
+          const periods = await prisma.productionMonitoring.aggregate({
+            where: { productionImportId: productionBatch.id },
+            _min: { reportPeriod: true },
+            _max: { reportPeriod: true },
+          });
+          const campaignNames = [...new Set(productionBatch.productionRecords.map((record) => record.campaign.campaignName))]
+            .sort((a, b) => a.localeCompare(b));
+          return NextResponse.json({
+            importFile: {
+              id: productionBatch.id,
+              campaignName: campaignNames.join(', ') || 'Production Monitoring',
+              fileName: productionBatch.fileName,
+              metricType: 'production_monitoring',
+              reportDate: periods._max.reportPeriod || productionBatch.createdAt,
+              periodStart: periods._min.reportPeriod,
+              periodEnd: periods._max.reportPeriod,
+              importedAt: productionBatch.createdAt,
+              detailCount: productionBatch.recordsImported + productionBatch.recordsUpdated + productionBatch.recordsUnchanged,
+              totals: { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 },
+              details: [],
+              sourceKind: 'production_monitoring',
+              status: productionBatch.status,
+              deletable: false,
+              batchStats: {
+                detected: productionBatch.recordsDetected,
+                imported: productionBatch.recordsImported,
+                updated: productionBatch.recordsUpdated,
+                unchanged: productionBatch.recordsUnchanged,
+                skipped: productionBatch.recordsSkipped,
+                warnings: productionBatch.warningCount,
+                errors: productionBatch.errorCount,
+              },
+              issues: productionBatch.issues.map((issue) => ({ id: issue.id, level: issue.level, code: issue.code, message: issue.message, sourceSheet: issue.sourceSheet, sourceRow: issue.sourceRow })),
+            },
+          });
+        }
+
+        const kpiBatch = await prisma.kpiImportBatch.findFirst({
+          where: { id: entryId, uploadedById: user.id },
+          include: {
+            campaign: { select: { campaignName: true } },
+            issues: { orderBy: { createdAt: 'asc' }, take: 100 },
+          },
+        });
+        if (kpiBatch) {
+          return NextResponse.json({
+            importFile: {
+              id: kpiBatch.id,
+              campaignId: kpiBatch.campaignId,
+              campaignName: kpiBatch.campaign.campaignName,
+              fileName: kpiBatch.originalFileName,
+              metricType: 'kpi_workbook',
+              reportDate: kpiBatch.periodEnd || kpiBatch.periodStart || kpiBatch.createdAt,
+              periodStart: kpiBatch.periodStart,
+              periodEnd: kpiBatch.periodEnd,
+              importedAt: kpiBatch.createdAt,
+              detailCount: kpiBatch.successfulRows + kpiBatch.updatedRows,
+              totals: { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 },
+              details: [],
+              sourceKind: 'kpi',
+              status: kpiBatch.status,
+              deletable: false,
+              batchStats: {
+                detected: kpiBatch.totalRows,
+                imported: kpiBatch.successfulRows,
+                updated: kpiBatch.updatedRows,
+                unchanged: 0,
+                skipped: kpiBatch.skippedRows,
+                warnings: kpiBatch.warningRows,
+                errors: kpiBatch.failedRows,
+              },
+              issues: kpiBatch.issues.map((issue) => ({ id: issue.id, level: issue.kind, code: issue.kind, message: issue.message, sourceSheet: issue.sourceSheet, sourceRow: issue.sourceRow })),
+            },
+          });
+        }
+
+        return NextResponse.json({ error: 'Import file not found' }, { status: 404 });
       }
 
       const details = await prisma.productionDetail.findMany({
@@ -2604,8 +2695,90 @@ export async function GET(req: NextRequest) {
       ORDER BY b."createdAt" DESC
       LIMIT 50
     `;
-    const dashboardImports = dashboardRows.map((batch) => ({ id: batch.id, campaignId: batch.campaignId, campaignName: batch.campaignName, fileName: batch.fileName, metricType: 'all_metrics', reportDate: batch.reportDate, importedAt: batch.createdAt, detailCount: Number(batch.detailCount || 0), totals: { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 } }));
-    const imports = [...rows.map(formatImportSummary), ...dashboardImports].sort((a, b) => new Date(b.importedAt).getTime() - new Date(a.importedAt).getTime()).slice(0, 50);
+    const productionRows = await prisma.$queryRaw<any[]>`
+      SELECT pi.id,
+             pi."fileName",
+             pi.status,
+             pi."createdAt",
+             pi."recordsDetected",
+             pi."recordsImported",
+             pi."recordsUpdated",
+             pi."recordsUnchanged",
+             pi."recordsSkipped",
+             pi."warningCount",
+             pi."errorCount",
+             STRING_AGG(DISTINCT c."campaignName", ', ' ORDER BY c."campaignName") AS "campaignName",
+             MIN(pm."reportPeriod") AS "periodStart",
+             MAX(pm."reportPeriod") AS "periodEnd"
+      FROM "ProductionImport" pi
+      LEFT JOIN "ProductionMonitoring" pm ON pm."productionImportId" = pi.id
+      LEFT JOIN "Campaign" c ON c.id = pm."campaignId"
+      WHERE pi."importedById" = ${user.id} AND pi.status LIKE 'COMPLETED%'
+      GROUP BY pi.id
+      ORDER BY pi."createdAt" DESC
+      LIMIT 50
+    `;
+    const kpiRows = await prisma.kpiImportBatch.findMany({
+      where: { uploadedById: user.id, status: { startsWith: 'COMPLETED' } },
+      include: { campaign: { select: { campaignName: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+    const emptyTotals = { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 };
+    const legacyImports = rows.map((row) => ({ ...formatImportSummary(row), sourceKind: 'production_entry', deletable: true }));
+    const dashboardImports = dashboardRows.map((batch) => ({ id: batch.id, campaignId: batch.campaignId, campaignName: batch.campaignName, fileName: batch.fileName, metricType: 'all_metrics', reportDate: batch.reportDate, importedAt: batch.createdAt, detailCount: Number(batch.detailCount || 0), totals: emptyTotals, sourceKind: 'dashboard', deletable: true }));
+    const productionImports = productionRows.map((batch) => ({
+      id: batch.id,
+      campaignName: batch.campaignName || 'Production Monitoring',
+      fileName: batch.fileName,
+      metricType: 'production_monitoring',
+      reportDate: batch.periodEnd || batch.createdAt,
+      periodStart: batch.periodStart,
+      periodEnd: batch.periodEnd,
+      importedAt: batch.createdAt,
+      detailCount: Number(batch.recordsImported || 0) + Number(batch.recordsUpdated || 0) + Number(batch.recordsUnchanged || 0),
+      totals: emptyTotals,
+      sourceKind: 'production_monitoring',
+      status: batch.status,
+      deletable: false,
+      batchStats: {
+        detected: Number(batch.recordsDetected || 0),
+        imported: Number(batch.recordsImported || 0),
+        updated: Number(batch.recordsUpdated || 0),
+        unchanged: Number(batch.recordsUnchanged || 0),
+        skipped: Number(batch.recordsSkipped || 0),
+        warnings: Number(batch.warningCount || 0),
+        errors: Number(batch.errorCount || 0),
+      },
+    }));
+    const kpiImports = kpiRows.map((batch) => ({
+      id: batch.id,
+      campaignId: batch.campaignId,
+      campaignName: batch.campaign.campaignName,
+      fileName: batch.originalFileName,
+      metricType: 'kpi_workbook',
+      reportDate: batch.periodEnd || batch.periodStart || batch.createdAt,
+      periodStart: batch.periodStart,
+      periodEnd: batch.periodEnd,
+      importedAt: batch.createdAt,
+      detailCount: batch.successfulRows + batch.updatedRows,
+      totals: emptyTotals,
+      sourceKind: 'kpi',
+      status: batch.status,
+      deletable: false,
+      batchStats: {
+        detected: batch.totalRows,
+        imported: batch.successfulRows,
+        updated: batch.updatedRows,
+        unchanged: 0,
+        skipped: batch.skippedRows,
+        warnings: batch.warningRows,
+        errors: batch.failedRows,
+      },
+    }));
+    const imports = [...legacyImports, ...dashboardImports, ...productionImports, ...kpiImports]
+      .sort((a, b) => new Date(b.importedAt).getTime() - new Date(a.importedAt).getTime())
+      .slice(0, 50);
     const campaigns = (await getAssignedCampaigns(user.id, user.campaignId))
       .sort((a, b) => a.campaignName.localeCompare(b.campaignName));
     return NextResponse.json({ imports, campaigns });
