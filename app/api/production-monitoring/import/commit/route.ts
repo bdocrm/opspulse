@@ -9,9 +9,15 @@ import {
   parseCommitMappings,
   validateProductionWorkbookFile,
 } from "@/lib/production-import";
-import { normalizeProductionName, productionDisplayName } from "@/lib/production-normalization";
+import { productionDisplayName } from "@/lib/production-normalization";
 import { parseProductionWorkbook } from "@/lib/production-workbook";
 import { productionMonthImportAction, productionMonthKey, type ProductionMonthImportStrategy } from "@/lib/production-month-import";
+import {
+  buildCampaignMappingKey,
+  campaignMappingLookup,
+  loadCampaignMappings,
+  saveCampaignMapping,
+} from "@/lib/campaign-mapping";
 
 export const runtime = "nodejs";
 
@@ -90,12 +96,14 @@ export async function POST(request: NextRequest) {
   const requestedBaseValidRecords = parsed.records.filter((record) =>
     isRequested(record) && !record.issues.some((issue) => issue.level === "ERROR")
   );
-  const requestedCampaignSources = new Set(requestedBaseValidRecords.map((record) => record.campaignNormalized).filter(Boolean));
+  const requestedCampaignSources = new Set(requestedBaseValidRecords
+    .filter((record) => record.campaignNormalized && record.businessUnitNormalized)
+    .map((record) => buildCampaignMappingKey(record.campaignSource, record.businessUnitSource)));
   const requestedBusinessSources = new Set(requestedBaseValidRecords
     .filter((record) => record.campaignNormalized && record.businessUnitNormalized)
-    .map((record) => `${record.campaignNormalized}:${record.businessUnitNormalized}`));
+    .map((record) => buildCampaignMappingKey(record.campaignSource, record.businessUnitSource)));
   if (!canAdminProduction(user)) {
-    if (campaignMappings.some((mapping) => requestedCampaignSources.has(mapping.source) && mapping.targetId && !hasProductionCampaignAccess(user, mapping.targetId))) {
+    if (campaignMappings.some((mapping) => requestedCampaignSources.has(mapping.key) && mapping.targetId && !hasProductionCampaignAccess(user, mapping.targetId))) {
       return NextResponse.json({ error: "One or more detected campaigns are outside your assigned campaign access." }, { status: 403 });
     }
   }
@@ -111,54 +119,54 @@ export async function POST(request: NextRequest) {
           status: "IMPORTING",
         },
       });
-      const usedCampaignMappings = campaignMappings.filter((mapping) => requestedCampaignSources.has(mapping.source));
-      const targetCampaignIds = usedCampaignMappings.map((mapping) => mapping.targetId).filter(Boolean) as string[];
-      const validCampaigns = await tx.campaign.findMany({ where: { id: { in: targetCampaignIds } } });
+      const sourcePairs = requestedBaseValidRecords.map((record) => ({ sourceAccount: record.campaignSource, sourceCampaign: record.businessUnitSource }));
+      const savedMappings = await loadCampaignMappings(tx, sourcePairs);
+      const savedLookup = campaignMappingLookup(savedMappings);
+      const submittedLookup = new Map(campaignMappings.filter((mapping) => requestedCampaignSources.has(mapping.key)).map((mapping) => [mapping.key, mapping]));
+      const targetCampaignIds = Array.from(new Set([
+        ...campaignMappings.map((mapping) => mapping.targetId),
+        ...savedMappings.filter((mapping) => mapping.status === "ACTIVE").map((mapping) => mapping.opsviewCampaignId),
+      ].filter(Boolean) as string[]));
+      const validCampaigns = await tx.campaign.findMany({ where: { id: { in: targetCampaignIds }, isActive: true } });
       const validCampaignById = new Map(validCampaigns.map((campaign) => [campaign.id, campaign]));
       const campaignIdBySource = new Map<string, string>();
+      const mappingIdBySource = new Map<string, string>();
 
-      for (const mapping of usedCampaignMappings) {
-        let campaign = mapping.targetId ? validCampaignById.get(mapping.targetId) : null;
-        if (!campaign && !mapping.targetId && canAdminProduction(user)) {
-          const sourceRecord = parsed.records.find((record) => record.campaignNormalized === mapping.source);
-          if (!sourceRecord) continue;
-          campaign = await tx.campaign.upsert({
-            where: { normalizedName: mapping.source },
-            update: { isActive: true },
-            create: {
-              campaignName: productionDisplayName(sourceRecord.campaignSource),
-              normalizedName: mapping.source,
-              isActive: true,
-              goalType: "production_monitoring",
-              monthlyGoal: 0,
-              kpiMetric: "production",
-            },
-          });
-        }
+      for (const record of requestedBaseValidRecords) {
+        const key = buildCampaignMappingKey(record.campaignSource, record.businessUnitSource);
+        if (campaignIdBySource.has(key)) continue;
+        const submitted = submittedLookup.get(key);
+        const saved = savedLookup.get(key);
+        const targetId = submitted?.targetId || (saved?.status === "ACTIVE" ? saved.opsviewCampaignId : null);
+        const campaign = targetId ? validCampaignById.get(targetId) : null;
         if (!campaign) continue;
-        campaignIdBySource.set(mapping.source, campaign.id);
-        const targetNormalized = campaign.normalizedName || normalizeProductionName(campaign.campaignName);
-        if (mapping.source !== targetNormalized) {
-          await tx.campaignAlias.upsert({
-            where: { normalizedAlias: mapping.source },
-            update: { campaignId: campaign.id, alias: parsed.records.find((record) => record.campaignNormalized === mapping.source)?.campaignSource || mapping.source },
-            create: { campaignId: campaign.id, alias: parsed.records.find((record) => record.campaignNormalized === mapping.source)?.campaignSource || mapping.source, normalizedAlias: mapping.source },
-          });
+        if (!canAdminProduction(user) && !hasProductionCampaignAccess(user, campaign.id)) continue;
+        campaignIdBySource.set(key, campaign.id);
+        if (submitted?.remember !== false && (!saved || saved.status !== "ACTIVE" || saved.opsviewCampaignId !== campaign.id)) {
+          const savedResult = await saveCampaignMapping(tx, {
+            sourceAccount: record.campaignSource,
+            sourceCampaign: record.businessUnitSource,
+            opsviewCampaignId: campaign.id,
+            mappingType: submitted ? "MANUAL" : "AUTO",
+          }, user.id as string, batch.id);
+          mappingIdBySource.set(key, savedResult.mapping.id);
+        } else if (saved?.status === "ACTIVE") {
+          mappingIdBySource.set(key, saved.id);
         }
       }
 
-      const usedBusinessMappings = businessMappings.filter((mapping) => requestedBusinessSources.has(`${mapping.campaignSource}:${mapping.source}`));
+      const usedBusinessMappings = businessMappings.filter((mapping) => requestedBusinessSources.has(mapping.key));
       const targetBusinessIds = usedBusinessMappings.map((mapping) => mapping.targetId).filter(Boolean) as string[];
       const validBusinessUnits = await tx.businessUnit.findMany({ where: { id: { in: targetBusinessIds } } });
       const validBusinessById = new Map(validBusinessUnits.map((unit) => [unit.id, unit]));
       const businessIdBySource = new Map<string, string>();
       for (const mapping of usedBusinessMappings) {
-        const campaignId = campaignIdBySource.get(mapping.campaignSource);
+        const campaignId = campaignIdBySource.get(mapping.key);
         if (!campaignId) continue;
         let businessUnit = mapping.targetId ? validBusinessById.get(mapping.targetId) : null;
         if (businessUnit && businessUnit.campaignId !== campaignId) businessUnit = null;
         if (!businessUnit && !mapping.targetId) {
-          const sourceRecord = parsed.records.find((record) => record.campaignNormalized === mapping.campaignSource && record.businessUnitNormalized === mapping.source);
+          const sourceRecord = parsed.records.find((record) => buildCampaignMappingKey(record.campaignSource, record.businessUnitSource) === mapping.key);
           if (!sourceRecord) continue;
           businessUnit = await tx.businessUnit.upsert({
             where: { campaignId_normalizedName: { campaignId, normalizedName: mapping.source } },
@@ -167,9 +175,9 @@ export async function POST(request: NextRequest) {
           });
         }
         if (!businessUnit) continue;
-        businessIdBySource.set(`${mapping.campaignSource}:${mapping.source}`, businessUnit.id);
+        businessIdBySource.set(mapping.key, businessUnit.id);
         if (mapping.source !== businessUnit.normalizedName) {
-          const sourceLabel = parsed.records.find((record) => record.campaignNormalized === mapping.campaignSource && record.businessUnitNormalized === mapping.source)?.businessUnitSource || mapping.source;
+          const sourceLabel = parsed.records.find((record) => buildCampaignMappingKey(record.campaignSource, record.businessUnitSource) === mapping.key)?.businessUnitSource || mapping.source;
           await tx.businessUnitAlias.upsert({
             where: { campaignId_normalizedAlias: { campaignId, normalizedAlias: mapping.source } },
             update: { businessUnitId: businessUnit.id, alias: sourceLabel },
@@ -186,19 +194,22 @@ export async function POST(request: NextRequest) {
       let errorCount = 0;
       const issues: Prisma.ProductionImportIssueCreateManyInput[] = [];
       const validationErrors: Array<{ row: number; sheet: string; campaign: string; businessUnit: string; field: string; message: string }> = [];
+      const mappingUseCounts = new Map<string, number>();
 
       const resolvedRecords = parsed.records.map((record) => {
         const recordIssues = [...record.issues];
-        const campaignId = campaignIdBySource.get(record.campaignNormalized);
-        const businessUnitId = businessIdBySource.get(`${record.campaignNormalized}:${record.businessUnitNormalized}`);
+        const mappingKey = buildCampaignMappingKey(record.campaignSource, record.businessUnitSource);
+        const campaignId = campaignIdBySource.get(mappingKey);
+        const campaignMappingId = mappingIdBySource.get(mappingKey);
+        const businessUnitId = businessIdBySource.get(mappingKey);
         if (!recordIssues.some((issue) => issue.level === "ERROR")) {
           if (!campaignId) {
-            recordIssues.push({ level: "ERROR", code: "CAMPAIGN_MAPPING_REQUIRED", message: "Campaign mapping is required." });
+            recordIssues.push({ level: "ERROR", code: "CAMPAIGN_MAPPING_REQUIRED", message: `Mapping required for campaign "${record.businessUnitSource}" under account "${record.campaignSource}".` });
           } else if (!businessUnitId) {
             recordIssues.push({ level: "ERROR", code: "BUSINESS_UNIT_MAPPING_REQUIRED", message: "Business Unit mapping is required." });
           }
         }
-        return { record, recordIssues, campaignId, businessUnitId };
+        return { record, recordIssues, campaignId, campaignMappingId, businessUnitId };
       });
 
       const importableRecords = resolvedRecords.filter(({ record, recordIssues, campaignId, businessUnitId }) =>
@@ -233,7 +244,7 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      for (const { record, recordIssues, campaignId, businessUnitId } of resolvedRecords) {
+      for (const { record, recordIssues, campaignId, campaignMappingId, businessUnitId } of resolvedRecords) {
         const recordErrors = recordIssues.filter((issue) => issue.level === "ERROR");
         const recordWarnings = recordIssues.filter((issue) => issue.level === "WARNING");
         warningCount += recordWarnings.length;
@@ -255,6 +266,7 @@ export async function POST(request: NextRequest) {
           skipped += 1;
           continue;
         }
+        if (campaignMappingId) mappingUseCounts.set(campaignMappingId, (mappingUseCounts.get(campaignMappingId) ?? 0) + 1);
         const monthKey = productionMonthKey(campaignId, record.reportYear, record.reportMonth);
         if (productionMonthImportAction(existingMonthKeys.has(monthKey), importStrategy) === "SKIP") {
           skipped += 1;
@@ -294,6 +306,11 @@ export async function POST(request: NextRequest) {
           sourceSheet: record.sourceSheet.slice(0, 255),
           sourceRow: record.sourceRow,
           sourceHash: record.sourceHash,
+          sourceAccount: record.campaignSource,
+          sourceCampaign: record.businessUnitSource,
+          campaignMappingId: campaignMappingId ?? null,
+          productionImportId: batch.id,
+          importedById: user.id as string,
         };
         if (existing) {
           await tx.productionMonitoring.update({ where: { id: existing.id }, data });
@@ -314,6 +331,21 @@ export async function POST(request: NextRequest) {
           imported += 1;
           importedMonthKeys.add(monthKey);
         }
+      }
+      for (const [mappingId, count] of mappingUseCounts) {
+        await tx.campaignMapping.update({
+          where: { id: mappingId },
+          data: { usageCount: { increment: count }, lastUsedAt: new Date() },
+        });
+        await tx.campaignMappingAudit.create({
+          data: {
+            mappingId,
+            action: "USED_DURING_IMPORT",
+            importId: batch.id,
+            changedById: user.id as string,
+            details: { affectedRows: count },
+          },
+        });
       }
       if (issues.length) await tx.productionImportIssue.createMany({ data: issues });
       const processed = imported + updated + unchanged;

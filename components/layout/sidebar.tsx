@@ -22,6 +22,7 @@ import {
   UserCircle,
   ChevronDown,
   Factory,
+  Waypoints,
   type LucideIcon,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
@@ -52,6 +53,7 @@ const defaultLinks: SidebarLink[] = [
 
 const adminLinks: SidebarLink[] = [
   { href: "/manage-campaigns", label: "Manage Campaigns", icon: Sliders },
+  { href: "/production-monitoring/admin/campaign-mappings", label: "Campaign Mapping", icon: Waypoints },
   { href: "/manage-users", label: "Manage Users", icon: Users },
 ];
 
@@ -80,7 +82,7 @@ const groupedLinkSections = [
   },
   {
     label: "Management",
-    links: ["/campaigns", "/campaigns/goals", "/manage-campaigns", "/manage-users"],
+    links: ["/campaigns", "/campaigns/goals", "/manage-campaigns", "/manage-users", "/production-monitoring/admin/campaign-mappings"],
   },
   {
     label: "Reports",

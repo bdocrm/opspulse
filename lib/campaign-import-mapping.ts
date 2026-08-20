@@ -9,20 +9,10 @@ export const CAMPAIGN_IMPORT_ALIASES: Record<string, string[]> = {
   'BDO CIE': ['CASH INSTALLMENT', 'CI AGENTS MONITORING', 'CI HOH MONITORING', 'BDO CIE'],
   'BDO CCC': ['CCC', 'BDO CCC'],
   'BDO NTH CARD': ['NTH CARD', 'BDO NTH CARD'],
-  'BDO SUPPLE': ['SUPPLEMENTARY', 'BDO SUPPLE'],
-  'BDO SUPPLE INVI': ['SUPPLE INVI', 'BDO SUPPLE INVI'],
+  'BDO SUPPLE': ['SUPPLEMENTARY', 'SUPPLE INVI', 'BDO SUPPLE'],
   'BDO VC': ['VIRTUAL CARD', 'VIRTUAL', 'BDO VC'],
   'BDO SGM': ['SGM', 'BDO SGM'],
   'RBSC': ['RBSC'],
-  'MEDICARD PPN': ['MEDICARD PPN', 'PPN'],
-  'MEDICARD DENTAL': ['MEDICARD DENTAL', 'DENTAL'],
-  'MEDICARD DOC CONCIERGE': ['MEDICARD DOC CONCIERGE', 'DOC CONCIERGE'],
-  'MEDICARD CLAIMS BACKFILL': ['MEDICARD CLAIMS BACKFILL', 'CLAIMS BACKFILL'],
-  'MEDICARD REIMBURSEMENT': ['MEDICARD REIMBURSEMENT', 'REIMBURSEMENT'],
-  'MEDICARD CLAIMS PAYMENT': ['MEDICARD CLAIMS PAYMENT', 'CLAIMS PAYMENT'],
-  'MEDICARD DENTAL BO': ['MEDICARD DENTAL BO', 'DENTAL BO'],
-  'MEDICARD COLLECTION': ['MEDICARD COLLECTION', 'COLLECTION'],
-  'MEDICARD PRD': ['MEDICARD PRD', 'PRD'],
   'AC MOBILITY': ['AC MOBILITY', 'MOBILITY'],
   'GAOC': ['GAOC'],
 };
@@ -83,7 +73,8 @@ export function resolveCampaignEvidence(evidence: string[], selectedCampaigns: C
       return Boolean(
         (canonical && campaignCanonical === canonical) ||
         normalizedEvidence === normalizedCampaign ||
-        (normalizedCampaign.length >= 5 && normalizedEvidence.includes(normalizedCampaign))
+        (normalizedCampaign.length >= 5 && normalizedEvidence.includes(normalizedCampaign)) ||
+        (normalizedEvidence.length >= 3 && normalizedCampaign.endsWith(` ${normalizedEvidence}`))
       );
     });
     if (matches.length === 1) return { campaign: matches[0], source: 'evidence' as const, evidence: rawEvidence };

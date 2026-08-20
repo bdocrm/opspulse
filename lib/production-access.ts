@@ -27,6 +27,18 @@ export function canImportProduction(user: ProductionSessionUser) {
   return user.role === "CEO" || user.role === "COLLECTOR";
 }
 
+export function canViewCampaignMappings(user: ProductionSessionUser) {
+  return canImportProduction(user) || canAdminProduction(user);
+}
+
+export function canCreateCampaignMappings(user: ProductionSessionUser) {
+  return canImportProduction(user);
+}
+
+export function canManageCampaignMappings(user: ProductionSessionUser) {
+  return canAdminProduction(user);
+}
+
 export function productionCampaignIds(user: ProductionSessionUser) {
   return Array.from(new Set([
     user.campaignId,

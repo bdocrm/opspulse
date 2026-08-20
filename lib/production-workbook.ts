@@ -273,8 +273,8 @@ function parseSheet(
     const datePeriod = dateUpdated ? { year: new Date(dateUpdated).getUTCFullYear(), month: new Date(dateUpdated).getUTCMonth() + 1 } : null;
     const recordPeriod = period ?? datePeriod ?? fallback ?? null;
 
-    if (!currentCampaign) issues.push({ level: "ERROR", code: "MISSING_CAMPAIGN", message: "Campaign is missing and cannot be inherited from a previous data row." });
-    if (!businessUnitSource) issues.push({ level: "ERROR", code: "MISSING_BUSINESS_UNIT", message: "Business Unit is missing or invalid." });
+    if (!currentCampaign) issues.push({ level: "ERROR", code: "MISSING_CAMPAIGN", message: "ACCOUNT VALUE MISSING: Account value is missing and cannot be inherited from a previous data row." });
+    if (!businessUnitSource) issues.push({ level: "ERROR", code: "MISSING_BUSINESS_UNIT", message: "CAMPAIGN VALUE MISSING: Campaign value is missing or invalid." });
     if (target == null) issues.push({ level: "ERROR", code: "MISSING_TARGET", message: "Target is missing or invalid." });
     if (target != null && target < 0) issues.push({ level: "ERROR", code: "NEGATIVE_TARGET", message: "Target must be zero or greater." });
     if (!recordPeriod) issues.push({ level: "ERROR", code: "MISSING_PERIOD", message: "Reporting month could not be detected; select a fallback period." });

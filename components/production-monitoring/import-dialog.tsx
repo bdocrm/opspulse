@@ -9,6 +9,7 @@ import { useToast } from "@/components/toast-provider";
 import type { ParsedProductionRecord } from "@/types/production-monitoring";
 
 type Mapping = {
+  key: string; sourceAccount: string; sourceCampaign: string;
   source: string; normalizedSource: string; matchedCampaignId: string | null; matchedCampaignName: string | null;
   suggestion: { id: string; name: string; confidence: number } | null; resolution: string; requiresReview: boolean;
 };
@@ -17,7 +18,7 @@ type BusinessMapping = {
   matchedBusinessUnitId: string | null; matchedBusinessUnitName: string | null;
   suggestion: { id: string; name: string; confidence: number } | null; resolution: string; requiresReview: boolean;
 };
-type PreviewRecord = ParsedProductionRecord & { existingRecordId: string | null; status: "NEW" | "UPDATED" | "UNCHANGED" | "CONFLICT" | "WARNING" | "ERROR" };
+type PreviewRecord = ParsedProductionRecord & { existingRecordId: string | null; status: "NEW" | "UPDATED" | "UNCHANGED" | "CONFLICT" | "WARNING" | "ERROR" | "AUTO_MAPPED" | "MAPPING_REQUIRED" | "MAPPING_INVALID" };
 type Preview = {
   fileName: string;
   worksheets: Array<{ name: string; supported: boolean; recordCount: number; periods: string[]; error?: string }>;
@@ -39,6 +40,9 @@ const STATUS_STYLE: Record<PreviewRecord["status"], string> = {
   CONFLICT: "bg-amber-100 text-amber-900",
   WARNING: "bg-amber-100 text-amber-900",
   ERROR: "bg-red-100 text-red-800",
+  AUTO_MAPPED: "bg-cyan-100 text-cyan-800",
+  MAPPING_REQUIRED: "bg-amber-100 text-amber-900",
+  MAPPING_INVALID: "bg-red-100 text-red-800",
 };
 
 export function ProductionImportDialog({ onImported }: { onImported: () => void }) {
@@ -75,7 +79,7 @@ export function ProductionImportDialog({ onImported }: { onImported: () => void 
       if (!response.ok) throw new Error(data.error || "Workbook analysis failed.");
       const next = data as Preview;
       setPreview(next);
-      setCampaignSelections(Object.fromEntries(next.campaignMappings.map((mapping) => [mapping.normalizedSource, mapping.matchedCampaignId || "__create"])));
+      setCampaignSelections(Object.fromEntries(next.campaignMappings.map((mapping) => [mapping.key, mapping.matchedCampaignId || ""])));
       setBusinessSelections(Object.fromEntries(next.businessUnitMappings.map((mapping) => [mapping.key, mapping.matchedBusinessUnitId || "__create"])));
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : "Workbook analysis failed.");
@@ -113,11 +117,15 @@ export function ProductionImportDialog({ onImported }: { onImported: () => void 
       form.set("validRowKeys", JSON.stringify(preview.records.filter((record) => !record.issues.some((issue) => issue.level === "ERROR")).map((record) => record.rowKey)));
       form.set("importStrategy", "fill_missing");
       form.set("campaignMappings", JSON.stringify(preview.campaignMappings.map((mapping) => ({
-        source: mapping.normalizedSource,
-        targetId: campaignSelections[mapping.normalizedSource] === "__create" ? null : campaignSelections[mapping.normalizedSource],
+        sourceAccount: mapping.sourceAccount,
+        sourceCampaign: mapping.sourceCampaign,
+        targetId: campaignSelections[mapping.key] || null,
+        remember: true,
       }))));
       form.set("businessUnitMappings", JSON.stringify(preview.businessUnitMappings.map((mapping) => ({
         campaignSource: mapping.campaignNormalized,
+        sourceAccount: preview.campaignMappings.find((campaign) => campaign.key === mapping.key)?.sourceAccount,
+        sourceCampaign: preview.campaignMappings.find((campaign) => campaign.key === mapping.key)?.sourceCampaign,
         source: mapping.normalizedSource,
         targetId: businessSelections[mapping.key] === "__create" ? null : businessSelections[mapping.key],
       }))));
@@ -146,7 +154,7 @@ export function ProductionImportDialog({ onImported }: { onImported: () => void 
         <div className="rounded-lg border bg-muted/30 p-4"><div className="flex flex-wrap justify-between gap-3"><div><p className="font-semibold">{preview.fileName}</p><p className="text-sm text-muted-foreground">{preview.reportingPeriods.map((period) => new Date(Date.UTC(period.year, period.month - 1)).toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })).join(" · ")}</p></div><Button variant="outline" size="sm" onClick={() => setPreview(null)}>Choose another file</Button></div><div className="mt-3 flex flex-wrap gap-2"><span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">✓ OM data excluded</span>{preview.worksheets.map((sheet) => <span key={sheet.name} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-700">{sheet.name}: {sheet.recordCount} rows</span>)}</div></div>
         <div className="grid grid-cols-2 gap-2 md:grid-cols-7">{[["Records", preview.stats.total], ["Valid", preview.stats.valid], ["New", preview.stats.new], ["Updates", preview.stats.updated], ["Unchanged", preview.stats.unchanged], ["Warnings", preview.stats.warnings], ["Errors", preview.stats.errors]].map(([label, value]) => <div key={label} className="rounded-lg border p-3"><p className="text-xl font-bold">{value}</p><p className="text-xs text-muted-foreground">{label}</p></div>)}</div>
         <div className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-lg border p-4"><h3 className="font-semibold">Campaign mappings</h3><div className="mt-3 max-h-52 space-y-3 overflow-y-auto">{preview.campaignMappings.map((mapping) => <label key={mapping.normalizedSource} className="grid gap-1 text-xs"><span>{mapping.source}{mapping.requiresReview && <strong className="ml-2 text-amber-700">Review suggested match</strong>}</span><select className="h-9 rounded-md border bg-background px-2 text-sm" value={campaignSelections[mapping.normalizedSource]} onChange={(event) => updateCampaignSelection(mapping.normalizedSource, event.target.value)}><option value="__create">Create “{mapping.source}”</option>{preview.availableCampaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}{mapping.suggestion?.id === campaign.id ? ` (${mapping.suggestion.confidence}% suggested)` : ""}</option>)}</select></label>)}</div></div>
+          <div className="rounded-lg border p-4"><h3 className="font-semibold">Campaign mappings</h3><div className="mt-3 max-h-52 space-y-3 overflow-y-auto">{preview.campaignMappings.map((mapping) => <label key={mapping.key} className="grid gap-1 text-xs"><span>{mapping.sourceAccount} / {mapping.sourceCampaign}{mapping.requiresReview && <strong className="ml-2 text-amber-700">Mapping required</strong>}</span><select className="h-9 rounded-md border bg-background px-2 text-sm" value={campaignSelections[mapping.key]} onChange={(event) => updateCampaignSelection(mapping.key, event.target.value)}><option value="">Select OpsView campaign</option>{preview.availableCampaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}{mapping.suggestion?.id === campaign.id ? ` (${mapping.suggestion.confidence}% suggested)` : ""}</option>)}</select></label>)}</div></div>
           <div className="rounded-lg border p-4"><h3 className="font-semibold">Business unit mappings</h3><div className="mt-3 max-h-52 space-y-3 overflow-y-auto">{preview.businessUnitMappings.map((mapping) => { const campaignId = selectedCampaignFor(mapping.campaignNormalized); const options = preview.availableBusinessUnits.filter((unit) => unit.campaignId === campaignId); return <label key={mapping.key} className="grid gap-1 text-xs"><span>{mapping.source}{mapping.requiresReview && <strong className="ml-2 text-amber-700">Review suggested match</strong>}</span><select className="h-9 rounded-md border bg-background px-2 text-sm" value={businessSelections[mapping.key]} onChange={(event) => setBusinessSelections((current) => ({ ...current, [mapping.key]: event.target.value }))}><option value="__create">Create “{mapping.source}”</option>{options.map((unit) => <option key={unit.id} value={unit.id}>{unit.name}{mapping.suggestion?.id === unit.id ? ` (${mapping.suggestion.confidence}% suggested)` : ""}</option>)}</select></label>; })}</div></div>
         </div>
         <div className="flex flex-wrap items-center gap-2"><select className="h-10 rounded-md border bg-background px-3 text-sm" value={filter} onChange={(event) => setFilter(event.target.value)}>{["ALL", "NEW", "UPDATED", "UNCHANGED", "CONFLICT", "WARNING", "ERROR"].map((value) => <option key={value}>{value}</option>)}</select>{preview.records.some((record) => record.issues.length) && <Button variant="outline" className="gap-2" onClick={downloadErrors}><Download className="h-4 w-4" />Download error report</Button>}</div>

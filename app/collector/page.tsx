@@ -209,6 +209,10 @@ function kpiValueFor(metric: string, prod: Production): number {
 
 function kpiLabel(metric: string): string {
   switch (metric) {
+    case 'percentage': return 'Rate';
+    case 'count': return 'Count';
+    case 'currency': return 'Amount';
+    case 'custom': return 'Actual';
     case 'actual': return 'Transactions';
     case 'transmittals': return 'Transmittals';
     case 'activations': return 'Activations';
@@ -220,6 +224,8 @@ function kpiLabel(metric: string): string {
 }
 
 function formatKpiValue(metric: string, value: number): string {
+  if (metric === 'percentage') return new Intl.NumberFormat('en-PH', { style: 'percent', maximumFractionDigits: 2 }).format(Number(value));
+  if (metric === 'currency') return new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 2 }).format(Number(value));
   const formatted = Number(value).toLocaleString();
   return metric === 'volume' ? `₱${formatted}` : formatted;
 }

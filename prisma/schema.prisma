@@ -16,9 +16,9 @@ enum Role {
 }
 
 model User {
-  id                          String                   @id @default(uuid())
+  id                          String                      @id @default(uuid())
   name                        String
-  email                       String                   @unique
+  email                       String                      @unique
   password                    String
   role                        Role
   // Legacy / "primary" campaign. Kept for backward compatibility: every code
@@ -26,7 +26,7 @@ model User {
   // entry of the multi-campaign assignment (see UserCampaign). For COLLECTOR/OM
   // users the full set of assigned campaigns lives in `campaignAssignments`.
   campaignId                  String?
-  campaign                    Campaign?                @relation(fields: [campaignId], references: [id])
+  campaign                    Campaign?                   @relation(fields: [campaignId], references: [id])
   campaignAssignments         UserCampaign[] // Multi-campaign assignment (collectors/managers)
   seatNumber                  Int?
   monthlyTarget               Float? // Current target for this agent (NTB target for ACQ campaigns)
@@ -41,11 +41,15 @@ model User {
   targetHistory               AgentTarget[]
   productionDetails           ProductionDetail[] // AGENT produces production details
   normalizedProductionRecords ProductionMetricRecord[]
-  collectorKpiRecords         CollectorKpiRecord[]     @relation("EmployeeKpiRecords")
-  kpiImportBatches            KpiImportBatch[]         @relation("KpiImports")
+  collectorKpiRecords         CollectorKpiRecord[]        @relation("EmployeeKpiRecords")
+  kpiImportBatches            KpiImportBatch[]            @relation("KpiImports")
   productionImports           ProductionImport[]          @relation("ProductionImports")
   productionMonitoringAudits  ProductionMonitoringAudit[] @relation("ProductionMonitoringChanges")
-  createdAt                   DateTime                 @default(now())
+  campaignMappingsCreated     CampaignMapping[]           @relation("CampaignMappingCreatedBy")
+  campaignMappingsUpdated     CampaignMapping[]           @relation("CampaignMappingUpdatedBy")
+  campaignMappingAudits       CampaignMappingAudit[]      @relation("CampaignMappingAuditUser")
+  mappedProductionRecords     ProductionMonitoring[]      @relation("ProductionMonitoringImportedBy")
+  createdAt                   DateTime                    @default(now())
 
   @@index([campaignId])
 }
@@ -90,6 +94,7 @@ model Campaign {
   businessUnits               BusinessUnit[]
   productionMonitoringRecords ProductionMonitoring[]
   productionAliases           CampaignAlias[]
+  campaignMappings            CampaignMapping[]
   createdAt                   DateTime                 @default(now())
   updatedAt                   DateTime                 @default(now()) @updatedAt
 }
@@ -138,64 +143,128 @@ model BusinessUnitAlias {
 }
 
 model ProductionMonitoring {
-  id             String                      @id @default(uuid())
-  campaignId     String
-  campaign       Campaign                    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  businessUnitId String
-  businessUnit   BusinessUnit                @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
-  reportYear     Int
-  reportMonth    Int
-  reportPeriod   DateTime
-  metricType     String
-  metricUnit     String?
-  target         Float?
-  week1          Float?
-  week2          Float?
-  week3          Float?
-  week4          Float?
-  week5          Float?
-  mtd            Float?
-  achievement    Float?
-  runRate        Float?
-  workingDays    Int?
-  daysLapse      Int?
-  dateUpdated    DateTime?
-  sourceType     String                      @default("EXCEL")
-  sourceFile     String?
-  sourceSheet    String?
-  sourceRow      Int?
-  sourceHash     String?
-  createdAt      DateTime                    @default(now())
-  updatedAt      DateTime                    @default(now()) @updatedAt
-  audits         ProductionMonitoringAudit[]
+  id                 String                      @id @default(uuid())
+  campaignId         String
+  campaign           Campaign                    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  businessUnitId     String
+  businessUnit       BusinessUnit                @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  reportYear         Int
+  reportMonth        Int
+  reportPeriod       DateTime
+  metricType         String
+  metricUnit         String?
+  target             Float?
+  week1              Float?
+  week2              Float?
+  week3              Float?
+  week4              Float?
+  week5              Float?
+  mtd                Float?
+  achievement        Float?
+  runRate            Float?
+  workingDays        Int?
+  daysLapse          Int?
+  dateUpdated        DateTime?
+  sourceType         String                      @default("EXCEL")
+  sourceFile         String?
+  sourceSheet        String?
+  sourceRow          Int?
+  sourceHash         String?
+  sourceAccount      String?
+  sourceCampaign     String?
+  campaignMappingId  String?
+  campaignMapping    CampaignMapping?            @relation(fields: [campaignMappingId], references: [id], onDelete: SetNull)
+  productionImportId String?
+  productionImport   ProductionImport?           @relation(fields: [productionImportId], references: [id], onDelete: SetNull)
+  importedById       String?
+  importedBy         User?                       @relation("ProductionMonitoringImportedBy", fields: [importedById], references: [id], onDelete: SetNull)
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @default(now()) @updatedAt
+  audits             ProductionMonitoringAudit[]
 
   @@unique([campaignId, businessUnitId, reportYear, reportMonth, metricType])
   @@index([campaignId, reportYear, reportMonth])
   @@index([businessUnitId, reportYear, reportMonth])
   @@index([metricType])
   @@index([dateUpdated])
+  @@index([campaignMappingId])
+  @@index([productionImportId])
+  @@index([importedById])
 }
 
 model ProductionImport {
-  id               String                  @id @default(uuid())
-  fileName         String
-  reportingPeriods Json
-  recordsDetected  Int                     @default(0)
-  recordsImported  Int                     @default(0)
-  recordsUpdated   Int                     @default(0)
-  recordsUnchanged Int                     @default(0)
-  recordsSkipped   Int                     @default(0)
-  warningCount     Int                     @default(0)
-  errorCount       Int                     @default(0)
-  status           String
-  importedById     String
-  importedBy       User                    @relation("ProductionImports", fields: [importedById], references: [id])
-  issues           ProductionImportIssue[]
-  createdAt        DateTime                @default(now())
-  completedAt      DateTime?
+  id                String                  @id @default(uuid())
+  fileName          String
+  reportingPeriods  Json
+  recordsDetected   Int                     @default(0)
+  recordsImported   Int                     @default(0)
+  recordsUpdated    Int                     @default(0)
+  recordsUnchanged  Int                     @default(0)
+  recordsSkipped    Int                     @default(0)
+  warningCount      Int                     @default(0)
+  errorCount        Int                     @default(0)
+  status            String
+  importedById      String
+  importedBy        User                    @relation("ProductionImports", fields: [importedById], references: [id])
+  issues            ProductionImportIssue[]
+  productionRecords ProductionMonitoring[]
+  mappingAudits     CampaignMappingAudit[]
+  createdAt         DateTime                @default(now())
+  completedAt       DateTime?
 
   @@index([importedById, createdAt])
   @@index([status, createdAt])
+}
+
+// Account-scoped campaign resolution for Production Monitoring imports. The
+// composite unique key deliberately prevents a second mapping for the same
+// normalized source pair; disabled mappings are re-enabled or remapped rather
+// than duplicated.
+model CampaignMapping {
+  id                       String                 @id @default(uuid())
+  sourceAccount            String
+  normalizedSourceAccount  String
+  sourceCampaign           String
+  normalizedSourceCampaign String
+  sourceSystem             String                 @default("PRODUCTION_MONITORING")
+  opsviewCampaignId        String
+  opsviewCampaign          Campaign               @relation(fields: [opsviewCampaignId], references: [id], onDelete: Restrict)
+  status                   String                 @default("ACTIVE")
+  mappingType              String                 @default("MANUAL")
+  notes                    String?
+  createdById              String
+  createdBy                User                   @relation("CampaignMappingCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedById              String
+  updatedBy                User                   @relation("CampaignMappingUpdatedBy", fields: [updatedById], references: [id], onDelete: Restrict)
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
+  lastUsedAt               DateTime?
+  usageCount               Int                    @default(0)
+  audits                   CampaignMappingAudit[]
+  productionRecords        ProductionMonitoring[]
+
+  @@unique([sourceSystem, normalizedSourceAccount, normalizedSourceCampaign], map: "CampaignMapping_source_pair_key")
+  @@index([normalizedSourceAccount, normalizedSourceCampaign, status])
+  @@index([opsviewCampaignId, status])
+}
+
+model CampaignMappingAudit {
+  id            String            @id @default(uuid())
+  mappingId     String
+  mapping       CampaignMapping   @relation(fields: [mappingId], references: [id], onDelete: Cascade)
+  action        String
+  oldCampaignId String?
+  newCampaignId String?
+  importId      String?
+  import        ProductionImport? @relation(fields: [importId], references: [id], onDelete: SetNull)
+  changedById   String
+  changedBy     User              @relation("CampaignMappingAuditUser", fields: [changedById], references: [id], onDelete: Restrict)
+  details       Json?
+  createdAt     DateTime          @default(now())
+
+  @@index([mappingId, createdAt])
+  @@index([changedById, createdAt])
+  @@index([importId])
 }
 
 model ProductionImportIssue {
@@ -316,37 +385,37 @@ model ProductionEntry {
 }
 
 model ProductionMetricRecord {
-  id                String          @id @default(uuid())
-  productionEntryId String
-  productionEntry   ProductionEntry @relation(fields: [productionEntryId], references: [id], onDelete: Cascade)
-  campaignId        String
-  campaign          Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  agentId           String
-  agent             User            @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  reportPeriodType  String
-  reportDate        DateTime
-  reportMonth       Int?
-  reportYear        Int
-  metricType        String
-  cardLevel         String          @default("")
-  cardLevelLabel    String?
-  grandTotal        BigInt?
-  sourceNickname    String?
-  finalTotal        BigInt?
-  firstPeriodTotal  BigInt?
-  secondPeriodTotal BigInt?
+  id                 String          @id @default(uuid())
+  productionEntryId  String
+  productionEntry    ProductionEntry @relation(fields: [productionEntryId], references: [id], onDelete: Cascade)
+  campaignId         String
+  campaign           Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  agentId            String
+  agent              User            @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  reportPeriodType   String
+  reportDate         DateTime
+  reportMonth        Int?
+  reportYear         Int
+  metricType         String
+  cardLevel          String          @default("")
+  cardLevelLabel     String?
+  grandTotal         BigInt?
+  sourceNickname     String?
+  finalTotal         BigInt?
+  firstPeriodTotal   BigInt?
+  secondPeriodTotal  BigInt?
   workbookGrandTotal BigInt?
-  ranking           Int?
-  monthValues       Json?
-  count             BigInt?
-  volume            BigInt?
-  goal              Float?
-  actual            Float?
-  achievement       Float?
-  sourceFile        String
-  sourceSheet       String
-  sourceRow         Int?
-  createdAt         DateTime        @default(now())
+  ranking            Int?
+  monthValues        Json?
+  count              BigInt?
+  volume             BigInt?
+  goal               Float?
+  actual             Float?
+  achievement        Float?
+  sourceFile         String
+  sourceSheet        String
+  sourceRow          Int?
+  createdAt          DateTime        @default(now())
 
   @@unique([campaignId, agentId, metricType, reportPeriodType, reportDate, cardLevel])
   @@index([productionEntryId])
@@ -355,64 +424,64 @@ model ProductionMetricRecord {
 }
 
 model DashboardImportBatch {
-  id                String                  @id @default(uuid())
-  campaignId        String
-  fileName          String
-  importMode        String
-  duplicateMode     String
-  reportPeriodType  String
-  reportDate        DateTime
-  workbookYear      Int?
-  totalWorksheets   Int                     @default(0)
-  supportedSheets   Int                     @default(0)
+  id                  String                  @id @default(uuid())
+  campaignId          String
+  fileName            String
+  importMode          String
+  duplicateMode       String
+  reportPeriodType    String
+  reportDate          DateTime
+  workbookYear        Int?
+  totalWorksheets     Int                     @default(0)
+  supportedSheets     Int                     @default(0)
   selectedCampaignIds String?
-  detectedWorksheets String?
-  duplicateCount    Int                     @default(0)
-  unmappedCount     Int                     @default(0)
-  insertedCount     Int                     @default(0)
-  updatedCount      Int                     @default(0)
-  skippedCount      Int                     @default(0)
-  failedCount       Int                     @default(0)
-  importedById      String
-  status            String
-  createdAt         DateTime                @default(now())
-  completedAt       DateTime?
-  records           DashboardImportRecord[]
-  issues            DashboardImportIssue[]
+  detectedWorksheets  String?
+  duplicateCount      Int                     @default(0)
+  unmappedCount       Int                     @default(0)
+  insertedCount       Int                     @default(0)
+  updatedCount        Int                     @default(0)
+  skippedCount        Int                     @default(0)
+  failedCount         Int                     @default(0)
+  importedById        String
+  status              String
+  createdAt           DateTime                @default(now())
+  completedAt         DateTime?
+  records             DashboardImportRecord[]
+  issues              DashboardImportIssue[]
 
   @@index([campaignId, reportDate])
   @@index([importedById, createdAt])
 }
 
 model DashboardImportRecord {
-  id                String               @id @default(uuid())
-  batchId           String
-  batch             DashboardImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
-  campaignId        String
-  worksheetSource   String
-  sourceRow          Int
-  recordKind         String
-  monitoringType    String?
-  entityName        String               @default("")
-  level             String?
-  category          String               @default("")
-  product            String               @default("")
-  metric             String
-  month              Int?
-  year               Int
-  reportPeriodType  String
-  reportDate         DateTime
-  target             Float?
-  actual             Float?
-  achievement        Float?
-  numericValue       Float?
-  declaredSeat       Float?
-  actualHeadCount    Float?
-  remark             String?
-  sourceFile         String
-  importedById       String
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @updatedAt
+  id               String               @id @default(uuid())
+  batchId          String
+  batch            DashboardImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  campaignId       String
+  worksheetSource  String
+  sourceRow        Int
+  recordKind       String
+  monitoringType   String?
+  entityName       String               @default("")
+  level            String?
+  category         String               @default("")
+  product          String               @default("")
+  metric           String
+  month            Int?
+  year             Int
+  reportPeriodType String
+  reportDate       DateTime
+  target           Float?
+  actual           Float?
+  achievement      Float?
+  numericValue     Float?
+  declaredSeat     Float?
+  actualHeadCount  Float?
+  remark           String?
+  sourceFile       String
+  importedById     String
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
 
   @@unique([campaignId, worksheetSource, recordKind, entityName, category, product, metric, year, month, reportPeriodType], map: "DashboardImportRecord_natural_key")
   @@index([campaignId, year, month])
@@ -544,69 +613,69 @@ model KpiImportEvent {
 }
 
 model ProductionDetail {
-  id                 String          @id @default(uuid())
-  productionEntryId  String
-  productionEntry    ProductionEntry @relation(fields: [productionEntryId], references: [id], onDelete: Cascade)
-  agentId            String
-  agent              User            @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  campaignId         String // Direct reference to campaign for easier filtering
-  campaign           Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  transmittals       BigInt          @default(0)
-  activations        BigInt          @default(0)
-  approvals          BigInt          @default(0)
-  booked             BigInt          @default(0)
-  qualityRate        Float?
-  conversionRate     Float?
-  volume             BigInt          @default(0)
-  transmittedVolume  BigInt          @default(0)
-  approvalsVolume    BigInt          @default(0)
-  bookedVolume       BigInt          @default(0)
-  sourceSheet        String?
-  agentCode          String?
-  agentLevel         String?
-  dateHired          DateTime?
-  agentType          String?
-  monthlyGoal        Float?
-  monthlyActual      Float?
-  monthlyAchievement Float?
-  overallGoal        Float?
-  overallActual      Float?
-  overallAchievement Float?
-  transaction        BigInt          @default(0)
-  ntb                BigInt          @default(0) // ACQ: New-To-Bank accounts
-  supplementary      BigInt          @default(0) // ACQ: supplementary accounts
-  seatCategory       String? // ACQ: BILLABLE / BUFFER
-  cardLevel           String          @default("") // BDO SGM: FIRST_CARD / BUNDLE_CARD
-  cardLevelLabel      String?
-  cardLevelGrandTotal BigInt?
-  sourceNickname      String?
-  cardLevelFinalTotal BigInt?
-  cardLevelFirstPeriodTotal BigInt?
-  cardLevelSecondPeriodTotal BigInt?
+  id                          String          @id @default(uuid())
+  productionEntryId           String
+  productionEntry             ProductionEntry @relation(fields: [productionEntryId], references: [id], onDelete: Cascade)
+  agentId                     String
+  agent                       User            @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  campaignId                  String // Direct reference to campaign for easier filtering
+  campaign                    Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  transmittals                BigInt          @default(0)
+  activations                 BigInt          @default(0)
+  approvals                   BigInt          @default(0)
+  booked                      BigInt          @default(0)
+  qualityRate                 Float?
+  conversionRate              Float?
+  volume                      BigInt          @default(0)
+  transmittedVolume           BigInt          @default(0)
+  approvalsVolume             BigInt          @default(0)
+  bookedVolume                BigInt          @default(0)
+  sourceSheet                 String?
+  agentCode                   String?
+  agentLevel                  String?
+  dateHired                   DateTime?
+  agentType                   String?
+  monthlyGoal                 Float?
+  monthlyActual               Float?
+  monthlyAchievement          Float?
+  overallGoal                 Float?
+  overallActual               Float?
+  overallAchievement          Float?
+  transaction                 BigInt          @default(0)
+  ntb                         BigInt          @default(0) // ACQ: New-To-Bank accounts
+  supplementary               BigInt          @default(0) // ACQ: supplementary accounts
+  seatCategory                String? // ACQ: BILLABLE / BUFFER
+  cardLevel                   String          @default("") // BDO SGM: FIRST_CARD / BUNDLE_CARD
+  cardLevelLabel              String?
+  cardLevelGrandTotal         BigInt?
+  sourceNickname              String?
+  cardLevelFinalTotal         BigInt?
+  cardLevelFirstPeriodTotal   BigInt?
+  cardLevelSecondPeriodTotal  BigInt?
   cardLevelWorkbookGrandTotal BigInt?
-  cardLevelRanking    Int?
-  cardLevelMonthValues Json?
+  cardLevelRanking            Int?
+  cardLevelMonthValues        Json?
   // MB PL wide-format: per-category transaction counts + volume
-  bauPayrollTxn      BigInt          @default(0)
-  bauPayrollVol      BigInt          @default(0)
-  bauDepositorTxn    BigInt          @default(0)
-  bauDepositorVol    BigInt          @default(0)
-  topupPayrollTxn    BigInt          @default(0)
-  topupPayrollVol    BigInt          @default(0)
-  topupDepositorTxn  BigInt          @default(0)
-  topupDepositorVol  BigInt          @default(0)
-  openMarketTxn      BigInt          @default(0)
-  openMarketVol      BigInt          @default(0)
+  bauPayrollTxn               BigInt          @default(0)
+  bauPayrollVol               BigInt          @default(0)
+  bauDepositorTxn             BigInt          @default(0)
+  bauDepositorVol             BigInt          @default(0)
+  topupPayrollTxn             BigInt          @default(0)
+  topupPayrollVol             BigInt          @default(0)
+  topupDepositorTxn           BigInt          @default(0)
+  topupDepositorVol           BigInt          @default(0)
+  openMarketTxn               BigInt          @default(0)
+  openMarketVol               BigInt          @default(0)
   // MB PA wide-format: TOTAL (C2G / BT / BalCon PA) + GRAND TOTAL
-  c2gTxn             BigInt          @default(0)
-  c2gVol             BigInt          @default(0)
-  btTxn              BigInt          @default(0)
-  btVol              BigInt          @default(0)
-  balconTxn          BigInt          @default(0)
-  balconVol          BigInt          @default(0)
-  grandTotalTxn      BigInt          @default(0)
-  grandTotalVol      BigInt          @default(0)
-  createdAt          DateTime        @default(now())
+  c2gTxn                      BigInt          @default(0)
+  c2gVol                      BigInt          @default(0)
+  btTxn                       BigInt          @default(0)
+  btVol                       BigInt          @default(0)
+  balconTxn                   BigInt          @default(0)
+  balconVol                   BigInt          @default(0)
+  grandTotalTxn               BigInt          @default(0)
+  grandTotalVol               BigInt          @default(0)
+  createdAt                   DateTime        @default(now())
 
   @@unique([productionEntryId, agentId, cardLevel])
   @@index([productionEntryId])

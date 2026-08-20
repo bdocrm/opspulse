@@ -219,13 +219,24 @@ interface WorkbookSummary {
 }
 
 interface ProductionCampaignMapping {
+  key: string;
+  sourceAccount: string;
+  normalizedSourceAccount: string;
+  sourceCampaign: string;
+  normalizedSourceCampaign: string;
   source: string;
   normalizedSource: string;
   matchedCampaignId: string | null;
   matchedCampaignName: string | null;
   suggestion: { id: string; name: string; confidence: number } | null;
-  resolution: 'EXACT' | 'ALIAS' | 'SUGGESTED' | 'CREATE';
+  mappingId: string | null;
+  mappingType: string | null;
+  resolution: 'EXPLICIT' | 'KNOWN_ALIAS' | 'EXACT' | 'LEGACY_EXACT' | 'ALIAS' | 'SUGGESTED' | 'NEW_DEPARTMENT' | 'NEEDS_REVIEW' | 'MAPPING_REQUIRED' | 'INVALID';
   requiresReview: boolean;
+  invalidReason: string | null;
+  affectedRows: number;
+  confidence: number | null;
+  newDepartmentName: string | null;
 }
 
 interface ProductionBusinessUnitMapping {
@@ -260,8 +271,11 @@ interface ProductionBulkPreviewRecord {
   runRate: number | null;
   sourceSheet: string;
   sourceRow: number;
-  status: 'NEW' | 'UPDATED' | 'UNCHANGED' | 'CONFLICT' | 'WARNING' | 'ERROR';
+  status: 'NEW' | 'UPDATED' | 'UNCHANGED' | 'CONFLICT' | 'WARNING' | 'ERROR' | 'AUTO_MAPPED' | 'MAPPING_REQUIRED' | 'MAPPING_INVALID';
   monthStatus: 'NEW' | 'EXISTING' | 'UNKNOWN';
+  mappedCampaignName?: string | null;
+  campaignMappingId?: string | null;
+  mappingType?: string | null;
   issues: Array<{ level: 'WARNING' | 'ERROR'; code: string; message: string }>;
 }
 
@@ -275,13 +289,15 @@ interface ProductionBulkPreview {
   availableCampaigns: Array<{ id: string; name: string }>;
   availableBusinessUnits: Array<{ id: string; campaignId: string; name: string }>;
   canCreateCampaigns: boolean;
+  canCreateMappings: boolean;
+  canManageMappings: boolean;
   existingMonthKeys: string[];
   monthSummary: Array<{ key: string; campaignSource: string; campaignNormalized: string; reportYear: number; reportMonth: number; status: 'NEW' | 'EXISTING' | 'UNKNOWN' }>;
   records: ProductionBulkPreviewRecord[];
-  stats: { total: number; valid: number; new: number; updated: number; unchanged: number; conflicts: number; warnings: number; errors: number };
+  stats: { total: number; valid: number; new: number; updated: number; unchanged: number; conflicts: number; warnings: number; errors: number; autoMapped: number; mappingRequired: number; mappingInvalid: number };
 }
 
-type ProductionPreviewFilter = 'ALL' | 'VALID' | 'NEW' | 'UPDATED' | 'WARNING' | 'ERROR';
+type ProductionPreviewFilter = 'ALL' | 'VALID' | 'NEW' | 'UPDATED' | 'AUTO_MAPPED' | 'MAPPING_REQUIRED' | 'WARNING' | 'ERROR';
 
 interface ConsolidatedAgentPreview {
   fileName?: string;
@@ -450,6 +466,10 @@ export default function BulkImportPage() {
   const [productionPreviewFilter, setProductionPreviewFilter] = useState<ProductionPreviewFilter>('ALL');
   const [productionConfirmationOpen, setProductionConfirmationOpen] = useState(false);
   const [productionImportStrategy, setProductionImportStrategy] = useState<ProductionImportStrategy>('fill_missing');
+  const [mappingDialogKey, setMappingDialogKey] = useState<string | null>(null);
+  const [mappingSearch, setMappingSearch] = useState('');
+  const [savingMappings, setSavingMappings] = useState(false);
+  const [mappingFeedback, setMappingFeedback] = useState<string | null>(null);
   const [genericImportConfirmationOpen, setGenericImportConfirmationOpen] = useState(false);
   const previewInFlight = useRef(false);
   const productionImportInFlight = useRef(false);
@@ -615,6 +635,9 @@ export default function BulkImportPage() {
     setProductionPreviewFilter('ALL');
     setProductionConfirmationOpen(false);
     setProductionImportStrategy('fill_missing');
+    setMappingDialogKey(null);
+    setMappingSearch('');
+    setMappingFeedback(null);
     setGenericImportConfirmationOpen(false);
     setWorksheetPreviews([]);
     setWorkbookSummary(null);
@@ -641,8 +664,8 @@ export default function BulkImportPage() {
           setProductionPreview(detected);
           setPreviewFiles([{ file: activeFiles[0], index: 0 }]);
           setProductionCampaignSelections(Object.fromEntries(detected.campaignMappings.map((mapping) => [
-            mapping.normalizedSource,
-            mapping.matchedCampaignId || '__create',
+            mapping.key,
+            mapping.matchedCampaignId || (mapping.newDepartmentName ? '__create' : ''),
           ])));
           setProductionBusinessSelections(Object.fromEntries(detected.businessUnitMappings.map((mapping) => [
             mapping.key,
@@ -856,6 +879,69 @@ export default function BulkImportPage() {
     });
   };
 
+  const saveProductionMappings = async (keys: string[]) => {
+    if (!productionPreview) return;
+    const selected = productionPreview.campaignMappings.filter((mapping) => {
+      const selection = productionCampaignSelections[mapping.key];
+      return keys.includes(mapping.key) && selection && (selection !== '__create' || productionPreview.canManageMappings);
+    });
+    if (!selected.length) {
+      const requiresAdmin = productionPreview.campaignMappings.some((mapping) => keys.includes(mapping.key) && productionCampaignSelections[mapping.key] === '__create');
+      return setError(requiresAdmin ? 'Administrator permission is required to create this new department.' : 'Choose an OpsView campaign before saving the mapping.');
+    }
+    setSavingMappings(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/campaign-mappings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mappings: selected.map((mapping) => ({
+          sourceAccount: mapping.sourceAccount,
+          sourceCampaign: mapping.sourceCampaign,
+          opsviewCampaignId: productionCampaignSelections[mapping.key] === '__create' ? undefined : productionCampaignSelections[mapping.key],
+          createCampaignName: productionCampaignSelections[mapping.key] === '__create' ? mapping.newDepartmentName : undefined,
+          sourceFile: productionPreview.fileName,
+        })) }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to save campaign mapping.');
+      const savedByKey = new Map<string, any>((data.mappings || []).map((mapping: any) => [
+        `${mapping.normalizedSourceAccount}::${mapping.normalizedSourceCampaign}`,
+        mapping,
+      ]));
+      setProductionPreview((current) => current ? {
+        ...current,
+        campaignMappings: current.campaignMappings.map((mapping) => {
+          const saved = savedByKey.get(mapping.key) as any;
+          if (!saved) return mapping;
+          return {
+            ...mapping,
+            matchedCampaignId: saved.opsviewCampaignId,
+            matchedCampaignName: saved.opsviewCampaign?.campaignName || mapping.matchedCampaignName,
+            mappingId: saved.id,
+            mappingType: saved.mappingType,
+            resolution: 'EXPLICIT' as const,
+            requiresReview: false,
+            invalidReason: null,
+          };
+        }),
+      } : current);
+      setProductionCampaignSelections((current) => ({
+        ...current,
+        ...Object.fromEntries([...savedByKey.entries()].map(([key, mapping]: [string, any]) => [key, mapping.opsviewCampaignId])),
+      }));
+      const affectedRows = selected.reduce((sum, mapping) => sum + mapping.affectedRows, 0);
+      const createdDepartments = Number(data.createdDepartments || 0);
+      setMappingFeedback(`${selected.length} campaign mapping${selected.length === 1 ? '' : 's'} saved.${createdDepartments ? ` ${createdDepartments} new department${createdDepartments === 1 ? '' : 's'} created.` : ''} ${affectedRows.toLocaleString()} matching row${affectedRows === 1 ? '' : 's'} were revalidated.`);
+      setMappingDialogKey(null);
+      setMappingSearch('');
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Unable to save campaign mapping.');
+    } finally {
+      setSavingMappings(false);
+    }
+  };
+
   const productionWeekValue = (record: ProductionBulkPreviewRecord, week: number) => {
     const value = record[`week${week}` as keyof ProductionBulkPreviewRecord];
     return typeof value === 'number' ? value : null;
@@ -863,11 +949,13 @@ export default function BulkImportPage() {
 
   const productionRecordReview = (record: ProductionBulkPreviewRecord) => {
     const messages = record.issues.map((issue) => issue.message);
-    const campaignSelection = productionCampaignSelections[record.campaignNormalized];
-    const campaignResolved = Boolean(campaignSelection) && (campaignSelection !== '__create' || Boolean(productionPreview?.canCreateCampaigns));
-    const businessKey = `${record.campaignNormalized}:${record.businessUnitNormalized}`;
+    const sourceValueMissing = record.issues.some((issue) => issue.code === 'MISSING_CAMPAIGN' || issue.code === 'MISSING_BUSINESS_UNIT');
+    const businessKey = `${record.campaignNormalized}::${record.businessUnitNormalized}`;
+    const campaignSelection = productionCampaignSelections[businessKey];
+    const campaignResolved = Boolean(campaignSelection) && campaignSelection !== '__create';
     const businessResolved = Boolean(productionBusinessSelections[businessKey]);
-    if (!campaignResolved) messages.push('Campaign mapping is required.');
+    const mapping = productionPreview?.campaignMappings.find((item) => item.key === businessKey);
+    if (!campaignResolved && !sourceValueMissing) messages.push(mapping?.invalidReason || `Campaign "${record.businessUnitSource}" under account "${record.campaignSource}" requires mapping.`);
     else if (!businessResolved) messages.push('Business Unit mapping is required.');
     const hasError = record.issues.some((issue) => issue.level === 'ERROR') || !campaignResolved || !businessResolved;
     const hasWarning = record.issues.some((issue) => issue.level === 'WARNING') || record.status === 'CONFLICT' || record.status === 'WARNING';
@@ -878,7 +966,13 @@ export default function BulkImportPage() {
       ...record,
       monthStatus,
       isValid: !hasError,
-      displayStatus: hasError ? 'ERROR' : hasWarning ? 'WARNING' : record.status,
+      displayStatus: sourceValueMissing || record.issues.some((issue) => issue.level === 'ERROR') ? 'ERROR'
+        : !campaignResolved
+        ? mapping?.resolution === 'INVALID' ? 'MAPPING_INVALID' : 'MAPPING_REQUIRED'
+        : hasError ? 'ERROR'
+        : hasWarning ? 'WARNING'
+        : mapping?.resolution === 'EXPLICIT' && campaignSelection === mapping.matchedCampaignId ? 'AUTO_MAPPED'
+        : record.status,
       validationMessages: messages,
     };
   };
@@ -889,7 +983,7 @@ export default function BulkImportPage() {
     productionPreview.records.map(productionRecordReview).forEach((record) => {
       if (record.isValid) return;
       record.validationMessages.forEach((message) => {
-        const field = /campaign mapping/i.test(message) ? 'Campaign' : /business unit mapping/i.test(message) ? 'Business Unit' : /target/i.test(message) ? 'Target' : 'Row';
+        const field = /campaign mapping|requires mapping|mapping required/i.test(message) ? 'Campaign' : /business unit mapping/i.test(message) ? 'Business Unit' : /target/i.test(message) ? 'Target' : 'Row';
         const originalValue = field === 'Target' ? (record.target == null ? '(blank)' : String(record.target)) : '';
         rows.push([
           String(record.sourceRow), record.sourceSheet, record.campaignSource, record.businessUnitSource,
@@ -930,13 +1024,15 @@ export default function BulkImportPage() {
       fd.append('validRowKeys', JSON.stringify(readyRecords.map((record) => record.rowKey)));
       fd.append('importStrategy', productionImportStrategy);
       fd.append('campaignMappings', JSON.stringify(productionPreview.campaignMappings.map((mapping) => ({
-        source: mapping.normalizedSource,
-        targetId: productionCampaignSelections[mapping.normalizedSource] === '__create'
-          ? null
-          : productionCampaignSelections[mapping.normalizedSource],
+        sourceAccount: mapping.sourceAccount,
+        sourceCampaign: mapping.sourceCampaign,
+        targetId: productionCampaignSelections[mapping.key] || null,
+        remember: true,
       }))));
       fd.append('businessUnitMappings', JSON.stringify(productionPreview.businessUnitMappings.map((mapping) => ({
         campaignSource: mapping.campaignNormalized,
+        sourceAccount: productionPreview.campaignMappings.find((campaign) => campaign.key === mapping.key)?.sourceAccount,
+        sourceCampaign: productionPreview.campaignMappings.find((campaign) => campaign.key === mapping.key)?.sourceCampaign,
         source: mapping.normalizedSource,
         targetId: productionBusinessSelections[mapping.key] === '__create'
           ? null
@@ -1550,13 +1646,16 @@ export default function BulkImportPage() {
         if (productionPreviewFilter === 'VALID') return record.isValid;
         return record.displayStatus === productionPreviewFilter;
       });
-      const affectedCampaigns = new Set(readyRecords.map((record) => record.campaignNormalized)).size;
-      const affectedBusinessUnits = new Set(readyRecords.map((record) => `${record.campaignNormalized}:${record.businessUnitNormalized}`)).size;
+      const affectedCampaigns = new Set(readyRecords.map((record) => `${record.campaignNormalized}::${record.businessUnitNormalized}`)).size;
+      const affectedBusinessUnits = new Set(readyRecords.map((record) => `${record.campaignNormalized}::${record.businessUnitNormalized}`)).size;
       const periodLabel = (year: number, month: number) => new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString('en-US', {
         month: 'long', year: 'numeric', timeZone: 'UTC',
       });
       const statusStyle = (status: string) => {
         if (status === 'ERROR') return 'bg-red-100 text-red-800';
+        if (status === 'MAPPING_INVALID') return 'bg-red-100 text-red-800';
+        if (status === 'MAPPING_REQUIRED') return 'bg-amber-100 text-amber-900';
+        if (status === 'AUTO_MAPPED') return 'bg-cyan-100 text-cyan-800';
         if (status === 'UPDATED') return 'bg-blue-100 text-blue-800';
         if (status === 'UNCHANGED') return 'bg-slate-100 text-slate-700';
         if (status === 'CONFLICT' || status === 'WARNING') return 'bg-amber-100 text-amber-800';
@@ -1581,14 +1680,16 @@ export default function BulkImportPage() {
             </div>
           )}
 
+          {mappingFeedback && <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">{mappingFeedback}</div>}
+
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             {[
               ['Detected', productionPreview.stats.total, 'text-slate-800'],
               ['Ready', readyRecords.length, 'text-green-700'],
-              ['New', reviewedRecords.filter((record) => record.displayStatus === 'NEW').length, 'text-emerald-700'],
-              ['Updates', reviewedRecords.filter((record) => record.displayStatus === 'UPDATED').length, 'text-blue-700'],
-              ['Warnings', reviewedRecords.filter((record) => record.displayStatus === 'WARNING').length, 'text-amber-700'],
-              ['Errors', invalidRecords.length, 'text-red-700'],
+              ['Auto-Mapped', reviewedRecords.filter((record) => record.displayStatus === 'AUTO_MAPPED').length, 'text-cyan-700'],
+              ['Mapping Required', reviewedRecords.filter((record) => record.displayStatus === 'MAPPING_REQUIRED').length, 'text-amber-700'],
+              ['Validation Errors', reviewedRecords.filter((record) => record.displayStatus === 'ERROR' || record.displayStatus === 'MAPPING_INVALID').length, 'text-red-700'],
+              ['Duplicates', reviewedRecords.filter((record) => record.issues.some((issue) => issue.code === 'DUPLICATE_IN_WORKBOOK')).length, 'text-amber-700'],
             ].map(([label, value, color]) => (
               <Card key={String(label)}><CardContent className="p-4 text-center">
                 <p className={`text-2xl font-bold ${color}`}>{Number(value).toLocaleString()}</p>
@@ -1612,7 +1713,7 @@ export default function BulkImportPage() {
             </div>
           )}
 
-          <Card>
+          <Card id="campaign-mapping">
             <CardHeader><CardTitle className="text-lg">Import Preview</CardTitle><CardDescription>Compared with production records currently stored in OpsView.</CardDescription></CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-2">
@@ -1628,6 +1729,28 @@ export default function BulkImportPage() {
               {productionImportStrategy === 'update_existing' && existingMonths.length > 0 && <div className="flex gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"><AlertTriangle className="h-4 w-4 shrink-0" /><span>Updating existing months may change historical KPI calculations. You will be asked to confirm.</span></div>}
             </CardContent>
           </Card>
+
+          <Dialog open={Boolean(mappingDialogKey)} onOpenChange={(open) => { if (!open) setMappingDialogKey(null); }}>
+            <DialogContent className="max-w-xl">
+              {(() => {
+                const mapping = productionPreview.campaignMappings.find((item) => item.key === mappingDialogKey);
+                if (!mapping) return null;
+                const query = mappingSearch.trim().toLowerCase();
+                const options = productionPreview.availableCampaigns.filter((campaign) => !query || campaign.name.toLowerCase().includes(query) || campaign.id.toLowerCase().includes(query));
+                return <>
+                  <DialogHeader><DialogTitle>Map Campaign</DialogTitle><DialogDescription>Future imports containing this exact account and source campaign will reuse the saved mapping.</DialogDescription></DialogHeader>
+                  <div className="space-y-4">
+                    <div className="grid gap-3 rounded-lg bg-slate-50 p-4 sm:grid-cols-2"><div><p className="text-xs text-slate-500">Source Account</p><p className="font-medium">{mapping.sourceAccount}</p></div><div><p className="text-xs text-slate-500">Source Campaign</p><p className="font-medium">{mapping.sourceCampaign}</p></div></div>
+                    {mapping.newDepartmentName && <button type="button" disabled={!productionPreview.canManageMappings} onClick={() => handleProductionCampaignChange(mapping.key, '__create')} className={`w-full rounded-lg border border-orange-300 p-3 text-left text-sm ${productionCampaignSelections[mapping.key] === '__create' ? 'bg-orange-100 ring-1 ring-orange-500' : 'bg-orange-50'} disabled:cursor-not-allowed disabled:opacity-60`}><span className="block font-semibold">New Department: {mapping.newDepartmentName}</span><span className="text-xs text-orange-800">{productionPreview.canManageMappings ? 'Create canonical department and save its source mapping.' : 'Administrator permission is required for department creation.'}</span></button>}
+                    <label className="grid gap-2 text-sm font-medium">Search OpsView campaigns<input value={mappingSearch} onChange={(event) => setMappingSearch(event.target.value)} placeholder="Search by campaign name or identifier" className="h-10 rounded-md border bg-background px-3 font-normal" /></label>
+                    <div className="max-h-56 space-y-2 overflow-y-auto rounded-md border p-2">{options.map((campaign) => <button type="button" key={campaign.id} onClick={() => handleProductionCampaignChange(mapping.key, campaign.id)} className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm ${productionCampaignSelections[mapping.key] === campaign.id ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}><span>{campaign.name}</span><span className="ml-3 text-[10px] opacity-70">{campaign.id.slice(0, 8)}</span></button>)}</div>
+                    <p className="text-xs text-slate-500">Apply to all {mapping.affectedRows.toLocaleString()} matching rows in this import · Remember for future imports</p>
+                    <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setMappingDialogKey(null)}>Cancel</Button><Button onClick={() => saveProductionMappings([mapping.key])} disabled={savingMappings || !productionCampaignSelections[mapping.key] || (productionCampaignSelections[mapping.key] === '__create' && !productionPreview.canManageMappings)}>{savingMappings ? 'Saving...' : productionCampaignSelections[mapping.key] === '__create' ? 'Create & Map' : 'Save & Apply'}</Button></div>
+                  </div>
+                </>;
+              })()}
+            </DialogContent>
+          </Dialog>
 
           <Card>
             <CardHeader>
@@ -1648,26 +1771,39 @@ export default function BulkImportPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Campaign Mapping</CardTitle>
-              <CardDescription>Detected campaigns are matched automatically. Unknown campaigns must be mapped to an assigned campaign; only a CEO can create a new campaign.</CardDescription>
+              <CardDescription>{productionPreview.campaignMappings.filter((mapping) => !productionCampaignSelections[mapping.key] || productionCampaignSelections[mapping.key] === '__create').length} unique campaign(s) need action. Saved Account + Source Campaign mappings are reused on future imports.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {productionPreview.campaignMappings.map((mapping) => {
-                const selected = productionCampaignSelections[mapping.normalizedSource] || '';
-                const unresolved = selected === '__create' && !productionPreview.canCreateCampaigns;
+                const selected = productionCampaignSelections[mapping.key] || '';
+                const unresolved = !selected || selected === '__create';
+                const mappingStatus = ['EXPLICIT', 'KNOWN_ALIAS', 'EXACT', 'LEGACY_EXACT'].includes(mapping.resolution)
+                  ? 'MAPPED'
+                  : mapping.resolution === 'SUGGESTED' ? 'SUGGESTED'
+                  : mapping.resolution === 'NEW_DEPARTMENT' ? 'NEW DEPARTMENT'
+                  : 'NEEDS REVIEW';
+                const stateStyle = mappingStatus === 'MAPPED'
+                  ? 'border-emerald-200 bg-emerald-50/50'
+                  : mappingStatus === 'SUGGESTED' ? 'border-blue-200 bg-blue-50/50'
+                  : mappingStatus === 'NEW DEPARTMENT' ? 'border-orange-200 bg-orange-50/50'
+                  : 'border-amber-300 bg-amber-50';
                 return (
-                  <div key={mapping.normalizedSource} className={`grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(0,1fr)_minmax(18rem,1fr)] md:items-center ${unresolved ? 'border-amber-300 bg-amber-50' : ''}`}>
+                  <div key={mapping.key} className={`grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(0,1fr)_minmax(18rem,1fr)_auto] md:items-center ${stateStyle}`}>
                     <div>
-                      <p className="font-medium text-slate-800">{mapping.source}</p>
-                      <p className="text-xs text-slate-500">{mapping.suggestion ? `Suggested: ${mapping.suggestion.name} (${mapping.suggestion.confidence}% match)` : `Detection: ${mapping.resolution.toLowerCase()}`}</p>
+                      <p className="font-medium text-slate-800">{mapping.sourceAccount} / {mapping.sourceCampaign}</p>
+                      <p className="mt-1 text-xs"><span className="font-semibold">{mappingStatus}</span> · {mapping.affectedRows.toLocaleString()} affected row(s)</p>
+                      <p className="text-xs text-slate-500">{mapping.matchedCampaignName ? `Mapped to ${mapping.matchedCampaignName}` : mapping.newDepartmentName ? `Approved canonical department: ${mapping.newDepartmentName}` : mapping.invalidReason || (mapping.suggestion ? `Possible match: ${mapping.suggestion.name}` : 'Manual review required')}{mapping.confidence != null ? ` · ${mapping.confidence}% confidence` : ''}</p>
                     </div>
-                    <select value={selected} onChange={(event) => handleProductionCampaignChange(mapping.normalizedSource, event.target.value)} className="w-full rounded-md border bg-white px-3 py-2 text-sm">
-                      <option value="">Select campaign...</option>
+                    <select value={selected} onChange={(event) => handleProductionCampaignChange(mapping.key, event.target.value)} className="w-full rounded-md border bg-white px-3 py-2 text-sm">
+                      <option value="">Select OpsView campaign...</option>
                       {productionPreview.availableCampaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
-                      <option value="__create" disabled={!productionPreview.canCreateCampaigns}>{productionPreview.canCreateCampaigns ? `Create “${mapping.source}”` : `Needs CEO mapping: “${mapping.source}”`}</option>
+                      {mapping.newDepartmentName && <option value="__create" disabled={!productionPreview.canManageMappings}>{productionPreview.canManageMappings ? `Create “${mapping.newDepartmentName}”` : `Admin must create “${mapping.newDepartmentName}”`}</option>}
                     </select>
+                    <Button type="button" size="sm" variant={unresolved ? 'default' : 'outline'} onClick={() => { setMappingDialogKey(mapping.key); setMappingSearch(''); }}>{mapping.resolution === 'NEW_DEPARTMENT' ? 'Create & Map' : mappingStatus === 'SUGGESTED' ? 'Accept / Change' : 'Map Campaign'}</Button>
                   </div>
                 );
               })}
+              {productionPreview.canCreateMappings && <div className="flex justify-end"><Button type="button" onClick={() => saveProductionMappings(productionPreview.campaignMappings.map((mapping) => mapping.key))} disabled={savingMappings || !productionPreview.campaignMappings.some((mapping) => productionCampaignSelections[mapping.key] && (mapping.resolution !== 'EXPLICIT' || productionCampaignSelections[mapping.key] !== mapping.matchedCampaignId))}>{savingMappings ? 'Saving & revalidating...' : 'Save All & Revalidate'}</Button></div>}
             </CardContent>
           </Card>
 
@@ -1685,7 +1821,7 @@ export default function BulkImportPage() {
                   <div key={mapping.key} className="grid gap-2 rounded-lg border p-3 md:grid-cols-[minmax(0,1fr)_minmax(18rem,1fr)] md:items-center">
                     <div>
                       <p className="font-medium text-slate-800">{mapping.source}</p>
-                      <p className="text-xs text-slate-500">Campaign: {productionPreview.campaignMappings.find((campaign) => campaign.normalizedSource === mapping.campaignNormalized)?.source || mapping.campaignNormalized}{mapping.suggestion ? ` · Suggested: ${mapping.suggestion.name} (${mapping.suggestion.confidence}% match)` : ''}</p>
+                      <p className="text-xs text-slate-500">Campaign: {productionPreview.campaignMappings.find((campaign) => campaign.key === mapping.campaignNormalized)?.sourceCampaign || mapping.campaignNormalized}{mapping.suggestion ? ` · Suggested: ${mapping.suggestion.name} (${mapping.suggestion.confidence}% match)` : ''}</p>
                     </div>
                     <select value={selected} onChange={(event) => setProductionBusinessSelections((current) => ({ ...current, [mapping.key]: event.target.value }))} className="w-full rounded-md border bg-white px-3 py-2 text-sm">
                       <option value="">Select business unit...</option>
@@ -1706,7 +1842,7 @@ export default function BulkImportPage() {
             <CardContent className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 {([
-                  ['ALL', 'All'], ['VALID', 'Valid'], ['NEW', 'New'], ['UPDATED', 'Updates'], ['WARNING', 'Warnings'], ['ERROR', 'Errors'],
+                  ['ALL', 'All'], ['VALID', 'Ready'], ['AUTO_MAPPED', 'Auto-Mapped'], ['MAPPING_REQUIRED', 'Mapping Required'], ['NEW', 'New'], ['UPDATED', 'Updates'], ['WARNING', 'Warnings'], ['ERROR', 'Errors'],
                 ] as Array<[ProductionPreviewFilter, string]>).map(([value, label]) => (
                   <Button key={value} type="button" size="sm" variant={productionPreviewFilter === value ? 'default' : 'outline'} onClick={() => setProductionPreviewFilter(value)}>
                     {label}
@@ -1732,7 +1868,7 @@ export default function BulkImportPage() {
                       <td className="p-2 capitalize">{record.metricType.replace(/_/g, ' ')}</td><td className="p-2 text-right">{formatProductionMetric(record.target, record.metricType, record.metricUnit)}</td>
                       {productionPreview.detectedWeeks.map((week) => <td key={week} className="p-2 text-right">{formatProductionMetric(productionWeekValue(record, week), record.metricType, record.metricUnit)}</td>)}
                       <td className="p-2 text-right font-medium">{formatProductionMetric(record.mtd, record.metricType, record.metricUnit)}</td><td className="p-2 text-right">{formatAchievement(record.achievement)}</td><td className="p-2 text-right">{formatAchievement(record.runRate)}</td>
-                      <td className="p-2"><span className={`rounded-full px-2 py-1 font-medium ${statusStyle(record.displayStatus)}`}>{record.displayStatus}</span></td><td className="max-w-72 p-2 text-slate-600">{record.validationMessages.join(' ') || 'Valid'}</td>
+                      <td className="p-2"><span title={record.displayStatus === 'AUTO_MAPPED' ? 'Resolved using a previously saved campaign mapping.' : undefined} className={`rounded-full px-2 py-1 font-medium ${statusStyle(record.displayStatus)}`}>{record.displayStatus.replace('_', ' ')}</span></td><td className="max-w-72 p-2 text-slate-600">{record.validationMessages.join(' ') || (record.displayStatus === 'AUTO_MAPPED' ? `Mapped to ${record.mappedCampaignName || 'OpsView campaign'}` : 'Valid')}{record.displayStatus === 'MAPPING_REQUIRED' && <Button type="button" variant="outline" size="sm" className="mt-2 block" onClick={() => setMappingDialogKey(`${record.campaignNormalized}::${record.businessUnitNormalized}`)}>Map Campaign</Button>}</td>
                     </tr>
                   ))}</tbody>
                 </table>

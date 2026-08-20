@@ -1,6 +1,13 @@
 import type { Campaign, CampaignAlias, BusinessUnit, BusinessUnitAlias } from "@prisma/client";
+import {
+  buildCampaignMappingKey,
+  campaignMappingLookup,
+  type CampaignMappingWithCampaign,
+} from "./campaign-mapping";
 import { normalizeProductionName, productionNameSimilarity } from "./production-normalization";
 import type { ParsedProductionRecord } from "../types/production-monitoring";
+import { findKnownCampaignMapping, findKnownCampaignNameAlias } from "./known-campaign-mappings";
+import { scopedCampaignDepartmentName } from "./campaign-department-policy";
 
 export const MAX_PRODUCTION_WORKBOOK_SIZE = 10 * 1024 * 1024;
 
@@ -24,13 +31,24 @@ type CampaignWithAliases = Campaign & { productionAliases: CampaignAlias[] };
 type BusinessUnitWithAliases = BusinessUnit & { aliases: BusinessUnitAlias[] };
 
 export type CampaignMappingPreview = {
+  key: string;
+  sourceAccount: string;
+  normalizedSourceAccount: string;
+  sourceCampaign: string;
+  normalizedSourceCampaign: string;
   source: string;
   normalizedSource: string;
   matchedCampaignId: string | null;
   matchedCampaignName: string | null;
   suggestion: { id: string; name: string; confidence: number } | null;
-  resolution: "EXACT" | "ALIAS" | "SUGGESTED" | "CREATE";
+  mappingId: string | null;
+  mappingType: string | null;
+  resolution: "EXPLICIT" | "KNOWN_ALIAS" | "EXACT" | "LEGACY_EXACT" | "ALIAS" | "SUGGESTED" | "NEW_DEPARTMENT" | "NEEDS_REVIEW" | "MAPPING_REQUIRED" | "INVALID";
   requiresReview: boolean;
+  invalidReason: string | null;
+  affectedRows: number;
+  confidence: number | null;
+  newDepartmentName: string | null;
 };
 
 export type BusinessUnitMappingPreview = {
@@ -56,32 +74,141 @@ function bestCampaignSuggestion(source: string, campaigns: CampaignWithAliases[]
     .sort((left, right) => right.confidence - left.confidence)[0] ?? null;
 }
 
-export function buildCampaignMappings(records: ParsedProductionRecord[], campaigns: CampaignWithAliases[]) {
+export function buildCampaignMappings(
+  records: ParsedProductionRecord[],
+  campaigns: CampaignWithAliases[],
+  savedMappings: CampaignMappingWithCampaign[] = [],
+) {
+  const savedLookup = campaignMappingLookup(savedMappings);
+  const affectedCounts = new Map<string, number>();
+  for (const record of records) {
+    const key = buildCampaignMappingKey(record.campaignSource, record.businessUnitSource);
+    affectedCounts.set(key, (affectedCounts.get(key) ?? 0) + 1);
+  }
   const sources = Array.from(new Map(records
-    .filter((record) => record.campaignNormalized)
-    .map((record) => [record.campaignNormalized, record.campaignSource])).entries());
-  return sources.map(([normalizedSource, source]): CampaignMappingPreview => {
+    .filter((record) => record.campaignNormalized && record.businessUnitNormalized)
+    .map((record) => [buildCampaignMappingKey(record.campaignSource, record.businessUnitSource), record])).values());
+  return sources.map((record): CampaignMappingPreview => {
+    const key = buildCampaignMappingKey(record.campaignSource, record.businessUnitSource);
+    const common = {
+      key,
+      sourceAccount: record.campaignSource,
+      normalizedSourceAccount: record.campaignNormalized,
+      sourceCampaign: record.businessUnitSource,
+      normalizedSourceCampaign: record.businessUnitNormalized,
+      // Kept for existing consumers while they migrate to the explicit fields.
+      source: record.businessUnitSource,
+      normalizedSource: record.businessUnitNormalized,
+      affectedRows: affectedCounts.get(key) ?? 0,
+      confidence: null,
+      newDepartmentName: null,
+    };
+    const saved = savedLookup.get(key);
+    if (saved?.status === "ACTIVE" && !saved.opsviewCampaign.isActive) return {
+      ...common, matchedCampaignId: null, matchedCampaignName: saved.opsviewCampaign.campaignName,
+      suggestion: null, mappingId: saved.id, mappingType: saved.mappingType, resolution: "INVALID",
+      requiresReview: true, invalidReason: "The saved campaign mapping points to an inactive campaign.",
+    };
+    if (saved?.status === "ACTIVE") return {
+      ...common, matchedCampaignId: saved.opsviewCampaignId, matchedCampaignName: saved.opsviewCampaign.campaignName,
+      suggestion: null, mappingId: saved.id, mappingType: saved.mappingType, resolution: "EXPLICIT",
+      requiresReview: false, invalidReason: null,
+    };
+    const knownRule = findKnownCampaignMapping(record.campaignSource, record.businessUnitSource);
+    if (knownRule) {
+      const targetNormalized = normalizeProductionName(knownRule.targetCampaign);
+      const target = campaigns.find((campaign) =>
+        (campaign.normalizedName || normalizeProductionName(campaign.campaignName)) === targetNormalized
+      );
+      if (target) return {
+        ...common, matchedCampaignId: target.id, matchedCampaignName: target.campaignName,
+        suggestion: null, mappingId: null, mappingType: "SYSTEM_RULE", resolution: "KNOWN_ALIAS",
+        requiresReview: false, invalidReason: null, confidence: 100,
+      };
+      if (knownRule.allowCreate) return {
+        ...common, matchedCampaignId: null, matchedCampaignName: null,
+        suggestion: null, mappingId: null, mappingType: "SYSTEM_RULE", resolution: "NEW_DEPARTMENT",
+        requiresReview: true, invalidReason: null, confidence: 100, newDepartmentName: knownRule.targetCampaign,
+      };
+      return {
+        ...common, matchedCampaignId: null, matchedCampaignName: null,
+        suggestion: null, mappingId: null, mappingType: "SYSTEM_RULE", resolution: "NEEDS_REVIEW",
+        requiresReview: true,
+        invalidReason: `The configured OpsView campaign "${knownRule.targetCampaign}" is unavailable or outside your access.`,
+        confidence: 100,
+      };
+    }
+    const knownNameAlias = findKnownCampaignNameAlias(record.businessUnitSource);
+    if (knownNameAlias) {
+      const targetNormalized = normalizeProductionName(knownNameAlias);
+      const target = campaigns.find((campaign) =>
+        (campaign.normalizedName || normalizeProductionName(campaign.campaignName)) === targetNormalized
+      );
+      if (target) return {
+        ...common, matchedCampaignId: target.id, matchedCampaignName: target.campaignName,
+        suggestion: null, mappingId: null, mappingType: "SYSTEM_RULE", resolution: "KNOWN_ALIAS",
+        requiresReview: false, invalidReason: null, confidence: 100,
+      };
+      return {
+        ...common, matchedCampaignId: null, matchedCampaignName: null,
+        suggestion: null, mappingId: null, mappingType: "SYSTEM_RULE", resolution: "NEEDS_REVIEW",
+        requiresReview: true, invalidReason: `The configured OpsView campaign "${knownNameAlias}" is unavailable or outside your access.`, confidence: 100,
+      };
+    }
     const exact = campaigns.find((campaign) =>
-      (campaign.normalizedName || normalizeProductionName(campaign.campaignName)) === normalizedSource
+      (campaign.normalizedName || normalizeProductionName(campaign.campaignName)) === record.businessUnitNormalized
     );
     if (exact) return {
-      source, normalizedSource, matchedCampaignId: exact.id, matchedCampaignName: exact.campaignName,
-      suggestion: null, resolution: "EXACT", requiresReview: false,
+      ...common, matchedCampaignId: exact.id, matchedCampaignName: exact.campaignName,
+      suggestion: null, mappingId: null, mappingType: "AUTO", resolution: "EXACT", requiresReview: false, invalidReason: null, confidence: 100,
     };
-    const alias = campaigns.find((campaign) => campaign.productionAliases.some((item) => item.normalizedAlias === normalizedSource));
+    const scopedDepartmentName = scopedCampaignDepartmentName(record.campaignSource, record.businessUnitSource);
+    const scopedDepartmentNormalized = normalizeProductionName(scopedDepartmentName);
+    const scopedExact = scopedDepartmentName ? campaigns.find((campaign) =>
+      (campaign.normalizedName || normalizeProductionName(campaign.campaignName)) === scopedDepartmentNormalized
+    ) : null;
+    if (scopedExact) return {
+      ...common, matchedCampaignId: scopedExact.id, matchedCampaignName: scopedExact.campaignName,
+      suggestion: null, mappingId: null, mappingType: "AUTO", resolution: "EXACT", requiresReview: false, invalidReason: null, confidence: 100,
+    };
+    // The account-name match proves that the source campaign belongs to a
+    // known parent, but it must never collapse a distinct child into that
+    // parent. Prepare a canonical scoped department instead.
+    const parentExact = campaigns.find((campaign) =>
+      (campaign.normalizedName || normalizeProductionName(campaign.campaignName)) === record.campaignNormalized
+    );
+    if (parentExact && scopedDepartmentName) return {
+      ...common, matchedCampaignId: null, matchedCampaignName: null,
+      suggestion: null, mappingId: null, mappingType: "AUTO", resolution: "NEW_DEPARTMENT",
+      requiresReview: true, invalidReason: null, confidence: 100, newDepartmentName: scopedDepartmentName,
+    };
+    if (parentExact && record.campaignNormalized === record.businessUnitNormalized) return {
+      ...common, matchedCampaignId: parentExact.id, matchedCampaignName: parentExact.campaignName,
+      suggestion: null, mappingId: null, mappingType: "AUTO", resolution: "EXACT", requiresReview: false, invalidReason: null, confidence: 100,
+    };
+    // Legacy aliases are intentionally suggestions only. They are globally
+    // unique and therefore cannot safely distinguish identical source labels
+    // used by different accounts; confirmation creates the scoped mapping.
+    const alias = campaigns.find((campaign) => campaign.productionAliases.some((item) =>
+      item.normalizedAlias === record.businessUnitNormalized || item.normalizedAlias === record.campaignNormalized
+    ));
     if (alias) return {
-      source, normalizedSource, matchedCampaignId: alias.id, matchedCampaignName: alias.campaignName,
-      suggestion: null, resolution: "ALIAS", requiresReview: false,
+      ...common, matchedCampaignId: null, matchedCampaignName: null,
+      suggestion: { id: alias.id, name: alias.campaignName, confidence: 100 },
+      mappingId: null, mappingType: null, resolution: "SUGGESTED", requiresReview: true, invalidReason: null, confidence: 100,
     };
-    const suggestion = bestCampaignSuggestion(source, campaigns);
+    const suggestion = bestCampaignSuggestion(record.businessUnitSource, campaigns);
     return {
-      source,
-      normalizedSource,
-      matchedCampaignId: suggestion?.id ?? null,
-      matchedCampaignName: suggestion?.name ?? null,
+      ...common,
+      matchedCampaignId: null,
+      matchedCampaignName: null,
       suggestion,
-      resolution: suggestion ? "SUGGESTED" : "CREATE",
-      requiresReview: Boolean(suggestion),
+      mappingId: null,
+      mappingType: null,
+      resolution: suggestion ? "SUGGESTED" : "NEEDS_REVIEW",
+      requiresReview: true,
+      invalidReason: null,
+      confidence: suggestion?.confidence ?? null,
     };
   });
 }
@@ -93,21 +220,21 @@ export function buildBusinessUnitMappings(
 ) {
   const unique = new Map<string, ParsedProductionRecord>();
   for (const record of records) {
-    const key = `${record.campaignNormalized}:${record.businessUnitNormalized}`;
+    const key = buildCampaignMappingKey(record.campaignSource, record.businessUnitSource);
     if (record.campaignNormalized && record.businessUnitNormalized && !unique.has(key)) unique.set(key, record);
   }
   return [...unique.entries()].map(([key, record]): BusinessUnitMappingPreview => {
-    const campaign = campaignMappings.find((item) => item.normalizedSource === record.campaignNormalized);
+    const campaign = campaignMappings.find((item) => item.key === key);
     const candidates = businessUnits.filter((unit) => campaign?.matchedCampaignId && unit.campaignId === campaign.matchedCampaignId);
     const exact = candidates.find((unit) => unit.normalizedName === record.businessUnitNormalized);
     if (exact) return {
-      key, campaignNormalized: record.campaignNormalized, source: record.businessUnitSource,
+      key, campaignNormalized: key, source: record.businessUnitSource,
       normalizedSource: record.businessUnitNormalized, matchedBusinessUnitId: exact.id,
       matchedBusinessUnitName: exact.businessUnitName, suggestion: null, resolution: "EXACT", requiresReview: false,
     };
     const alias = candidates.find((unit) => unit.aliases.some((item) => item.normalizedAlias === record.businessUnitNormalized));
     if (alias) return {
-      key, campaignNormalized: record.campaignNormalized, source: record.businessUnitSource,
+      key, campaignNormalized: key, source: record.businessUnitSource,
       normalizedSource: record.businessUnitNormalized, matchedBusinessUnitId: alias.id,
       matchedBusinessUnitName: alias.businessUnitName, suggestion: null, resolution: "ALIAS", requiresReview: false,
     };
@@ -117,7 +244,7 @@ export function buildBusinessUnitMappings(
       .sort((left, right) => right.confidence - left.confidence)[0] ?? null;
     return {
       key,
-      campaignNormalized: record.campaignNormalized,
+      campaignNormalized: key,
       source: record.businessUnitSource,
       normalizedSource: record.businessUnitNormalized,
       matchedBusinessUnitId: suggestion?.id ?? null,
@@ -129,7 +256,7 @@ export function buildBusinessUnitMappings(
   });
 }
 
-export type CommitMapping = { source: string; targetId: string | null };
+export type CommitMapping = { key: string; source: string; sourceAccount: string; sourceCampaign: string; targetId: string | null; remember: boolean };
 export type BusinessUnitCommitMapping = CommitMapping & { campaignSource: string };
 
 export function parseCommitMappings(value: FormDataEntryValue | null): CommitMapping[] {
@@ -137,9 +264,13 @@ export function parseCommitMappings(value: FormDataEntryValue | null): CommitMap
     const parsed = JSON.parse(String(value ?? "[]"));
     if (!Array.isArray(parsed)) return [];
     return parsed.slice(0, 10_000).map((item) => ({
-      source: normalizeProductionName(item?.source),
+      sourceAccount: normalizeProductionName(item?.sourceAccount ?? item?.account ?? item?.campaignSource ?? item?.source),
+      sourceCampaign: normalizeProductionName(item?.sourceCampaign ?? item?.campaign ?? item?.source),
+      source: normalizeProductionName(item?.sourceCampaign ?? item?.campaign ?? item?.source),
+      key: buildCampaignMappingKey(item?.sourceAccount ?? item?.account ?? item?.campaignSource ?? item?.source, item?.sourceCampaign ?? item?.campaign ?? item?.source),
       targetId: typeof item?.targetId === "string" && item.targetId ? item.targetId : null,
-    })).filter((item) => item.source);
+      remember: item?.remember !== false,
+    })).filter((item) => item.sourceAccount && item.sourceCampaign);
   } catch {
     return [];
   }
@@ -150,10 +281,14 @@ export function parseBusinessUnitCommitMappings(value: FormDataEntryValue | null
     const parsed = JSON.parse(String(value ?? "[]"));
     if (!Array.isArray(parsed)) return [];
     return parsed.slice(0, 10_000).map((item) => ({
-      campaignSource: normalizeProductionName(item?.campaignSource),
-      source: normalizeProductionName(item?.source),
+      campaignSource: String(item?.campaignSource ?? ""),
+      sourceAccount: normalizeProductionName(item?.sourceAccount ?? item?.campaignSource),
+      sourceCampaign: normalizeProductionName(item?.sourceCampaign ?? item?.source),
+      source: normalizeProductionName(item?.sourceCampaign ?? item?.source),
+      key: buildCampaignMappingKey(item?.sourceAccount ?? item?.campaignSource, item?.sourceCampaign ?? item?.source),
       targetId: typeof item?.targetId === "string" && item.targetId ? item.targetId : null,
-    })).filter((item) => item.campaignSource && item.source);
+      remember: false,
+    })).filter((item) => item.sourceAccount && item.sourceCampaign);
   } catch {
     return [];
   }
