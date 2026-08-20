@@ -38,11 +38,11 @@ function DataParticle({ particle }: { particle: Particle }) {
   return (
     <span className={`login-data-particle absolute ${particle.className}`}>
       {particle.kind === "plus" ? (
-        <span className="text-[10px] font-light leading-none text-blue-200/30">+</span>
+        <span className="text-xs font-light leading-none text-blue-100/80">+</span>
       ) : particle.kind === "line" ? (
-        <span className="block h-px w-3 bg-blue-200/20" />
+        <span className="block h-px w-4 bg-blue-100/70 shadow-[0_0_6px_rgba(147,197,253,0.28)]" />
       ) : (
-        <span className="block h-1 w-1 rounded-full border border-blue-200/30 bg-blue-300/15 shadow-[0_0_8px_rgba(96,165,250,0.18)]" />
+        <span className="block h-1.5 w-1.5 rounded-full border border-blue-100/70 bg-blue-300/55 shadow-[0_0_10px_rgba(96,165,250,0.38)]" />
       )}
     </span>
   );
@@ -86,8 +86,8 @@ export function LoginAnimatedBackground({ compact = false }: { compact?: boolean
     };
 
     const handlePointerMove = (event: PointerEvent) => {
-      targetX = ((event.clientX / window.innerWidth) - 0.5) * 12;
-      targetY = ((event.clientY / window.innerHeight) - 0.5) * 8;
+      targetX = ((event.clientX / window.innerWidth) - 0.5) * 20;
+      targetY = ((event.clientY / window.innerHeight) - 0.5) * 14;
       scheduleRender();
     };
 
@@ -113,7 +113,9 @@ export function LoginAnimatedBackground({ compact = false }: { compact?: boolean
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-      <div className={`login-grid-motion absolute inset-0 ${compact ? "opacity-[0.07] [background-image:linear-gradient(rgba(64,148,217,0.2)_1px,transparent_1px),linear-gradient(90deg,rgba(64,148,217,0.2)_1px,transparent_1px)] [background-size:44px_44px]" : "opacity-[0.08] [background-image:linear-gradient(rgba(255,255,255,0.12)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.12)_1px,transparent_1px)] [background-size:44px_44px]"}`} />
+      <div className={`login-grid-motion absolute inset-0 ${compact ? "opacity-[0.08] [background-image:linear-gradient(rgba(64,148,217,0.5)_1px,transparent_1px),linear-gradient(90deg,rgba(64,148,217,0.5)_1px,transparent_1px)] [background-size:44px_44px]" : "opacity-10 [background-image:linear-gradient(rgba(255,255,255,0.55)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.55)_1px,transparent_1px)] [background-size:44px_44px]"}`} />
+
+      <div className="login-data-sweep absolute -bottom-[15%] -left-[30%] top-[-15%] w-[18%] bg-gradient-to-r from-transparent via-blue-300/[0.055] to-transparent blur-2xl" />
 
       <div ref={parallaxRef} className="login-parallax-layer absolute inset-0">
         {compact ? (
@@ -135,6 +137,9 @@ export function LoginAnimatedBackground({ compact = false }: { compact?: boolean
           <path d="M8 18 L24 11 L39 22" />
           <path d="M69 14 L84 31 L73 47" />
           <path d="M14 70 L32 78 L49 67" />
+          <path className="login-connection-trace" d="M8 18 L24 11 L39 22" />
+          <path className="login-connection-trace" d="M69 14 L84 31 L73 47" />
+          <path className="login-connection-trace" d="M14 70 L32 78 L49 67" />
         </svg>
       )}
 
