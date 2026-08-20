@@ -57,3 +57,227 @@
     @apply bg-background text-foreground;
   }
 }
+
+@keyframes login-enter-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 16px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes login-card-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(20px, 0, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes login-card-success {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0) scale(0.98);
+  }
+}
+
+@keyframes login-grid-drift {
+  to {
+    background-position: 88px 88px;
+  }
+}
+
+@keyframes login-glow-drift {
+  0%, 100% {
+    opacity: 0.65;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: translate3d(22px, -16px, 0) scale(1.06);
+  }
+}
+
+@keyframes login-particle-drift {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0) scale(0.9);
+  }
+  18% {
+    opacity: 0.14;
+  }
+  72% {
+    opacity: 0.08;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--particle-x, 24px), var(--particle-y, -48px), 0) scale(1.04);
+  }
+}
+
+@keyframes login-connection-pulse {
+  0%, 100% { opacity: 0.16; }
+  50% { opacity: 0.32; }
+}
+
+@keyframes login-badge-breathe {
+  0%, 100% {
+    opacity: 0.62;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.14);
+  }
+}
+
+@keyframes login-icon-pop {
+  from {
+    opacity: 0.5;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes login-error-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -4px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes login-error-shake {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  20% { transform: translate3d(-4px, 0, 0); }
+  40% { transform: translate3d(4px, 0, 0); }
+  60% { transform: translate3d(-2px, 0, 0); }
+  80% { transform: translate3d(2px, 0, 0); }
+}
+
+@keyframes login-status-pulse {
+  0%, 100% {
+    opacity: 0.65;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.07);
+  }
+}
+
+@layer components {
+  .login-enter-up {
+    opacity: 0;
+    animation: login-enter-up 560ms cubic-bezier(0.22, 1, 0.36, 1) var(--login-delay, 0ms) both;
+  }
+
+  .login-card-enter {
+    opacity: 0;
+    animation: login-card-enter 620ms cubic-bezier(0.22, 1, 0.36, 1) 150ms both;
+  }
+
+  .login-card-success {
+    animation: login-card-success 320ms ease-in 220ms forwards;
+  }
+
+  .login-grid-motion {
+    animation: login-grid-drift 36s linear infinite;
+  }
+
+  .login-glow-motion {
+    animation: login-glow-drift 24s ease-in-out infinite;
+  }
+
+  .login-parallax-layer {
+    transform: translate3d(var(--login-parallax-x, 0), var(--login-parallax-y, 0), 0);
+  }
+
+  .login-data-particle {
+    opacity: 0;
+    animation: login-particle-drift var(--particle-duration, 22s) linear var(--particle-delay, 0s) infinite;
+  }
+
+  .login-connection-lines {
+    animation: login-connection-pulse 8s ease-in-out infinite;
+  }
+
+  .login-connection-lines path {
+    fill: none;
+    stroke: rgba(125, 211, 252, 0.14);
+    stroke-width: 1px;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .login-badge-pulse {
+    animation: login-badge-breathe 2.8s ease-in-out infinite;
+  }
+
+  .login-icon-pop {
+    animation: login-icon-pop 160ms ease-out both;
+  }
+
+  .login-error-enter {
+    animation: login-error-enter 200ms ease-out both;
+  }
+
+  .login-error-shake {
+    animation: login-error-shake 280ms ease-in-out;
+  }
+
+  .login-status-pulse {
+    animation: login-status-pulse 3.2s ease-in-out infinite;
+  }
+}
+
+@media (min-width: 1024px) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .login-parallax-layer {
+    will-change: transform;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-enter-up,
+  .login-card-enter,
+  .login-card-success,
+  .login-icon-pop,
+  .login-error-enter,
+  .login-error-shake {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+
+  .login-grid-motion,
+  .login-glow-motion,
+  .login-status-pulse,
+  .login-badge-pulse {
+    animation: none !important;
+    transform: none;
+  }
+
+  .login-parallax-layer {
+    transform: none !important;
+  }
+
+  .login-data-particle,
+  .login-connection-lines {
+    display: none;
+  }
+}
