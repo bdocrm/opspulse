@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { useToast } from "@/components/toast-provider";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CampaignMultiSelect } from "@/components/campaign-multi-select";
+import { PageSkeleton } from "@/components/skeletons";
 import { Trash2, Edit2, Plus, Search, AlertTriangle, Key } from "lucide-react";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -423,7 +424,7 @@ export default function ManageUsersPage() {
     filteredUsers.length > 0 && filteredUsers.every((u) => selectedUserIds.has(u.id));
 
   if (status === "loading") {
-    return <div className="p-6">Loading...</div>;
+    return <PageSkeleton label="Loading user management" />;
   }
 
   return (

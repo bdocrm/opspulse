@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Card } from "@/components/ui/card";
 import { PageTitle } from "@/components/layout/page-title";
+import { PageSkeleton } from "@/components/skeletons";
 
 interface Campaign {
   id: string;
@@ -162,11 +163,7 @@ export default function CampaignPerformanceIndexPage() {
   }, [campaigns]);
 
   if (loading)
-    return (
-      <div className="flex justify-center items-center min-h-screen">
-        <div className="text-lg">Loading campaigns...</div>
-      </div>
-    );
+    return <PageSkeleton label="Loading campaigns" />;
 
   if (error)
     return (

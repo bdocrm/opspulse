@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageTitle } from "@/components/layout/page-title";
+import { PageSkeleton } from "@/components/skeletons";
 import { AlertCircle, CheckCircle } from "lucide-react";
 
 interface Agent {
@@ -146,7 +147,7 @@ export default function ManageAgentsPage() {
   };
 
   if (status === "loading" || loading) {
-    return <div className="p-8">Loading...</div>;
+    return <PageSkeleton label="Loading agent management" />;
   }
 
   return (

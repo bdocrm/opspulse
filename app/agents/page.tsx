@@ -14,6 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { DashboardSkeleton, ListSkeleton, TableSkeleton } from "@/components/skeletons";
 import {
   Table,
   TableBody,
@@ -378,11 +379,7 @@ export default function AgentsPage() {
 
   // Loading state
   if (status === 'loading') {
-    return (
-      <div className="flex items-center justify-center min-h-[50vh]">
-        <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <DashboardSkeleton label="Loading agents dashboard" />;
   }
 
   // COLLECTOR VIEW - Full Agent Management
@@ -463,9 +460,7 @@ export default function AgentsPage() {
           </CardHeader>
           <CardContent>
             {loadingAgents ? (
-              <div className="flex items-center justify-center py-12">
-                <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
-              </div>
+              <ListSkeleton items={5} label="Loading agents" />
             ) : filteredAgents.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
                 <Users className="w-12 h-12 mx-auto mb-3 opacity-50" />
@@ -665,7 +660,9 @@ export default function AgentsPage() {
               <TableBody>
                 {analyticsLoading ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Loading...</TableCell>
+                    <TableCell colSpan={7} className="py-6">
+                      <TableSkeleton rows={5} columns={7} label="Loading agent leaderboard" />
+                    </TableCell>
                   </TableRow>
                 ) : analyticsAgents.length === 0 ? (
                   <TableRow>

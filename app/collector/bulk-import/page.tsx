@@ -10,6 +10,7 @@ import { PageTitle } from '@/components/layout/page-title';
 import { SortableDateHeader, compareDateValues, type DateSortDirection } from '@/components/sortable-date-header';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { CampaignMultiSelect } from '@/components/campaign-multi-select';
+import { LoadingState, PageSkeleton } from '@/components/skeletons';
 import {
   Dialog,
   DialogContent,
@@ -623,7 +624,7 @@ export default function BulkImportPage() {
     }
   }
 
-  if (status === 'loading') return <div className="p-6">Loading...</div>;
+  if (status === 'loading') return <PageSkeleton label="Loading bulk import" />;
 
   const addFiles = (incoming: File[]) => {
     const accepted: File[] = [];
@@ -1734,8 +1735,10 @@ export default function BulkImportPage() {
       <div className="flex min-h-64 items-center justify-center p-6">
         <div className="w-full max-w-xl space-y-5 text-center text-slate-600">
           <ImportProgressSteps step={step} />
-          <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto" />
-          <p className="text-sm">Scanning workbook structure and validating data...</p>
+          <LoadingState
+            className="min-h-0 border-0 bg-transparent py-4"
+            label="Scanning workbook structure and validating data…"
+          />
         </div>
       </div>
     );
@@ -2547,8 +2550,10 @@ export default function BulkImportPage() {
       <div className="flex min-h-64 items-center justify-center p-6">
         <div className="w-full max-w-xl space-y-5 text-center text-slate-600">
           <ImportProgressSteps step={step} />
-          <div className="animate-spin h-8 w-8 border-4 border-green-500 border-t-transparent rounded-full mx-auto" />
-          <p className="text-sm">{productionPreview ? 'Importing Production Monitoring records...' : 'Creating agents and importing records...'}</p>
+          <LoadingState
+            className="min-h-0 border-0 bg-transparent py-4"
+            label={productionPreview ? 'Importing Production Monitoring records…' : 'Creating agents and importing records…'}
+          />
           {productionPreview && <p className="text-xs text-slate-500">Validating on the server · Saving valid rows · Finalizing the audit trail</p>}
         </div>
       </div>

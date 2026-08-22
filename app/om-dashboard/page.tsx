@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageTitle } from '@/components/layout/page-title';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
+import { DashboardSkeleton } from '@/components/skeletons';
 import { Download, RefreshCw } from 'lucide-react';
 
 interface DashboardData {
@@ -144,7 +145,7 @@ export default function OmDashboardPage() {
   };
 
   if (status === 'loading' || isLoading) {
-    return <div className="p-6">Loading...</div>;
+    return <DashboardSkeleton label="Loading operations dashboard" />;
   }
 
   if (!dashboardData || !dashboardData.agents) {

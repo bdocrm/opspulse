@@ -10,6 +10,7 @@ import { CampaignBarChart } from "@/components/charts/campaign-bar-chart";
 import { DailyLineChart } from "@/components/charts/daily-line-chart";
 import { KpiCard } from "@/components/kpi-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ListSkeleton, TableSkeleton } from "@/components/skeletons";
 import {
   Table,
   TableBody,
@@ -217,7 +218,9 @@ export default function CampaignsPage() {
                   <TableBody>
                     {isLoading ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Loading...</TableCell>
+                        <TableCell colSpan={6} className="py-6">
+                          <TableSkeleton rows={5} columns={6} label="Loading campaign agents" />
+                        </TableCell>
                       </TableRow>
                     ) : agentBreakdown.length === 0 ? (
                       <TableRow>
@@ -266,7 +269,7 @@ export default function CampaignsPage() {
             </CardHeader>
             <CardContent>
               {isLoading ? (
-                <p className="text-center py-8 text-muted-foreground text-sm">Loading...</p>
+                <ListSkeleton items={4} label="Loading production entries" />
               ) : productionEntries.length === 0 ? (
                 <p className="text-center py-8 text-muted-foreground text-sm">No production entries for this period</p>
               ) : (

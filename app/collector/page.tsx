@@ -18,6 +18,7 @@ import { DailyLineChart } from '@/components/charts/daily-line-chart';
 import { MonthMultiSelect } from '@/components/month-multi-select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
+import { DashboardSkeleton } from '@/components/skeletons';
 import {
   Plus, Trash2, Users, UserCheck, UserX, ClipboardList,
   TrendingUp, Target, ChevronRight,
@@ -1173,11 +1174,7 @@ export default function CollectorDashboard() {
   const nonEmptyCampaigns = campaigns.filter((c) => c.agents.length > 0);
 
   if (status === 'loading') {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <p className="text-muted-foreground">Loading...</p>
-      </div>
-    );
+    return <DashboardSkeleton label="Loading collector dashboard" />;
   }
 
   const campaignLabel =

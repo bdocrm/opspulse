@@ -27,6 +27,7 @@ import { Users, Target, TrendingUp, Activity, Search, Download, Eye } from "luci
 import { usePagination } from "@/hooks/use-pagination";
 import { PaginationControls } from "@/components/pagination-controls";
 import { ReportPeriodSelector } from "@/components/report-period-selector";
+import { DashboardSkeleton } from "@/components/skeletons";
 
 interface AgentSummary {
   id: string;
@@ -116,7 +117,7 @@ export default function AgentSummariesPage() {
   }, [filteredAgents.length]);
 
   if (status === 'loading' || !session) {
-    return <div>Loading...</div>;
+    return <DashboardSkeleton label="Loading agent summaries" />;
   }
 
   if (session.user.role !== 'CEO') {

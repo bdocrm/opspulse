@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageTitle } from "@/components/layout/page-title";
 import { useToast } from "@/components/toast-provider";
+import { FormSkeleton } from "@/components/skeletons";
 import { AlertTriangle } from "lucide-react";
 
 export default function CleanupDatabasePage() {
@@ -22,7 +23,7 @@ export default function CleanupDatabasePage() {
 
   // Check authorization
   if (status === "loading") {
-    return <div className="p-6">Loading...</div>;
+    return <FormSkeleton label="Loading database cleanup tools" />;
   }
 
   if (!session?.user || (session.user as any).role !== "CEO") {

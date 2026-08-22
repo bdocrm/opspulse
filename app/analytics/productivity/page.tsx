@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Activity, Search, Download } from "lucide-react";
 import { ReportPeriodSelector } from "@/components/report-period-selector";
+import { TableSkeleton } from "@/components/skeletons";
 
 interface ProductivityMetric {
   agentId: string;
@@ -222,8 +223,8 @@ export default function ProductivityAnalyticsPage() {
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
-                      Loading productivity data...
+                    <TableCell colSpan={10} className="py-6">
+                      <TableSkeleton rows={6} columns={10} label="Loading productivity data" />
                     </TableCell>
                   </TableRow>
                 ) : filteredMetrics.length === 0 ? (

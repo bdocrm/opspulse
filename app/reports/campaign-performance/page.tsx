@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { PageTitle } from '@/components/layout/page-title';
+import { PageSkeleton } from '@/components/skeletons';
 
 interface Campaign {
   id: string;
@@ -912,11 +913,7 @@ function CampaignPerformancePageContent() {
   }, [campaignId, year, month, allMonths]);
 
   if (loading)
-    return (
-      <div className="flex justify-center items-center min-h-screen">
-        <div className="text-lg">Loading...</div>
-      </div>
-    );
+    return <PageSkeleton label="Loading campaign performance" />;
 
   if (error)
     return (
@@ -932,11 +929,7 @@ function CampaignPerformancePageContent() {
   // Show campaign selector if no campaignId
   if (!campaignId) {
     if (campaignsLoading) {
-      return (
-        <div className="flex min-h-screen items-center justify-center">
-          <div className="text-lg">Loading imported campaign reports...</div>
-        </div>
-      );
+      return <PageSkeleton label="Loading imported campaign reports" />;
     }
 
     return (
@@ -993,9 +986,7 @@ export default function CampaignPerformancePage() {
   return (
     <Suspense
       fallback={
-        <div className="flex justify-center items-center min-h-screen">
-          <div className="text-lg">Loading...</div>
-        </div>
+        <PageSkeleton label="Loading campaign performance" />
       }
     >
       <CampaignPerformancePageContent />

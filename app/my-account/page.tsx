@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/toast-provider";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { FormSkeleton } from "@/components/skeletons";
 import { Key, Save } from "lucide-react";
 
 interface UserProfile {
@@ -176,7 +177,7 @@ export default function MyAccountPage() {
   const canChangePassword = profile?.role === "CEO" || profile?.role === "COLLECTOR";
 
   if (status === "loading" || loading) {
-    return <div className="p-6">Loading...</div>;
+    return <FormSkeleton label="Loading account settings" />;
   }
 
   if (!profile) {

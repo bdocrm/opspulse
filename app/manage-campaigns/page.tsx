@@ -14,6 +14,7 @@ import { useToast } from "@/components/toast-provider";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { PageTitle } from "@/components/layout/page-title";
 import { SortableDateHeader, compareDateValues, type DateSortDirection } from "@/components/sortable-date-header";
+import { PageSkeleton } from "@/components/skeletons";
 import { Trash2, Edit2, Plus } from "lucide-react";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -207,7 +208,7 @@ export default function ManageCampaignsPage() {
   };
 
   if (status === "loading") {
-    return <div className="p-6">Loading...</div>;
+    return <PageSkeleton label="Loading campaign management" />;
   }
 
   return (
