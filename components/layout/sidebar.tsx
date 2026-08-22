@@ -141,21 +141,29 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   };
 
   const renderLink = ({ href, label, icon: Icon }: SidebarLink) => {
-    const active = pathname.startsWith(href);
+    const active = pathname === href || (href !== "/collector" && pathname.startsWith(`${href}/`));
     return (
       <Link
         key={href}
         href={href}
         onClick={onClose}
         className={cn(
-          "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+          "group relative flex items-center gap-3 overflow-hidden rounded-md px-3 py-2 text-sm font-medium transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           active
             ? "bg-primary/10 text-primary"
             : "text-muted-foreground hover:bg-accent hover:text-foreground"
         )}
+        aria-current={active ? "page" : undefined}
       >
-        <Icon className="h-5 w-5" />
-        {label}
+        <span
+          aria-hidden="true"
+          className={cn(
+            "absolute inset-y-1 left-0 w-0.5 origin-center rounded-r-full bg-primary transition-transform duration-200 ease-out",
+            active ? "scale-y-100" : "scale-y-0"
+          )}
+        />
+        <Icon className="h-5 w-5 transition-colors duration-200" />
+        <span className="transition-colors duration-200">{label}</span>
       </Link>
     );
   };
