@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import {
@@ -346,18 +348,6 @@ export async function GET(req: NextRequest) {
     const avgAchievement = combinedMetrics.achievementPercentage;
     const avgRunRate = combinedMetrics.projectedRunRate;
     const avgRRAchievement = combinedMetrics.runRateAchievementPercentage;
-    console.info("dashboard_run_rate_calculated", {
-      campaignId: campaignId ?? "all",
-      year,
-      month,
-      campaignCount: campaignsWithData.length,
-      mtdProduction: totalMTD,
-      teamGoal: combinedMetrics.goal,
-      projectedRunRate: avgRunRate,
-      runRateAchievementPercentage: avgRRAchievement,
-      dataStatus: combinedMetrics.dataStatus,
-    });
-
     // 7. Campaign achievement chart
     const campaignsChart = campaignTable.map((c) => ({
       name: c.campaignName,

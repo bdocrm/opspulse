@@ -9,6 +9,7 @@ import {
   Legend,
 } from "recharts";
 import { useReducedMotion } from "@/hooks/use-reduced-motion";
+import { formatChartNumber } from "@/components/charts/chart-formatters";
 
 const COLORS = ["#6366f1", "#22c55e", "#eab308", "#ef4444", "#3b82f6", "#f97316"];
 
@@ -26,10 +27,6 @@ interface DistributionPieChartProps {
   }[];
 }
 
-function formatNumber(value: number | null | undefined) {
-  return Number(value ?? 0).toLocaleString();
-}
-
 function ExecutiveTooltip({ active, payload }: any) {
   if (!active || !payload?.length) return null;
   const row = payload[0].payload;
@@ -39,8 +36,8 @@ function ExecutiveTooltip({ active, payload }: any) {
       <p className="mb-2 font-semibold text-foreground">{row.name}</p>
       <div className="space-y-1 text-muted-foreground">
         <p>Name: <span className="font-medium text-foreground">{row.name}</span></p>
-        <p>Goal: <span className="font-medium text-foreground">{row.goal == null ? "N/A" : formatNumber(row.goal)}</span></p>
-        <p>Actual: <span className="font-medium text-foreground">{formatNumber(row.actual ?? row.value)}</span></p>
+        <p>Goal: <span className="font-medium text-foreground">{row.goal == null ? "N/A" : formatChartNumber(row.goal)}</span></p>
+        <p>Actual: <span className="font-medium text-foreground">{formatChartNumber(row.actual ?? row.value)}</span></p>
         <p>Achievement %: <span className="font-medium text-foreground">{row.achievement == null ? "N/A" : `${Number(row.achievement).toFixed(1)}%`}</span></p>
         <p>Rank: <span className="font-medium text-foreground">{row.rank ?? "N/A"}</span></p>
         <p>Status: <span className="font-medium text-foreground">{row.status ?? "N/A"}</span></p>

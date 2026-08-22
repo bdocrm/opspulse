@@ -174,7 +174,7 @@ export default function DataEntryPage() {
 
   // Monthly production has no single attendance day, so use the reporting
   // month's canonical first day for the existing attendance controls.
-  const { data: attendanceData, mutate: mutateAttendance } = useSWR(
+  const { data: attendanceData } = useSWR(
     session?.user && month && selectedCampaignId
       ? `/api/collectors/attendance?date=${monthDateRange.start}&campaignId=${selectedCampaignId}`
       : null,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import useSWR from "swr";
 
 interface ReportPeriodSelectorProps {
@@ -21,7 +21,10 @@ export function ReportPeriodSelector({
   className = "h-10 min-w-[180px] rounded-md border border-input bg-background px-3 py-2 text-sm",
 }: ReportPeriodSelectorProps) {
   const { data } = useSWR("/api/reports/campaign-performance/periods", fetcher);
-  const periods: Array<{ year: number; month: number }> = data?.periods ?? [];
+  const periods = useMemo<Array<{ year: number; month: number }>>(
+    () => data?.periods ?? [],
+    [data?.periods]
+  );
   const value = allMonths ? "all" : `${year}-${String(month).padStart(2, "0")}`;
 
   useEffect(() => {

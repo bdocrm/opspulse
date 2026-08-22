@@ -1,8 +1,7 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { PageTitle } from "@/components/layout/page-title";
 import { PeriodFilter } from "@/components/layout/period-filter";
@@ -29,7 +28,7 @@ import { cn } from "@/lib/utils";
 import type { FilterPeriod } from "@/utils/kpi";
 import { 
   Users, Trophy, TrendingUp, Activity, Plus, Trash2, Edit2, 
-  Target, UserCheck, UserX, Search, X, Save, AlertCircle, 
+  UserCheck, UserX, Search, X, Save, AlertCircle,
   CheckCircle2, RefreshCw, Download
 } from "lucide-react";
 
@@ -129,8 +128,7 @@ function AgentModal({
 // Main Agents Page
 export default function AgentsPage() {
   const { data: session, status } = useSession();
-  const router = useRouter();
-  const user = session?.user as any;
+  const user = session?.user;
   const isCollector = user?.role === 'COLLECTOR';
 
   // For MANAGER/ADMIN: Use existing analytics
@@ -156,7 +154,7 @@ export default function AgentsPage() {
   );
 
   // Fetch today's production for summary
-  const { data: productionData, isLoading: loadingProduction } = useSWR(
+  const { data: productionData } = useSWR(
     isCollector && campaignId ? `/api/collectors/production?date=${today}` : null,
     fetcher,
     { refreshInterval: 30000 }
@@ -169,11 +167,12 @@ export default function AgentsPage() {
     { refreshInterval: 30000 }
   );
 
-  const agents: Agent[] = isCollector 
-    ? (Array.isArray(agentsData) ? agentsData : (agentsData?.data || []))
-    : [];
-  
-  const savedEntries = productionData?.entries || [];
+  const agents = useMemo<Agent[]>(
+    () => isCollector ? (Array.isArray(agentsData) ? agentsData : agentsData?.data ?? []) : [],
+    [agentsData, isCollector]
+  );
+
+  const savedEntries = useMemo(() => productionData?.entries ?? [], [productionData?.entries]);
 
   // Per-agent production
   const agentProduction = useMemo(() => {

@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { kpiColorHex } from "@/utils/kpi";
 import { useReducedMotion } from "@/hooks/use-reduced-motion";
+import { formatChartNumber } from "@/components/charts/chart-formatters";
 
 interface CampaignBarChartProps {
   data: {
@@ -25,10 +26,6 @@ interface CampaignBarChartProps {
     recommendation?: string;
     hasData?: boolean;
   }[];
-}
-
-function formatNumber(value: number | null | undefined) {
-  return Number(value ?? 0).toLocaleString();
 }
 
 function formatAchievement(value: number | string | null | undefined) {
@@ -45,8 +42,8 @@ function ExecutiveTooltip({ active, payload }: any) {
       <p className="mb-2 font-semibold text-foreground">{row.name}</p>
       <div className="space-y-1 text-muted-foreground">
         <p>Name: <span className="font-medium text-foreground">{row.name}</span></p>
-        <p>Goal: <span className="font-medium text-foreground">{row.goal == null ? "N/A" : formatNumber(row.goal)}</span></p>
-        <p>Actual: <span className="font-medium text-foreground">{hasData && row.actual != null ? formatNumber(row.actual) : "No data"}</span></p>
+        <p>Goal: <span className="font-medium text-foreground">{row.goal == null ? "N/A" : formatChartNumber(row.goal)}</span></p>
+        <p>Actual: <span className="font-medium text-foreground">{hasData && row.actual != null ? formatChartNumber(row.actual) : "No data"}</span></p>
         <p>Achievement %: <span className="font-medium text-foreground">{hasData ? `${Number(row.achievement ?? 0).toFixed(1)}%` : "N/A"}</span></p>
         <p>Rank: <span className="font-medium text-foreground">{row.rank ?? "N/A"}</span></p>
         <p>Status: <span className="font-medium text-foreground">{row.status ?? "N/A"}</span></p>

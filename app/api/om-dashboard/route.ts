@@ -1,10 +1,10 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { prisma } from '@/lib/prisma';
 import {
-  computeMTD,
   achievementPct,
-  daysLapsed,
   runRate,
   rrAchievementPct,
   groupByWeek,

@@ -2,9 +2,9 @@
 
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import useSWR from 'swr';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { PageTitle } from '@/components/layout/page-title';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
@@ -45,14 +45,14 @@ export default function OmDashboardPage() {
     if (status === 'unauthenticated') {
       router.push('/login');
     } else if (status === 'authenticated') {
-      const user = session?.user as any;
+      const user = session?.user;
       if (user?.role !== 'OM') {
         router.push('/dashboard');
       }
     }
   }, [status, session, router]);
 
-  const campaignId = (session?.user as any)?.campaignId;
+  const campaignId = session?.user?.campaignId;
 
   const { data, mutate, isLoading } = useSWR(
     campaignId && month && year
@@ -89,8 +89,6 @@ export default function OmDashboardPage() {
     month: 'long',
     year: 'numeric',
   });
-
-  const getWeekLabel = (weekNum: number) => `W${weekNum}`;
 
   const exportToCSV = () => {
     if (!dashboardData || !dashboardData.agents || dashboardData.agents.length === 0) return;

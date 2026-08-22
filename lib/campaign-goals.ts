@@ -1,10 +1,5 @@
 import { prisma } from '@/lib/prisma';
 
-export const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-];
-
 /**
  * Ensures the per-month goal table exists, so the feature works on databases
  * where `prisma db push` for this model hasn't been run yet (matches the

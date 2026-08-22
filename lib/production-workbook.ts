@@ -204,7 +204,6 @@ function sanitizedHash(record: Omit<ParsedProductionRecord, "rowKey" | "sourceHa
 function parseSheet(
   sheet: XLSX.WorkSheet,
   sheetName: string,
-  fileName: string,
   fallback?: Period
 ) {
   const rows = sheetMatrix(sheet);
@@ -336,7 +335,7 @@ export function parseProductionWorkbook(
   let managerColumnFound = false;
   const detectedWeeks = new Set<number>();
   for (const sheetName of workbook.SheetNames) {
-    const parsed = parseSheet(workbook.Sheets[sheetName], sheetName, fileName, fallback);
+    const parsed = parseSheet(workbook.Sheets[sheetName], sheetName, fallback);
     records.push(...parsed.records);
     managerColumnFound ||= parsed.excludedManagerColumn;
     parsed.detectedWeeks.forEach((week) => detectedWeeks.add(week));

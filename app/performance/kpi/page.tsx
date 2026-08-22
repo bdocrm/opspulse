@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
+import type { CampaignOption } from "@/types/campaign";
 import useSWR from "swr";
 import { ArrowDownRight, ArrowUpRight, BarChart3, Search, Users } from "lucide-react";
 import { PageTitle } from "@/components/layout/page-title";
@@ -24,7 +25,6 @@ const fetcher = async (url: string) => {
   return data;
 };
 
-type Campaign = { id: string; campaignName: string };
 type MetricSummary = { actual: number | null; goal: number | null };
 type Summary = {
   totalCollectors: number;
@@ -87,8 +87,8 @@ export default function KpiMonitoringPage() {
   const canImport = ["CEO", "OM", "COLLECTOR"].includes(userRole || "");
 
   useEffect(() => { if (sessionStatus === "unauthenticated") router.replace("/login"); }, [router, sessionStatus]);
-  const { data: campaignData } = useSWR<{ campaigns: Campaign[] }>(sessionStatus === "authenticated" ? "/api/kpi/campaigns" : null, fetcher);
-  const campaigns = campaignData?.campaigns ?? [];
+  const { data: campaignData } = useSWR<{ campaigns: CampaignOption[] }>(sessionStatus === "authenticated" ? "/api/kpi/campaigns" : null, fetcher);
+  const campaigns = useMemo(() => campaignData?.campaigns ?? [], [campaignData?.campaigns]);
   useEffect(() => {
     if (!campaignId && campaigns.length) setCampaignId(campaigns[0].id);
   }, [campaignId, campaigns]);

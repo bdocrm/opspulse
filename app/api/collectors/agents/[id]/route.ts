@@ -9,7 +9,7 @@ interface Params {
 
 // DELETE: Remove an agent
 export async function DELETE(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Params }
 ) {
   try {

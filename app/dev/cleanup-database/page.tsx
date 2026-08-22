@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -13,7 +12,6 @@ import { AlertTriangle } from "lucide-react";
 
 export default function CleanupDatabasePage() {
   const { data: session, status } = useSession();
-  const router = useRouter();
   const { addToast } = useToast();
 
   const [confirmed, setConfirmed] = useState(false);
@@ -26,7 +24,7 @@ export default function CleanupDatabasePage() {
     return <FormSkeleton label="Loading database cleanup tools" />;
   }
 
-  if (!session?.user || (session.user as any).role !== "CEO") {
+  if (!session?.user || session.user.role !== "CEO") {
     return (
       <div className="p-6">
         <div className="border border-red-200 bg-red-50 p-4 rounded-lg flex gap-2">

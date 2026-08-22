@@ -383,7 +383,7 @@ export async function PATCH(
 
 // ─── DELETE /api/campaigns/[id] ──────────────────────────────────────────────
 export async function DELETE(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
@@ -391,7 +391,7 @@ export async function DELETE(
     const { authOptions } = await import("@/lib/auth");
 
     const session = await getServerSession(authOptions);
-    if (!session?.user || (session.user as any).role !== "CEO") {
+    if (!session?.user || session.user.role !== "CEO") {
       return NextResponse.json({ error: "Unauthorized: CEO access required" }, { status: 403 });
     }
 

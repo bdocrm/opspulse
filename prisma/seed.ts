@@ -14,7 +14,7 @@ async function main() {
   // Create users only if they don't exist (idempotent)
   const passwordHash = await bcrypt.hash("password123", 12);
 
-  const admin = await prisma.user.upsert({
+  await prisma.user.upsert({
     where: { email: "admin@opsview.com" },
     update: {},
     create: {
@@ -25,7 +25,7 @@ async function main() {
     },
   });
 
-  const manager = await prisma.user.upsert({
+  await prisma.user.upsert({
     where: { email: "manager@opsview.com" },
     update: {},
     create: {
@@ -214,14 +214,8 @@ async function main() {
   console.log(`   - ${campaigns.length} campaigns`);
   console.log(`   - ${salesData.length} daily sales records`);
   console.log("");
-  console.log("📧 Login credentials:");
-  console.log("   Admin:     admin@opsview.com / password123");
-  console.log("   Manager:   manager@opsview.com / password123");
-  console.log("   Agent:     john.smith@opsview.com / password123");
-  console.log("   Collector: allianzsynergia.tgermedia@gmail.com / password123 (all 17 campaigns)");
-  console.log("");
   console.log("📊 Agent-Campaign Assignments:");
-  agentConfigs.forEach((config, idx) => {
+  agentConfigs.forEach((config) => {
     const assignedCampaignNames = config.campaignIndices
       .map((i) => campaigns[i].campaignName)
       .join(", ");

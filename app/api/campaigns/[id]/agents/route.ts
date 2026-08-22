@@ -10,7 +10,7 @@ interface Params {
 
 // GET: List agents for a specific campaign
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Params }
 ) {
   try {
@@ -19,7 +19,7 @@ export async function GET(
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
-    const user = session.user as any;
+    const user = session.user;
     const campaignId = params.id;
 
     // Check if user has access to this campaign. CEO can see all; everyone else

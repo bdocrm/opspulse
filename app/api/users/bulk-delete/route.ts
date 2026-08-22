@@ -8,7 +8,7 @@ export async function POST(req: NextRequest) {
     const session = await getServerSession(authOptions);
 
     // Only allow CEO to delete users
-    if (!session?.user || (session.user as any).role !== "CEO") {
+    if (!session?.user || session.user.role !== "CEO") {
       return NextResponse.json(
         { error: "Unauthorized: CEO access required" },
         { status: 403 }
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Prevent deleting yourself
-    const currentUserId = (session.user as any).id;
+    const currentUserId = session.user.id;
     if (userIds.includes(currentUserId)) {
       return NextResponse.json(
         { error: "Cannot delete your own account" },

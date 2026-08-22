@@ -23,7 +23,7 @@ const collectorItems = [
 export function BottomNav() {
   const pathname = usePathname();
   const { data: session } = useSession();
-  const userRole = (session?.user as any)?.role;
+  const userRole = session?.user?.role;
 
   const items = userRole === 'COLLECTOR' ? collectorItems : defaultItems;
 

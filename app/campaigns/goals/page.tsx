@@ -1,6 +1,6 @@
 'use client';
 
-import { Dispatch, SetStateAction, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
@@ -11,178 +11,40 @@ import { Label } from '@/components/ui/label';
 import { PageTitle } from '@/components/layout/page-title';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { useToast } from '@/components/toast-provider';
-import { SortableDateHeader, compareDateValues, type DateSortDirection } from '@/components/sortable-date-header';
-import { AlertCircle, ArchiveRestore, ArrowUpDown, CheckCircle, ChevronDown, ChevronUp, Download, Eye, Loader2, Pencil, Search, Trash2, X } from 'lucide-react';
+import { SortableDateHeader, type DateSortDirection } from '@/components/sortable-date-header';
+import { AlertCircle, ArrowUpDown, CheckCircle, ChevronDown, ChevronUp, Download, Eye, Loader2, Pencil, Search, X } from 'lucide-react';
 import { formatNumberWithCommas } from '@/lib/number-format';
-
-interface Campaign {
-  id: string;
-  campaignName: string;
-  kpiMetric: string;
-  monthlyGoal: number;
-  supplementaryGoal: number;
-  workingDays: number;
-  daysLapsed: number;
-  mtd: number;
-  bookedVolume: number;
-  achievement: number;
-  runRate: number;
-  rrAchievement: number;
-  updatedAt?: string;
-  hasMonthlyConfig?: boolean;
-  users: Array<{
-    id: string;
-    name: string;
-    seatNumber: number;
-    monthlyTarget: number | null;
-  }>;
-}
-
-type AchievementStatus = 'all' | 'above' | 'on-track' | 'needs-attention' | 'at-risk';
-type SortKey = 'campaignName' | 'kpiMetric' | 'monthlyGoal' | 'bookedVolume' | 'mtd' | 'achievement' | 'runRate' | 'rrAchievement' | 'updatedAt';
-type SortDirection = 'asc' | 'desc';
-type DeletedDateSortKey = 'deletedAt' | 'restoredAt';
-
-interface SavedGoal {
-  campaignId: string;
-  campaignName: string;
-  month: number;
-  year: number;
-  monthlyGoal: number;
-  kpiMetric: string;
-  workingDays: number;
-  daysLapsed: number;
-  updatedAt: string;
-  deletedAt?: string | null;
-  deletedBy?: string | null;
-  restoredAt?: string | null;
-  restoredBy?: string | null;
-}
-
-type GoalKey = {
-  campaignId: string;
-  month: number;
-  year: number;
-};
-
-type ConfirmAction =
-  | { type: 'soft-delete'; items: GoalKey[] }
-  | { type: 'restore'; items: GoalKey[] }
-  | { type: 'permanent-delete'; items: GoalKey[] };
-
-const KPI_METRICS = [
-  { value: 'transmittals', label: 'Transmittals' },
-  { value: 'approvals', label: 'Approvals' },
-  { value: 'booked', label: 'Booked' },
-  { value: 'activations', label: 'Activations' },
-  { value: 'volume', label: 'Volume' },
-  { value: 'transaction', label: 'Transaction' },
-  { value: 'achievements', label: 'Achievements' },
-  { value: 'qualityRate', label: 'Quality Rate' },
-  { value: 'conversionRate', label: 'Conversion Rate' },
-];
-
-const BPI_KPI_VALUES = new Set(['transmittals', 'approvals', 'booked']);
-const BPI_KPI_METRICS = KPI_METRICS.filter((metric) => BPI_KPI_VALUES.has(metric.value));
-const usesBpiThreeKpis = (name?: string | null) => {
-  const normalized = String(name || '').trim().toUpperCase().replace(/\s+/g, ' ');
-  return normalized.startsWith('BPI ') && normalized !== 'BPI PA OUTBOUND';
-};
-
-const MONTHS = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-];
-const metricLabel = (value: string) =>
-  KPI_METRICS.find((m) => m.value === value)?.label || value;
-
-// ACQ campaigns (name contains "ACQ") track NTB + Supplementary goals instead of
-// a single booked-volume goal.
-const isAcqCampaign = (name?: string | null) => /\bacq\b/i.test(name || '');
-
-const formatNumber = (value: number) =>
-  Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 1 });
-
-const stripNumberFormatting = (value: string) => value.replace(/,/g, '');
-
-const formatInputNumber = (value: string | number, fractionDigits?: number) => {
-  const raw = stripNumberFormatting(String(value ?? ''));
-  if (raw === '') return '';
-  const n = Number(raw);
-  if (Number.isNaN(n)) return String(value);
-  return n.toLocaleString(undefined, {
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits ?? 2,
-  });
-};
-
-const normalizeNumericInput = (value: string) => value.replace(/[^\d.]/g, '');
-
-const formatNumericTextValue = (value: string) => {
-  const normalized = normalizeNumericInput(value);
-  if (normalized === '') return '';
-
-  const [integerPart, ...decimalParts] = normalized.split('.');
-  const integer = integerPart === '' ? '0' : integerPart;
-  const formattedInteger = Number(integer).toLocaleString();
-  if (!normalized.includes('.')) return formattedInteger;
-  return `${formattedInteger}.${decimalParts.join('')}`;
-};
-
-const formatPct = (value: number) => `${Number(value || 0).toFixed(1)}%`;
-
-const statusForCampaign = (campaign: Campaign): AchievementStatus => {
-  if (campaign.achievement >= 100) return 'above';
-  if (campaign.achievement >= 90 || campaign.rrAchievement >= 95) return 'on-track';
-  if (campaign.achievement >= 75 || campaign.rrAchievement >= 80) return 'needs-attention';
-  return 'at-risk';
-};
-
-const statusLabel = (status: AchievementStatus) => {
-  if (status === 'above') return 'Above Goal';
-  if (status === 'on-track') return 'On Track';
-  if (status === 'needs-attention') return 'Needs Attention';
-  if (status === 'at-risk') return 'At Risk';
-  return 'All';
-};
-
-const statusClass = (status: AchievementStatus) => {
-  if (status === 'above') return 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/50 dark:text-green-300 dark:border-green-900';
-  if (status === 'on-track') return 'bg-yellow-50 text-yellow-700 border-yellow-200 dark:bg-yellow-950/50 dark:text-yellow-300 dark:border-yellow-900';
-  if (status === 'needs-attention') return 'bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/50 dark:text-orange-300 dark:border-orange-900';
-  if (status === 'at-risk') return 'bg-red-50 text-red-700 border-red-200 dark:bg-red-950/50 dark:text-red-300 dark:border-red-900';
-  return 'bg-muted text-muted-foreground border-border';
-};
-
-const dashboardExportRows = (rows: Campaign[]) =>
-  rows.map((row) => ({
-    Campaign: row.campaignName,
-    'KPI Metric': metricLabel(row.kpiMetric),
-    Goal: Number(row.monthlyGoal || 0),
-    'Booked Volume': Number(row.bookedVolume || 0),
-    MTD: Number(row.mtd || 0),
-    'Achievement %': Number(row.achievement || 0).toFixed(1),
-    'Run Rate': Number(row.runRate || 0),
-    'RR Achievement %': Number(row.rrAchievement || 0).toFixed(1),
-    Status: statusLabel(statusForCampaign(row)),
-    'Last Updated': row.updatedAt ? new Date(row.updatedAt).toLocaleString() : '',
-  }));
-
-const goalKey = (item: GoalKey) => `${item.campaignId}:${item.year}:${item.month}`;
-
-const savedGoalKey = (row: SavedGoal) =>
-  goalKey({ campaignId: row.campaignId, month: row.month, year: row.year });
-
-const parseGoalKey = (key: string): GoalKey => {
-  const [campaignId, year, month] = key.split(':');
-  return { campaignId, year: Number(year), month: Number(month) };
-};
+import { MONTH_NAMES } from '@/lib/months';
+import {
+  BPI_KPI_METRICS,
+  BPI_KPI_VALUES,
+  KPI_METRICS,
+  dashboardExportRows,
+  formatInputNumber,
+  formatNumber,
+  formatNumericTextValue,
+  formatPct,
+  isAcqCampaign,
+  metricLabel,
+  normalizeNumericInput,
+  statusClass,
+  statusForCampaign,
+  statusLabel,
+  stripNumberFormatting,
+  usesBpiThreeKpis,
+  type AchievementStatus,
+  type Campaign,
+  type ConfirmAction,
+  type SavedGoal,
+  type SortDirection,
+  type SortKey,
+} from './goal-utils';
 
 export default function GoalsManagement() {
   const router = useRouter();
   const { data: session, status } = useSession();
   const { addToast } = useToast();
-  const user = session?.user as any;
+  const user = session?.user;
 
   const now = new Date();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -192,7 +54,6 @@ export default function GoalsManagement() {
   const [selectedMonth, setSelectedMonth] = useState<number>(now.getMonth() + 1); // 1-12, defaults to current month
   const [selectedYear] = useState<number>(now.getFullYear());
   const [savedGoals, setSavedGoals] = useState<SavedGoal[]>([]);
-  const [deletedGoals, setDeletedGoals] = useState<SavedGoal[]>([]);
   // When editing a saved row from another month, remember which campaign to
   // re-select after the month-change effect reloads the campaign list. Kept in a
   // ref (not state) so the data-loading effect can read it WITHOUT taking it as
@@ -229,34 +90,28 @@ export default function GoalsManagement() {
   const [sortKey, setSortKey] = useState<SortKey>('campaignName');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [dashboardDateSort, setDashboardDateSort] = useState<DateSortDirection>('desc');
-  const [deletedDateSortKey, setDeletedDateSortKey] = useState<DeletedDateSortKey>('deletedAt');
-  const [deletedDateSort, setDeletedDateSort] = useState<DateSortDirection>('desc');
   const [rowsPerPage, setRowsPerPage] = useState('5');
   const [currentPage, setCurrentPage] = useState(1);
-  const [deletedRowsPerPage, setDeletedRowsPerPage] = useState('5');
-  const [deletedPage, setDeletedPage] = useState(1);
   const [dashboardExpanded, setDashboardExpanded] = useState(true);
   const [selectCampaignExpanded, setSelectCampaignExpanded] = useState(true);
   const [campaignGoalExpanded, setCampaignGoalExpanded] = useState(true);
   const [agentTargetsExpanded, setAgentTargetsExpanded] = useState(false);
   const [savedGoalsExpanded, setSavedGoalsExpanded] = useState(false);
-  const [trashExpanded, setTrashExpanded] = useState(false);
   const [agentTargetSearch, setAgentTargetSearch] = useState('');
   const [agentRowsPerPage, setAgentRowsPerPage] = useState('5');
   const [agentTargetPage, setAgentTargetPage] = useState(1);
   const [detailsCampaign, setDetailsCampaign] = useState<Campaign | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
-  const [selectedDeletedGoalKeys, setSelectedDeletedGoalKeys] = useState<Set<string>>(new Set());
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
   const [processingAction, setProcessingAction] = useState(false);
 
   useEffect(() => {
     if (status === 'unauthenticated') {
       router.push('/login');
-    } else if (status === 'authenticated' && !['CEO', 'OM'].includes(user?.role)) {
+    } else if (status === 'authenticated' && (!user || !['CEO', 'OM'].includes(user.role))) {
       router.push('/dashboard');
     }
-  }, [status, user?.role, router]);
+  }, [status, user, router]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem('goals-management-expanded-sections');
@@ -269,7 +124,6 @@ export default function GoalsManagement() {
       if (typeof parsed.campaignGoal === 'boolean') setCampaignGoalExpanded(parsed.campaignGoal);
       if (typeof parsed.agentTargets === 'boolean') setAgentTargetsExpanded(parsed.agentTargets);
       if (typeof parsed.savedGoals === 'boolean') setSavedGoalsExpanded(parsed.savedGoals);
-      if (typeof parsed.trash === 'boolean') setTrashExpanded(parsed.trash);
     } catch {
       window.localStorage.removeItem('goals-management-expanded-sections');
     }
@@ -284,7 +138,6 @@ export default function GoalsManagement() {
         campaignGoal: campaignGoalExpanded,
         agentTargets: agentTargetsExpanded,
         savedGoals: savedGoalsExpanded,
-        trash: trashExpanded,
       })
     );
   }, [
@@ -293,7 +146,6 @@ export default function GoalsManagement() {
     campaignGoalExpanded,
     agentTargetsExpanded,
     savedGoalsExpanded,
-    trashExpanded,
   ]);
 
   const loadCampaigns = async (month: number, year: number, keepId?: string) => {
@@ -319,12 +171,8 @@ export default function GoalsManagement() {
 
   const loadSavedGoals = async () => {
     try {
-      const [activeRes, trashRes] = await Promise.all([
-        fetch('/api/goals/saved'),
-        fetch('/api/goals/saved?trash=1'),
-      ]);
-      if (activeRes.ok) setSavedGoals(await activeRes.json());
-      if (trashRes.ok) setDeletedGoals(await trashRes.json());
+      const response = await fetch('/api/goals/saved');
+      if (response.ok) setSavedGoals(await response.json());
     } catch {
       /* non-critical: the saved list is informational */
     }
@@ -415,8 +263,8 @@ export default function GoalsManagement() {
         // success message AFTER the reload, not before, or it gets cleared.)
         await loadCampaigns(selectedMonth, selectedYear, selectedCampaign.id);
         await loadSavedGoals();
-        setMessage(`Goals for ${MONTHS[selectedMonth - 1]} ${selectedYear} saved successfully`);
-        addToast('success', `Goals for ${MONTHS[selectedMonth - 1]} ${selectedYear} saved successfully`);
+        setMessage(`Goals for ${MONTH_NAMES[selectedMonth - 1]} ${selectedYear} saved successfully`);
+        addToast('success', `Goals for ${MONTH_NAMES[selectedMonth - 1]} ${selectedYear} saved successfully`);
       } else {
         const data = await res.json();
         setError(data.error || 'Failed to update goal');
@@ -485,30 +333,6 @@ export default function GoalsManagement() {
     ]);
   };
 
-  const toggleKey = (setState: Dispatch<SetStateAction<Set<string>>>, key: string) => {
-    setState((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
-  const setAllKeys = (
-    setState: Dispatch<SetStateAction<Set<string>>>,
-    keys: string[],
-    checked: boolean
-  ) => {
-    setState((current) => {
-      const next = new Set(current);
-      keys.forEach((key) => {
-        if (checked) next.add(key);
-        else next.delete(key);
-      });
-      return next;
-    });
-  };
-
   const executeConfirmAction = async () => {
     if (!confirmAction) return;
 
@@ -532,10 +356,8 @@ export default function GoalsManagement() {
         addToast('success', `Deleted ${affected} goal configuration(s)`);
       } else if (confirmAction.type === 'restore') {
         addToast('success', `Restored ${affected} goal configuration(s)`);
-        setSelectedDeletedGoalKeys(new Set());
       } else if (confirmAction.type === 'permanent-delete') {
         addToast('success', `Permanently deleted ${affected} goal configuration(s)`);
-        setSelectedDeletedGoalKeys(new Set());
       }
 
       setConfirmAction(null);
@@ -652,47 +474,6 @@ export default function GoalsManagement() {
       ? sortedFilteredCampaigns
       : sortedFilteredCampaigns.slice((currentPage - 1) * Number(rowsPerPage), currentPage * Number(rowsPerPage));
 
-  const deletedGoalKeys = deletedGoals.map(savedGoalKey);
-  const allDeletedSelected =
-    deletedGoalKeys.length > 0 && deletedGoalKeys.every((key) => selectedDeletedGoalKeys.has(key));
-  const sortedDeletedGoals = useMemo(
-    () =>
-      [...deletedGoals].sort((a, b) => {
-        return compareDateValues(a[deletedDateSortKey], b[deletedDateSortKey], deletedDateSort);
-      }),
-    [deletedGoals, deletedDateSort, deletedDateSortKey]
-  );
-  const deletedTotalPages =
-    deletedRowsPerPage === 'all'
-      ? 1
-      : Math.max(1, Math.ceil(sortedDeletedGoals.length / Number(deletedRowsPerPage)));
-
-  useEffect(() => {
-    setDeletedPage((page) => Math.min(page, deletedTotalPages));
-  }, [deletedTotalPages]);
-
-  useEffect(() => {
-    setDeletedPage(1);
-  }, [deletedRowsPerPage, deletedDateSort, deletedDateSortKey]);
-
-  const paginatedDeletedGoals =
-    deletedRowsPerPage === 'all'
-      ? sortedDeletedGoals
-      : sortedDeletedGoals.slice(
-          (deletedPage - 1) * Number(deletedRowsPerPage),
-          deletedPage * Number(deletedRowsPerPage)
-        );
-  const deletedStart =
-    sortedDeletedGoals.length === 0 || paginatedDeletedGoals.length === 0
-      ? 0
-      : deletedRowsPerPage === 'all'
-        ? 1
-      : (deletedPage - 1) * Number(deletedRowsPerPage) + 1;
-  const deletedEnd =
-    deletedRowsPerPage === 'all'
-      ? sortedDeletedGoals.length
-      : Math.min(deletedPage * Number(deletedRowsPerPage), sortedDeletedGoals.length);
-
   const filteredCampaignAgents = useMemo(() => {
     if (!selectedCampaign) return [];
     const search = agentTargetSearch.trim().toLowerCase();
@@ -744,12 +525,6 @@ export default function GoalsManagement() {
     if (key === 'updatedAt') setDashboardDateSort(nextDirection);
   };
 
-  const handleDeletedDateSort = (key: DeletedDateSortKey) => {
-    const nextDirection = deletedDateSortKey === key && deletedDateSort === 'asc' ? 'desc' : 'asc';
-    setDeletedDateSortKey(key);
-    setDeletedDateSort(nextDirection);
-  };
-
   const handleDashboardToggle = () => {
     setDashboardExpanded((expanded) => {
       const nextExpanded = !expanded;
@@ -772,20 +547,9 @@ export default function GoalsManagement() {
     });
   };
 
-  const handleTrashToggle = () => {
-    setTrashExpanded((expanded) => {
-      const nextExpanded = !expanded;
-      if (nextExpanded) {
-        setDeletedRowsPerPage('5');
-        setDeletedPage(1);
-      }
-      return nextExpanded;
-    });
-  };
-
   const exportCampaignRows = (rows: Campaign[], format: 'csv' | 'xlsx') => {
     const exportRows = dashboardExportRows(rows);
-    const suffix = `${MONTHS[selectedMonth - 1]}-${selectedYear}`.replace(/\s+/g, '-').toLowerCase();
+    const suffix = `${MONTH_NAMES[selectedMonth - 1]}-${selectedYear}`.replace(/\s+/g, '-').toLowerCase();
     if (format === 'xlsx') {
       const worksheet = XLSX.utils.json_to_sheet(exportRows);
       const workbook = XLSX.utils.book_new();
@@ -849,7 +613,7 @@ export default function GoalsManagement() {
               <h3 className="text-lg font-semibold text-foreground">Executive Target Dashboard</h3>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
-              All campaign targets and live performance for {MONTHS[selectedMonth - 1]} {selectedYear}.
+              All campaign targets and live performance for {MONTH_NAMES[selectedMonth - 1]} {selectedYear}.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1246,12 +1010,12 @@ export default function GoalsManagement() {
                   onChange={(e) => setSelectedMonth(Number(e.target.value))}
                   className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  {MONTHS.map((m, i) => (
+                  {MONTH_NAMES.map((m, i) => (
                     <option key={m} value={i + 1}>{m} {selectedYear}</option>
                   ))}
                 </select>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Saving creates or updates the goal for {selectedCampaign.campaignName} in {MONTHS[selectedMonth - 1]} {selectedYear}.
+                  Saving creates or updates the goal for {selectedCampaign.campaignName} in {MONTH_NAMES[selectedMonth - 1]} {selectedYear}.
                 </p>
               </div>
             </div>
@@ -1666,7 +1430,7 @@ export default function GoalsManagement() {
                       className={`border-b border-border ${isCurrent ? 'bg-blue-50 dark:bg-blue-950/30' : 'hover:bg-muted/40'}`}
                     >
                       <td className="py-2 pr-4 font-medium text-foreground">{row.campaignName}</td>
-                      <td className="py-2 pr-4">{MONTHS[row.month - 1]} {row.year}</td>
+                      <td className="py-2 pr-4">{MONTH_NAMES[row.month - 1]} {row.year}</td>
                       <td className="py-2 pr-4 capitalize">{row.kpiMetric}</td>
                       <td className="py-2 pr-4 text-right">{formatNumberWithCommas(row.monthlyGoal, 2)}</td>
                       <td className="py-2 pr-4 text-center">{row.workingDays}</td>
@@ -1828,7 +1592,7 @@ export default function GoalsManagement() {
                       campaignHistory.map((row) => (
                         <div key={`${row.campaignId}-${row.year}-${row.month}`} className="rounded-lg bg-muted/40 p-3 text-sm">
                           <div className="flex justify-between gap-3">
-                            <span className="font-semibold text-foreground">{MONTHS[row.month - 1]} {row.year}</span>
+                            <span className="font-semibold text-foreground">{MONTH_NAMES[row.month - 1]} {row.year}</span>
                             <span className="text-muted-foreground">{formatNumber(row.monthlyGoal)}</span>
                           </div>
                           <p className="mt-1 text-xs text-muted-foreground">

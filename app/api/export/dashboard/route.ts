@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from "next/server";
 import Papa from "papaparse";
 import { GET as getDashboard } from "@/app/api/dashboard/route";

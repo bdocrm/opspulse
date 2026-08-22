@@ -4,7 +4,7 @@ import { useState, useMemo } from 'react';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ChevronDown, Search, Users, Target, TrendingUp, CheckCircle2, AlertCircle, Trash2 } from 'lucide-react';
+import { ChevronDown, Search, CheckCircle2, AlertCircle, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface Agent {
@@ -134,7 +134,6 @@ function formatKpiValue(metric: string, value: number): string {
 }
 
 export function CampaignSummaryCard({
-  id,
   campaignName,
   kpiMetric,
   goal,
@@ -281,7 +280,7 @@ export function CampaignSummaryCard({
       withProduction: performers.filter(p => p.value > 0).length,
       zeroProduction: performers.filter(p => p.value === 0).length,
     };
-  }, [agents, production, goal, acq, bdo, bdoSgm, mbpl, mbpa, dashboardImported, importedPerformance, bdoPerformance, mbPlPerformance, kpiMetric, entriesCount]);
+  }, [agents, production, acq, bdo, bdoSgm, mbpl, mbpa, dashboardImported, importedPerformance, bdoPerformance, mbPlPerformance, kpiMetric, entriesCount]);
 
   const filteredAgents = useMemo(() => {
     if (!searchQuery.trim()) return agents;

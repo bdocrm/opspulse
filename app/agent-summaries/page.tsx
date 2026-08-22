@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
@@ -19,11 +19,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { kpiColorClass } from "@/utils/kpi";
-import { cn } from "@/lib/utils";
-import { Users, Target, TrendingUp, Activity, Search, Download, Eye } from "lucide-react";
+import { Users, Target, TrendingUp, Activity, Search, Eye } from "lucide-react";
 import { usePagination } from "@/hooks/use-pagination";
 import { PaginationControls } from "@/components/pagination-controls";
 import { ReportPeriodSelector } from "@/components/report-period-selector";
@@ -69,13 +65,10 @@ export default function AgentSummariesPage() {
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [allMonths, setAllMonths] = useState(false);
-  const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
-  const [totalAgentsCount, setTotalAgentsCount] = useState(0);
-  const pagination = usePagination(1, 25, totalAgentsCount);
-  const summaryEndpoint = `/api/agents/summary?year=${year}&month=${month}&allMonths=${allMonths}${selectedAgent ? `&id=${selectedAgent}` : ''}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`;
-  const exportEndpoint = `/api/export/agents?year=${year}&month=${month}&allMonths=${allMonths}${selectedAgent ? `&id=${selectedAgent}` : ''}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`;
+  const summaryEndpoint = `/api/agents/summary?year=${year}&month=${month}&allMonths=${allMonths}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`;
+  const exportEndpoint = `/api/export/agents?year=${year}&month=${month}&allMonths=${allMonths}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}`;
 
   const handleViewDetails = (agentId: string) => {
     router.push(`/agent-details/${agentId}?year=${year}&month=${month}${allMonths ? '&allMonths=true' : ''}`);
@@ -87,13 +80,13 @@ export default function AgentSummariesPage() {
       router.push('/login');
       return;
     }
-    if ((session.user as any).role !== 'CEO') {
+    if (session.user.role !== 'CEO') {
       router.push('/collector');
       return;
     }
   }, [session, status, router]);
 
-  const { data, error, isLoading, mutate } = useSWR(
+  const { data } = useSWR(
     session?.user?.role === 'CEO' ? summaryEndpoint : null,
     (url: string) => fetch(url).then(res => res.json())
   );
@@ -103,18 +96,20 @@ export default function AgentSummariesPage() {
     (url: string) => fetch(url).then(res => res.json())
   );
 
-  const agents: AgentSummary[] = data?.agents || [];
+  const agents = useMemo<AgentSummary[]>(() => data?.agents ?? [], [data?.agents]);
   const campaigns = Array.isArray(campaignsData)
     ? campaignsData
     : campaignsData?.campaigns ?? [];
-  const filteredAgents = agents.filter(agent =>
-    agent.name.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredAgents = useMemo(
+    () => agents.filter((agent) => agent.name.toLowerCase().includes(searchTerm.toLowerCase())),
+    [agents, searchTerm]
   );
+  const pagination = usePagination(1, 25, filteredAgents.length);
+  const { goToPage } = pagination;
 
   useEffect(() => {
-    setTotalAgentsCount(filteredAgents.length);
-    pagination.goToPage(1); // Reset to first page when search term changes
-  }, [filteredAgents.length]);
+    goToPage(1);
+  }, [goToPage, searchTerm]);
 
   if (status === 'loading' || !session) {
     return <DashboardSkeleton label="Loading agent summaries" />;

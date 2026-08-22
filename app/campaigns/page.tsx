@@ -29,13 +29,9 @@ import {
 import { useCampaigns, useCampaignDetail } from "@/hooks/use-data";
 import { kpiColorClass } from "@/utils/kpi";
 import { cn } from "@/lib/utils";
+import { MONTH_NAMES } from "@/lib/months";
 import type { FilterPeriod } from "@/utils/kpi";
 import { Target, TrendingUp, Activity, BarChart3, ChevronDown, ChevronRight, ClipboardList } from "lucide-react";
-
-const MONTH_NAMES = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
 
 export default function CampaignsPage() {
   const { data: session, status } = useSession();
@@ -61,7 +57,7 @@ export default function CampaignsPage() {
       return;
     }
     // Restrict AGENT from accessing campaigns
-    if ((session.user as any).role === 'AGENT') {
+    if (session.user.role === 'AGENT') {
       router.push('/collector');
       return;
     }

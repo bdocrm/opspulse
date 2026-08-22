@@ -4,7 +4,7 @@ import { setUserCampaigns } from "@/lib/user-campaigns";
 import { normalizeEmail } from "@/lib/normalize-email";
 
 export async function GET(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
@@ -109,7 +109,7 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
@@ -119,7 +119,7 @@ export async function DELETE(
     const session = await getServerSession(authOptions);
 
     // Only allow CEO to delete users
-    if (!session?.user || (session.user as any).role !== "CEO") {
+    if (!session?.user || session.user.role !== "CEO") {
       return NextResponse.json(
         { error: "Unauthorized: CEO access required" },
         { status: 403 }
@@ -138,7 +138,7 @@ export async function DELETE(
     }
 
     // Prevent deleting yourself
-    if (user.id === (session.user as any).id) {
+    if (user.id === session.user.id) {
       return NextResponse.json(
         { error: "Cannot delete your own account" },
         { status: 400 }

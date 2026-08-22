@@ -108,10 +108,10 @@ export function Sidebar({ open, onClose }: SidebarProps) {
     );
     return new Set(activeSection ? [activeSection.label] : []);
   });
-  const userRole = (session?.user as any)?.role;
+  const userRole = session?.user?.role;
   const allLinks = [...defaultLinks, ...(userRole === 'CEO' ? adminLinks : [])];
   const visibleLinks = allLinks.filter(({ href, roles }) => {
-    if (roles && !roles.includes(userRole)) {
+    if (roles && (!userRole || !roles.includes(userRole))) {
       return false;
     }
     if (userRole === 'COLLECTOR') {

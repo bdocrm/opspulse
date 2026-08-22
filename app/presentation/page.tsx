@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ChevronLeft, ChevronRight, Play, Pause } from 'lucide-react';
 
 interface Slide {
@@ -502,27 +502,27 @@ export default function PresentationPage() {
     return () => clearInterval(interval);
   }, [isAutoPlay]);
 
-  const handlePrevious = () => {
+  const handlePrevious = useCallback(() => {
     setCurrentSlide((prev) => (prev - 1 + slides.length) % slides.length);
-  };
+  }, []);
 
-  const handleNext = () => {
+  const handleNext = useCallback(() => {
     setCurrentSlide((prev) => (prev + 1) % slides.length);
-  };
+  }, []);
 
-  const handleKeyDown = (e: KeyboardEvent) => {
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'ArrowLeft') handlePrevious();
     if (e.key === 'ArrowRight') handleNext();
     if (e.key === ' ') {
       e.preventDefault();
-      setIsAutoPlay(!isAutoPlay);
+      setIsAutoPlay((current) => !current);
     }
-  };
+  }, [handleNext, handlePrevious]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isAutoPlay]);
+  }, [handleKeyDown]);
 
   const slide = slides[currentSlide];
 

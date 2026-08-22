@@ -16,12 +16,11 @@ import { PageTitle } from "@/components/layout/page-title";
 import { SortableDateHeader, compareDateValues, type DateSortDirection } from "@/components/sortable-date-header";
 import { PageSkeleton } from "@/components/skeletons";
 import { Trash2, Edit2, Plus } from "lucide-react";
+import type { CampaignOption } from "@/types/campaign";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
-interface Campaign {
-  id: string;
-  campaignName: string;
+interface Campaign extends CampaignOption {
   goalType: string;
   monthlyGoal: number;
   kpiMetric: string;
@@ -69,7 +68,7 @@ export default function ManageCampaignsPage() {
   const router = useRouter();
   const { addToast } = useToast();
   const { data, mutate } = useSWR("/api/campaigns", fetcher);
-  const campaigns: Campaign[] = Array.isArray(data) ? data : [];
+  const campaigns = useMemo<Campaign[]>(() => Array.isArray(data) ? data : [], [data]);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -101,7 +100,7 @@ export default function ManageCampaignsPage() {
   // Check authorization
   useEffect(() => {
     if (status === "loading") return;
-    if (!session?.user || (session.user as any).role !== "CEO") {
+    if (!session?.user || session.user.role !== "CEO") {
       router.push("/dashboard");
     }
   }, [session, status, router]);

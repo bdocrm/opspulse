@@ -1,7 +1,4 @@
-const MONTH_NAMES = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-] as const;
+import { MONTH_NAMES } from "./months";
 
 const MONTH_LOOKUP = new Map<string, number>(MONTH_NAMES.flatMap((name, index) => [
   [name.toUpperCase(), index + 1] as const,

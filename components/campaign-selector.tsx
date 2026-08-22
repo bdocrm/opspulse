@@ -1,18 +1,14 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-
-interface Campaign {
-  id: string;
-  campaignName: string;
-}
+import type { CampaignOption } from "@/types/campaign";
 
 // Sentinel value for the "All Campaigns" option. Radix Select items can't use an
 // empty string, so we map this sentinel to `null` at the callback boundary.
 const ALL_CAMPAIGNS_VALUE = "__all__";
 
 interface CampaignSelectorProps {
-  campaigns: Campaign[];
+  campaigns: CampaignOption[];
   selectedCampaignId: string | null;
   onCampaignChange: (campaignId: string | null) => void;
   label?: string;

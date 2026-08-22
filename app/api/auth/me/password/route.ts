@@ -14,7 +14,7 @@ export async function PATCH(req: NextRequest) {
 
     const body = await req.json();
     const { password } = body;
-    const userId = (session.user as any).id;
+    const userId = session.user.id;
 
     if (!password || password.length < 6) {
       return NextResponse.json(

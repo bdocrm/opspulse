@@ -5,15 +5,14 @@ import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageTitle } from "@/components/layout/page-title";
 import { PageSkeleton } from "@/components/skeletons";
 import { AlertCircle, CheckCircle } from "lucide-react";
+import type { CampaignOption } from "@/types/campaign";
 
 interface Agent {
   id: string;
@@ -24,21 +23,11 @@ interface Agent {
   campaign?: { id: string; campaignName: string };
 }
 
-interface Campaign {
-  id: string;
-  campaignName: string;
-}
-
-interface AgentCampaignAssignment {
-  agentId: string;
-  campaignIds: string[];
-}
-
 export default function ManageAgentsPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [campaigns, setCampaigns] = useState<CampaignOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingAgent, setEditingAgent] = useState<string | null>(null);
   const [selectedCampaigns, setSelectedCampaigns] = useState<Record<string, string[]>>({});
@@ -68,9 +57,7 @@ export default function ManageAgentsPage() {
           setAgents(agentsData);
           
           // Initialize selected campaigns
-          const initial: Record<string, string[]> = {};
-          // We'll need to fetch agent campaign assignments separately
-          setSelectedCampaigns(initial);
+          setSelectedCampaigns({});
         }
 
         if (campaignsRes.ok) {

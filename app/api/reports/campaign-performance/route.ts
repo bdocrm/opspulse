@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
@@ -754,8 +756,7 @@ export async function GET(req: NextRequest) {
     const recommendations = generateCoachingRecommendations(
       agentPerformances,
       topPerformers,
-      critical,
-      campaign
+      critical
     );
 
     return NextResponse.json({
@@ -831,8 +832,7 @@ function calculateAverageByLevel(
 function generateCoachingRecommendations(
   agents: AgentPerformance[],
   topPerformers: AgentPerformance[],
-  critical: AgentPerformance[],
-  campaign: any
+  critical: AgentPerformance[]
 ): string[] {
   const recommendations: string[] = [];
 

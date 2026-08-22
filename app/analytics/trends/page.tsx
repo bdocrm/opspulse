@@ -11,8 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DailyLineChart } from "@/components/charts/daily-line-chart";
 import { DailyBarChart } from "@/components/charts/daily-bar-chart";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { TrendingUp, Download } from "lucide-react";
+import { Download } from "lucide-react";
 import {
   CartesianGrid,
   Line,
@@ -107,19 +106,19 @@ export default function PerformanceTrendsPage() {
       router.push('/login');
       return;
     }
-    if ((session.user as any).role === 'AGENT' || (session.user as any).role === 'COLLECTOR') {
+    if (session.user.role === 'AGENT' || session.user.role === 'COLLECTOR') {
       router.push('/collector');
       return;
     }
   }, [session, status, router]);
 
-  const { data, isLoading } = useSWR(
+  const { data } = useSWR(
     session?.user ? `/api/analytics/trends?year=${year}&month=${month}&allMonths=${allMonths}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ''}` : null,
     (url: string) => fetch(url, { credentials: 'include' }).then(res => res.json())
   );
 
   const { data: campaignsData } = useSWR(
-    session?.user && (session.user as any).role === 'CEO' ? '/api/campaigns' : null,
+    session?.user?.role === 'CEO' ? '/api/campaigns' : null,
     (url: string) => fetch(url).then(res => res.json())
   );
 
@@ -163,7 +162,7 @@ export default function PerformanceTrendsPage() {
               setAllMonths(nextAllMonths);
             }}
           />
-          {session?.user && (session.user as any).role === 'CEO' && (
+          {session?.user?.role === 'CEO' && (
             <CampaignSelector
               campaigns={campaigns}
               selectedCampaignId={selectedCampaignId}

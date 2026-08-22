@@ -13,36 +13,19 @@ export const authOptions: AuthOptions = {
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) {
-          console.log("❌ Missing credentials");
-          return null;
-        }
+        if (!credentials?.email || !credentials?.password) return null;
 
         try {
           const email = normalizeEmail(credentials.email);
-          console.log(`🔍 Looking up user: ${email}`);
-          
           const user = await prisma.user.findUnique({
             where: { email },
             include: { campaign: true, campaignAssignments: true },
           });
 
-          if (!user) {
-            console.log(`❌ User not found: ${email}`);
-            return null;
-          }
-
-          console.log(`✅ User found: ${user.name}, Role: ${user.role}`);
+          if (!user) return null;
 
           const isValid = await bcrypt.compare(credentials.password, user.password);
-          console.log(`🔐 Password valid: ${isValid}`);
-          
-          if (!isValid) {
-            console.log(`❌ Password mismatch for ${email}`);
-            return null;
-          }
-
-          console.log(`✅ Auth successful for ${credentials.email}`);
+          if (!isValid) return null;
 
           // Full assigned-campaign set (join table + legacy primary), de-duped.
           const campaignIds = Array.from(
@@ -74,10 +57,10 @@ export const authOptions: AuthOptions = {
     async jwt({ token, user, trigger }) {
       if (user) {
         token.id = user.id;
-        token.role = (user as any).role;
-        token.campaignId = (user as any).campaignId;
-        token.campaignName = (user as any).campaignName;
-        token.campaignIds = (user as any).campaignIds ?? [];
+        token.role = user.role;
+        token.campaignId = user.campaignId;
+        token.campaignName = user.campaignName;
+        token.campaignIds = user.campaignIds ?? [];
       } else if (
         token.id &&
         token.role !== "CEO" &&
@@ -113,11 +96,11 @@ export const authOptions: AuthOptions = {
     },
     async session({ session, token }) {
       if (session.user) {
-        (session.user as any).id = token.id;
-        (session.user as any).role = token.role;
-        (session.user as any).campaignId = token.campaignId;
-        (session.user as any).campaignName = token.campaignName;
-        (session.user as any).campaignIds = (token.campaignIds as string[]) ?? [];
+        session.user.id = token.id;
+        session.user.role = token.role;
+        session.user.campaignId = token.campaignId;
+        session.user.campaignName = token.campaignName;
+        session.user.campaignIds = token.campaignIds ?? [];
       }
       return session;
     },

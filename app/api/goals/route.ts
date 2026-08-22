@@ -3,7 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { getCampaignAgents, isAgentInCampaign } from '@/lib/campaign-agents';
-import { MONTH_NAMES, ensureCampaignGoalTable, resolveMonthYear } from '@/lib/campaign-goals';
+import { ensureCampaignGoalTable, resolveMonthYear } from '@/lib/campaign-goals';
 import { achievementPct, computeMTD, runRate, rrAchievementPct, daysLapsed as computeDaysLapsed, type KpiMetricKey } from '@/utils/kpi';
 
 const BPI_KPI_METRICS = new Set(['transmittals', 'approvals', 'booked']);
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const user = session.user as any;
+    const user = session.user;
     if (!['CEO', 'OM'].includes(user?.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
@@ -30,7 +30,7 @@ export async function GET(req: NextRequest) {
 
     await ensureCampaignGoalTable();
 
-    const campaignFilter = user.role === 'OM' ? { id: user.campaignId } : {};
+    const campaignFilter = user.role === 'OM' && user.campaignId ? { id: user.campaignId } : {};
 
     // Fetch campaigns via ORM
     const campaignRows = await prisma.campaign.findMany({
@@ -160,7 +160,7 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const user = session.user as any;
+    const user = session.user;
     if (!['CEO', 'OM'].includes(user?.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
@@ -263,9 +263,6 @@ export async function PUT(req: NextRequest) {
       `;
     }
 
-    // Activity log — includes the selected month.
-    const campaign = targetCampaign;
-
     const activityType = isUpdate ? 'GOAL_UPDATED' : 'GOAL_CREATED';
     try {
       await prisma.$executeRaw`
@@ -280,16 +277,8 @@ export async function PUT(req: NextRequest) {
       `;
     } catch (logError) {
       // Non-critical: log table may not exist on older DBs
-      console.log('ActivityLog insert skipped (table may not exist):', logError);
+      console.warn('ActivityLog insert skipped (table may not exist):', logError);
     }
-
-    console.log(
-      `[ActivityLog] Goal Configuration ${activityType === 'GOAL_CREATED' ? 'Created' : 'Updated'} | ` +
-      `Campaign: ${campaign?.campaignName ?? campaignId} | ` +
-      `Month: ${MONTH_NAMES[month - 1]} ${year} | ${activityType === 'GOAL_UPDATED' && previousGoal ? `Previous: ${previousGoal}, ` : ''}New: ${goal} | ` +
-      `Updated By: ${user?.name ?? user?.email ?? user?.role} | ` +
-      `Date: ${now.toISOString()}`
-    );
 
     return NextResponse.json({
       campaignId,
@@ -314,7 +303,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const user = session.user as any;
+    const user = session.user;
     if (user?.role !== 'CEO') {
       return NextResponse.json({ error: 'Only CEO can edit agent targets' }, { status: 403 });
     }

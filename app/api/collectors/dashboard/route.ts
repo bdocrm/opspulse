@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -1617,18 +1619,6 @@ export async function GET(req: NextRequest) {
         dataStatus: campaign.dataStatus,
       }))
     );
-    if (process.env.NODE_ENV !== "production") {
-      console.info("[collector-dashboard-aggregation]", {
-        dateFrom,
-        dateTo,
-        requestedCampaignId: requestedCampaignId || "all",
-        campaignCount: result.length,
-        campaignsWithProduction: summary.campaignsWithProduction,
-        campaignsWithoutProduction: summary.campaignsWithoutProduction,
-        campaignsWithoutGoal: summary.campaignsWithoutGoal,
-      });
-    }
-
     return NextResponse.json({
       filters: {
         campaign: requestedCampaignId || "all",

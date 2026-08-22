@@ -37,7 +37,7 @@ async function findDuplicateGroups() {
 
 export async function GET() {
   const session = await getServerSession(authOptions);
-  if (!session?.user || (session.user as any).role !== 'CEO') {
+  if (!session?.user || session.user.role !== 'CEO') {
     return NextResponse.json({ error: 'Unauthorized: CEO access required' }, { status: 403 });
   }
 
@@ -67,7 +67,7 @@ export async function GET() {
 
 export async function POST(_req: NextRequest) {
   const session = await getServerSession(authOptions);
-  if (!session?.user || (session.user as any).role !== 'CEO') {
+  if (!session?.user || session.user.role !== 'CEO') {
     return NextResponse.json({ error: 'Unauthorized: CEO access required' }, { status: 403 });
   }
 

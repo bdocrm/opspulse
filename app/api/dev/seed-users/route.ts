@@ -4,16 +4,10 @@ import bcrypt from "bcryptjs";
 
 export async function POST() {
   try {
-    console.log("🔄 Starting user seed...");
-
-    // Hash test password
     const passwordHash = await bcrypt.hash("password123", 12);
-    console.log("✅ Password hashed successfully");
 
     try {
-      // Delete existing users
-      const deleted = await prisma.user.deleteMany();
-      console.log("✅ Deleted", deleted.count, "existing users");
+      await prisma.user.deleteMany();
     } catch (delErr) {
       console.error("⚠️  Delete error (continuing):", delErr);
     }
@@ -29,7 +23,6 @@ export async function POST() {
           role: "CEO",
         },
       });
-      console.log("✅ Created CEO user:", admin.email);
     } catch (adminErr) {
       console.error("❌ Failed to create admin:", adminErr);
       throw new Error(`Admin creation failed: ${String(adminErr)}`);
@@ -45,7 +38,6 @@ export async function POST() {
           role: "OM",
         },
       });
-      console.log("✅ Created OM user:", manager.email);
     } catch (managerErr) {
       console.error("❌ Failed to create manager:", managerErr);
       throw new Error(`Manager creation failed: ${String(managerErr)}`);
@@ -55,7 +47,6 @@ export async function POST() {
     let count = 0;
     try {
       count = await prisma.user.count();
-      console.log(`✅ Total users in database: ${count}`);
     } catch (countErr) {
       console.error("⚠️  Count error:", countErr);
     }

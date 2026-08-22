@@ -140,8 +140,6 @@ function campaignDataPeriodLabel(period?: CampaignBlock['dataPeriod']): string |
 const CAMPAIGN_GROUP_PREFIX = '__campaign_group__:';
 const ALL_CAMPAIGNS = '__all_campaigns__';
 const EXPORT_HEADERS = ['Campaign', 'Rank', 'Seat', 'Agent Name', 'Status', 'Transmittals', 'Approvals', 'Booked', 'Booked Volume (₱)', 'Target', 'Progress %'] as const;
-const BDO_EXPORT_HEADERS = ['Campaign', 'Rank', 'Seat', 'Agent Name', 'Status', 'Goal', 'Actual', 'Achievement %', 'Booked', 'Progress %'] as const;
-
 function campaignOrganization(campaignName: string) {
   return campaignName.trim().split(/\s+/)[0]?.replace(/[^a-z0-9]/gi, '').toUpperCase() || 'OTHER';
 }
@@ -1177,12 +1175,6 @@ export default function CollectorDashboard() {
     return <DashboardSkeleton label="Loading collector dashboard" />;
   }
 
-  const campaignLabel =
-    allCampaigns.length === 0
-      ? 'No campaigns assigned'
-      : allCampaigns.length === 1
-      ? allCampaigns[0].campaignName
-      : `${allCampaigns.length} campaigns`;
   const selectedDataCampaign = allCampaigns.find((campaign) => campaign.id === selectedCampaignId) ?? null;
 
   return (
@@ -1568,10 +1560,6 @@ export default function CollectorDashboard() {
               const campaignAgents = campaign.agents;
               const campaignGoal = campaign.goal ?? 0;
               const campaignKpi = campaign.kpiMetric;
-              const presentCount = campaignAgents.filter(a => {
-                const record = campaign.attendance[a.id];
-                return !record || record.status === 'PRESENT';
-              }).length;
               const agentKpiValue = campaignAgents.reduce((sum, agent) => {
                 const prod = campaign.production[agent.id] || ZERO_PROD;
                 return sum + kpiValueFor(campaignKpi, prod);

@@ -7,13 +7,9 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { PageTitle } from '@/components/layout/page-title';
 import { PageSkeleton } from '@/components/skeletons';
+import type { CampaignGoalOption } from '@/types/campaign';
 
-interface Campaign {
-  id: string;
-  campaignName: string;
-  monthlyGoal: number;
-  kpiMetric: string;
-}
+type Campaign = CampaignGoalOption;
 
 interface AgentPerformance {
   id: string;
@@ -411,7 +407,6 @@ function CampaignSelectorView({
 
 function CampaignDetailView({
   data,
-  campaign: campaignData,
   availablePeriods,
   year,
   month,
@@ -421,7 +416,6 @@ function CampaignDetailView({
   onAgentSearchChange,
 }: {
   data: CampaignPerformanceData;
-  campaign: Campaign;
   availablePeriods: AvailablePeriod[];
   year: number;
   month: number;
@@ -961,12 +955,9 @@ function CampaignPerformancePageContent() {
     );
   }
 
-  const selectedCampaign = campaigns.find((c) => c.id === campaignId);
-
   return (
     <CampaignDetailView
       data={data}
-      campaign={selectedCampaign || { id: campaignId, campaignName: "Unknown", monthlyGoal: 0, kpiMetric: "" }}
       availablePeriods={availablePeriods}
       year={year}
       month={month}

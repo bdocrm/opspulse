@@ -47,8 +47,10 @@ import {
   type ExecutiveTone,
 } from "@/lib/executive-dashboard";
 import { cn } from "@/lib/utils";
+import { MONTH_NAMES } from "@/lib/months";
+import type { CampaignOption } from "@/types/campaign";
 
-interface Campaign { id: string; campaignName: string }
+type Campaign = CampaignOption;
 interface Period { year: number; month: number }
 interface CampaignRow {
   id: string;
@@ -84,10 +86,6 @@ interface DashboardData {
 }
 type SortMode = "critical" | "highest" | "lowest" | "increase" | "decline" | "alphabetical";
 
-const MONTH_NAMES = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
 const numberFmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 const pctFmt = new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const currencyFmt = new Intl.NumberFormat("en-PH", { style: "currency", currency: "PHP", maximumFractionDigits: 0 });
@@ -228,7 +226,7 @@ export default function DashboardPage() {
   const previousUrl = `/api/dashboard?year=${previousPeriod.year}&month=${previousPeriod.month}${selectedCampaignId ? `&campaignId=${selectedCampaignId}` : ""}&dataVersion=4`;
   const { data: previousData } = useSWR<DashboardData>(previousUrl, fetcher, { revalidateOnFocus: false, refreshInterval: 0, dedupingInterval: 30_000 });
 
-  const rows = data?.campaignTable ?? [];
+  const rows = useMemo(() => data?.campaignTable ?? [], [data?.campaignTable]);
   const insights = useMemo(() => buildCampaignInsights(rows, previousData?.campaignTable ?? []), [rows, previousData?.campaignTable]);
   const productionRows = insights.filter((item) => item.hasData);
   const measurable = insights.filter((item) => item.achievement != null);
@@ -248,7 +246,7 @@ export default function DashboardPage() {
   const previousKpis = previousData?.kpis;
   const periodLabel = month === 0 ? `${year}` : `${MONTH_NAMES[month - 1]} ${year}`;
   const compareLabel = previousPeriod.month === 0 ? `${previousPeriod.year}` : `${MONTH_NAMES[previousPeriod.month - 1]} ${previousPeriod.year}`;
-  const availablePeriods = data?.availablePeriods ?? [];
+  const availablePeriods = useMemo(() => data?.availablePeriods ?? [], [data?.availablePeriods]);
   const yearOptions = [...new Set([currentDate.getFullYear(), year, ...availablePeriods.map((item) => item.year)])].sort((a, b) => b - a);
   const canConfigure = ["CEO", "OM"].includes((session?.user as { role?: string } | undefined)?.role ?? "");
 

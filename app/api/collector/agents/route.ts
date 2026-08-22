@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     const session = await getServerSession(authOptions);
     
@@ -11,8 +11,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const userRole = (session.user as any).role;
-    const userCampaignId = (session.user as any).campaignId;
+    const userRole = session.user.role;
+    const userCampaignId = session.user.campaignId;
 
     // Only COLLECTOR can access this - and only their campaign
     if (userRole === "COLLECTOR" && !userCampaignId) {
@@ -63,8 +63,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const userRole = (session.user as any).role;
-    const userCampaignId = (session.user as any).campaignId;
+    const userRole = session.user.role;
+    const userCampaignId = session.user.campaignId;
 
     // Only COLLECTOR can create agents - for their campaign
     if (userRole !== "COLLECTOR" || !userCampaignId) {

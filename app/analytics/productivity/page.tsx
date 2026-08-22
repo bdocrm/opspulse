@@ -19,7 +19,7 @@ import {
 import { LeaderboardChart } from "@/components/charts/leaderboard-chart";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Activity, Search, Download } from "lucide-react";
+import { Search, Download } from "lucide-react";
 import { ReportPeriodSelector } from "@/components/report-period-selector";
 import { TableSkeleton } from "@/components/skeletons";
 
@@ -54,7 +54,7 @@ export default function ProductivityAnalyticsPage() {
       router.push('/login');
       return;
     }
-    if ((session.user as any).role === 'AGENT' || (session.user as any).role === 'COLLECTOR') {
+    if (session.user.role === 'AGENT' || session.user.role === 'COLLECTOR') {
       router.push('/collector');
       return;
     }
@@ -66,7 +66,7 @@ export default function ProductivityAnalyticsPage() {
   );
 
   const { data: campaignsData } = useSWR(
-    session?.user && (session.user as any).role === 'CEO' ? '/api/campaigns' : null,
+    session?.user?.role === 'CEO' ? '/api/campaigns' : null,
     (url: string) => fetch(url).then(res => res.json())
   );
 
@@ -124,7 +124,7 @@ export default function ProductivityAnalyticsPage() {
             }}
             className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm sm:w-[180px]"
           />
-          {session?.user && (session.user as any).role === 'CEO' && (
+          {session?.user?.role === 'CEO' && (
             <CampaignSelector
               campaigns={campaigns}
               selectedCampaignId={selectedCampaignId}

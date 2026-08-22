@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     const session = await getServerSession(authOptions);
 
@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
     }
 
     const user = await prisma.user.findUnique({
-      where: { id: (session.user as any).id },
+      where: { id: session.user.id },
       select: {
         id: true,
         name: true,
@@ -42,7 +42,7 @@ export async function PATCH(req: NextRequest) {
 
     const body = await req.json();
     const { name, email } = body;
-    const userId = (session.user as any).id;
+    const userId = session.user.id;
 
     const updateData: any = {};
 

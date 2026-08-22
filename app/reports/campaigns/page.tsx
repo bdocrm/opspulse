@@ -21,7 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { kpiColorClass } from "@/utils/kpi";
 import { cn } from "@/lib/utils";
-import { BarChart3, Download, Search, TrendingUp, AlertTriangle } from "lucide-react";
+import { Download, Search, TrendingUp, AlertTriangle } from "lucide-react";
 import { ReportPeriodSelector } from "@/components/report-period-selector";
 
 interface CampaignReport {
@@ -71,13 +71,13 @@ export default function CampaignReportsPage() {
       router.push('/login');
       return;
     }
-    if ((session.user as any).role === 'AGENT' || (session.user as any).role === 'COLLECTOR') {
+    if (session.user.role === 'AGENT' || session.user.role === 'COLLECTOR') {
       router.push('/collector');
       return;
     }
   }, [session, status, router]);
 
-  const { data, isLoading } = useSWR(
+  const { data } = useSWR(
     session?.user ? `/api/reports/campaigns?year=${year}&month=${month}&allMonths=${allMonths}&dataVersion=2` : null,
     fetchFreshJson,
     {

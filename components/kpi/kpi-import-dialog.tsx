@@ -7,11 +7,11 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/toast-provider";
 import type { KpiPreviewRecord } from "@/types/kpi";
+import type { CampaignOption } from "@/types/campaign";
 
-type Campaign = { id: string; campaignName: string };
 type Preview = {
   fileName: string;
-  campaign: Campaign;
+  campaign: CampaignOption;
   worksheets: Array<{ name: string; month: number | null; supported: boolean; recordCount: number; error?: string }>;
   agents: Array<{ id: string; name: string; seatNumber: number | null }>;
   records: KpiPreviewRecord[];
@@ -32,7 +32,7 @@ export function KpiImportDialog({
   defaultCampaignId,
   onImported,
 }: {
-  campaigns: Campaign[];
+  campaigns: CampaignOption[];
   defaultCampaignId?: string;
   onImported: () => void;
 }) {

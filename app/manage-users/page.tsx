@@ -17,6 +17,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CampaignMultiSelect } from "@/components/campaign-multi-select";
 import { PageSkeleton } from "@/components/skeletons";
 import { Trash2, Edit2, Plus, Search, AlertTriangle, Key } from "lucide-react";
+import type { CampaignOption } from "@/types/campaign";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -33,11 +34,6 @@ interface User {
   campaigns?: { id: string; campaignName: string }[];
   campaignIds?: string[];
   createdAt: string;
-}
-
-interface Campaign {
-  id: string;
-  campaignName: string;
 }
 
 interface FormData {
@@ -96,7 +92,7 @@ export default function ManageUsersPage() {
   const { data: campaignsData } = useSWR("/api/campaigns", fetcher);
 
   const users: User[] = Array.isArray(usersData) ? usersData : [];
-  const campaigns: Campaign[] = Array.isArray(campaignsData) ? campaignsData : [];
+  const campaigns: CampaignOption[] = Array.isArray(campaignsData) ? campaignsData : [];
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);

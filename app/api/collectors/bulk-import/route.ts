@@ -83,12 +83,6 @@ type WorksheetCampaignMappings = Record<string, string[]>;
 type ReportPeriodType = 'daily' | 'monthly' | 'yearly';
 type DuplicateMode = 'skip' | 'update' | 'replace_period';
 
-function developmentImportLog(event: string, details: Record<string, unknown>) {
-  if (process.env.NODE_ENV !== 'production') {
-    console.info(`[bulk-import:${event}]`, details);
-  }
-}
-
 const MB_PA_DETAIL_KEYS = [
   'c2gTxn', 'c2gVol', 'btTxn', 'btVol', 'balconTxn', 'balconVol', 'grandTotalTxn', 'grandTotalVol',
 ] as const;
@@ -923,7 +917,6 @@ function parseDetectedRows(rows: any[][], metricType: string, campaignName: stri
   const suppHit = findHeaderAlias(rows, ['supplementary', 'supplemental']);
   const dateHit = findDateHeader(rows);
   const agentCodeHit = findHeaderAlias(rows, ['employee id', 'agent id', 'collector id', 'agent code']);
-  const seatHit = findHeaderAlias(rows, ['seat category', 'seat cat']);
   const elapsedWorkingDaysHit = findHeaderAlias(rows, ['elapsed working days', 'working days elapsed', 'days passed']);
   const totalWorkingDaysHit = findHeaderAlias(rows, ['total working days', 'business days', 'workdays']);
 
@@ -1452,7 +1445,7 @@ async function buildKpiBulkPreview(
     }
   }
 
-  const worksheets = parsed.worksheets.map((sheet, index) => {
+  const worksheets = parsed.worksheets.map((sheet) => {
     const sheetRecords = parsed.records.filter((record) => record.sourceSheet === sheet.name);
     const validRows = sheetRecords.filter((record) => record.errors.length === 0).length;
     const duplicateRows = sheetRecords.filter((record) => {
@@ -2225,7 +2218,6 @@ function buildBpiPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
   const sheetMappings = new Map<string, { campaign: AssignedCampaign; source: 'sheet' | 'record' | 'selected' | 'unresolved' }>(parsed.sheets.map((sheet) => {
     const mappings = sheet.records.map((record) => recordMappings.get(record)!);
     const resolved = mappings.filter((mapping) => mapping.source !== 'unresolved');
-    const unresolved = mappings.filter((mapping) => mapping.source === 'unresolved');
     if (resolved.length) return [sheet.sheetName, { campaign: resolved[0].campaign, source: 'record' as const }];
     return [sheet.sheetName, mapWorksheetCampaign(sheet.sheetName, selectedCampaigns)];
   }));
@@ -3214,23 +3206,6 @@ export async function POST(req: NextRequest) {
             worksheetPreviews: preview.sheets.map(({ entries, ...sheet }) => sheet),
           }, { status: 400 });
         }
-        developmentImportLog('preview', {
-          sourceWorkbook: file.name,
-          worksheets: preview.sheets.map((sheet) => ({
-            name: sheet.sheetName,
-            format: sheet.format,
-            rowsRead: sheet.totalRows,
-            validRows: sheet.validRows,
-            invalidRows: sheet.invalidRows,
-            duplicateRows: sheet.duplicateRows,
-            campaignMapping: sheet.campaignMapping,
-          })),
-          campaignsDetected: [...new Set(
-            preview.previewRecords.map((record) => record.campaignName)
-          )],
-          summary: preview.workbookSummary,
-        });
-
         return NextResponse.json({
           preview: true,
           multiSheet: true,
@@ -3594,15 +3569,6 @@ export async function POST(req: NextRequest) {
         ),
       };
       }, { timeout: 120000 });
-      developmentImportLog('persisted', {
-        sourceWorkbook: file.name,
-        worksheetsProcessed: importPayload.worksheetPreviews.map((sheet: any) => sheet.sheetName),
-        campaignsDetected: importPayload.importedCampaignIds,
-        insertedRecords: importPayload.inserted,
-        updatedRecords: importPayload.updated,
-        duplicateRecords: importPayload.skipped,
-        invalidRecords: importPayload.invalid,
-      });
       return NextResponse.json(importPayload);
     }
     if (!isExcel && !isCsv) {

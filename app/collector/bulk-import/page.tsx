@@ -602,7 +602,7 @@ export default function BulkImportPage() {
       ? campaigns.filter((campaign) => assignedCampaignIds.includes(campaign.id))
       : campaigns;
   const selectedCampaigns = availableCampaigns.filter((campaign) => campaignIds.includes(campaign.id));
-  const importFiles = importHistoryData?.imports ?? [];
+  const importFiles = useMemo(() => importHistoryData?.imports ?? [], [importHistoryData?.imports]);
   const sortedImportFiles = useMemo(
     () =>
       [...importFiles].sort((a, b) =>

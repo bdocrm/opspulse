@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { PageTitle } from "@/components/layout/page-title";
@@ -45,16 +45,7 @@ export default function MyAccountPage() {
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [passwordErrors, setPasswordErrors] = useState<ValidationErrors>({});
 
-  useEffect(() => {
-    if (status === "loading") return;
-    if (!session?.user) {
-      router.push("/dashboard");
-      return;
-    }
-    fetchProfile();
-  }, [session, status, router]);
-
-  const fetchProfile = async () => {
+  const fetchProfile = useCallback(async () => {
     try {
       const res = await fetch("/api/auth/me");
       if (!res.ok) {
@@ -73,7 +64,16 @@ export default function MyAccountPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [addToast]);
+
+  useEffect(() => {
+    if (status === "loading") return;
+    if (!session?.user) {
+      router.push("/dashboard");
+      return;
+    }
+    fetchProfile();
+  }, [fetchProfile, router, session, status]);
 
   const validateForm = (): ValidationErrors => {
     const errors: ValidationErrors = {};
