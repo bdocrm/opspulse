@@ -26,6 +26,34 @@ type ReportPeriodType = 'daily' | 'monthly' | 'yearly';
 type DuplicateMode = 'skip' | 'update' | 'replace_period';
 type ProductionImportStrategy = 'fill_missing' | 'update_existing';
 
+const importStageOrder: Array<{ key: Step; label: string }> = [
+  { key: 'configure', label: 'Select' },
+  { key: 'previewing', label: 'Validate' },
+  { key: 'confirm', label: 'Review' },
+  { key: 'importing', label: 'Import' },
+  { key: 'done', label: 'Complete' },
+];
+
+function ImportProgressSteps({ step }: { step: Step }) {
+  const currentIndex = importStageOrder.findIndex((stage) => stage.key === step);
+  return (
+    <ol className="grid grid-cols-5 gap-1 rounded-xl border bg-muted/20 p-2 sm:gap-2 sm:p-3" aria-label="Import progress">
+      {importStageOrder.map((stage, index) => {
+        const complete = index < currentIndex || step === 'done';
+        const active = index === currentIndex;
+        return (
+          <li key={stage.key} className="flex min-w-0 flex-col items-center gap-1 text-center" aria-current={active ? 'step' : undefined}>
+            <span className={`motion-status-reveal flex h-6 w-6 items-center justify-center rounded-full border text-[11px] font-semibold transition-[background-color,border-color,color] duration-200 ${complete ? 'border-emerald-500 bg-emerald-500 text-white' : active ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background text-muted-foreground'}`}>
+              {complete ? <CheckCircle className="h-3.5 w-3.5" aria-hidden="true" /> : index + 1}
+            </span>
+            <span className={`truncate text-[10px] sm:text-xs ${active ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}>{stage.label}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 interface NormalizedPreviewRecord {
   fileName?: string;
   sheet: string;
@@ -443,6 +471,7 @@ export default function BulkImportPage() {
 
   // Settings
   const [files, setFiles] = useState<File[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [importMode, setImportMode] = useState<ImportMode>('all');
   const [selectedFileNames, setSelectedFileNames] = useState<string[]>([]);
   const [metricType, setMetricType] = useState('all');
@@ -494,6 +523,7 @@ export default function BulkImportPage() {
   const previewInFlight = useRef(false);
   const productionImportInFlight = useRef(false);
   const campaignAccessRefreshed = useRef(false);
+  const dragDepth = useRef(0);
 
   const fetcher = (url: string) => fetch(url).then((res) => res.json());
   const { data: importHistoryData, mutate: mutateImportHistory } = useSWR<{
@@ -1278,6 +1308,7 @@ export default function BulkImportPage() {
     return (
       <div className="space-y-6 p-6">
         <PageTitle title="Bulk Data Import" subtitle="Upload production dashboards, KPI workbooks, Excel files, or CSV data" />
+        <ImportProgressSteps step={step} />
 
         {error && (
           <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
@@ -1396,13 +1427,16 @@ export default function BulkImportPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div
-              className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center hover:border-blue-500 transition"
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => { event.preventDefault(); addFiles(Array.from(event.dataTransfer.files)); }}
+              className={`rounded-lg border-2 border-dashed p-8 text-center transition-[background-color,border-color,transform] duration-200 ease-out ${dragActive ? 'scale-[1.01] border-blue-500 bg-blue-500/5' : 'border-slate-300 hover:border-blue-500'}`}
+              data-drag-active={dragActive || undefined}
+              onDragEnter={(event) => { event.preventDefault(); dragDepth.current += 1; setDragActive(true); }}
+              onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }}
+              onDragLeave={(event) => { event.preventDefault(); dragDepth.current = Math.max(0, dragDepth.current - 1); if (dragDepth.current === 0) setDragActive(false); }}
+              onDrop={(event) => { event.preventDefault(); dragDepth.current = 0; setDragActive(false); addFiles(Array.from(event.dataTransfer.files)); }}
             >
               <input type="file" accept=".csv,.xlsx,.xls" multiple onChange={handleFileChange} className="hidden" id="file-input" />
-              <label htmlFor="file-input" className="cursor-pointer block">
-                <Upload className="h-8 w-8 mx-auto text-slate-400 mb-2" />
+              <label htmlFor="file-input" className="block cursor-pointer">
+                <Upload className={`mx-auto mb-2 h-8 w-8 text-slate-400 transition-transform duration-200 ${dragActive ? 'scale-[1.03] text-blue-500' : ''}`} />
                 <p className="text-sm font-medium text-slate-700">
                   {files.length ? `${files.length} file(s) selected` : 'Click to select or drag & drop'}
                 </p>
@@ -1410,14 +1444,14 @@ export default function BulkImportPage() {
               </label>
             </div>
             {files.length > 0 && (
-              <div className="text-sm rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-blue-800">
+              <div className="motion-status-reveal rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
                 {detectedPeriod
                   ? <>Detected MTD period: <span className="font-semibold">{detectedPeriod.label}</span></>
                   : <>Could not detect a month in the filename — set the Report Date manually above.</>}
               </div>
             )}
             {files.length > 0 && (
-              <div className="space-y-2 rounded-lg border p-3">
+              <div className="motion-fade-in space-y-2 rounded-lg border p-3">
                 {files.length > 1 && (
                   <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                     <input type="checkbox" checked={selectedFileNames.length === files.length} onChange={(event) => setSelectedFileNames(event.target.checked ? files.map((item) => item.name) : [])} className="h-4 w-4 accent-blue-600" />
@@ -1697,8 +1731,9 @@ export default function BulkImportPage() {
   // ─── STEP: PREVIEWING ───────────────────────────────────────────────────────
   if (step === 'previewing') {
     return (
-      <div className="p-6 flex items-center justify-center min-h-64">
-        <div className="text-center space-y-3 text-slate-600">
+      <div className="flex min-h-64 items-center justify-center p-6">
+        <div className="w-full max-w-xl space-y-5 text-center text-slate-600">
+          <ImportProgressSteps step={step} />
           <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto" />
           <p className="text-sm">Scanning workbook structure and validating data...</p>
         </div>
@@ -1749,6 +1784,7 @@ export default function BulkImportPage() {
             title="Review Production Monitoring Import"
             subtitle="Campaigns, business units, reporting periods, and Week columns were detected from the Excel workbook"
           />
+          <ImportProgressSteps step={step} />
 
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
             <p className="font-semibold">OM names are excluded</p>
@@ -2027,6 +2063,7 @@ export default function BulkImportPage() {
     return (
       <div className="space-y-6 p-6">
         <PageTitle title="Review Before Import" subtitle="Confirm the agents and data before saving" />
+        <ImportProgressSteps step={step} />
 
         {detectedPeriod && (
           <div className="flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
@@ -2507,8 +2544,9 @@ export default function BulkImportPage() {
   // ─── STEP: IMPORTING ────────────────────────────────────────────────────────
   if (step === 'importing') {
     return (
-      <div className="p-6 flex items-center justify-center min-h-64">
-        <div className="text-center space-y-3 text-slate-600">
+      <div className="flex min-h-64 items-center justify-center p-6">
+        <div className="w-full max-w-xl space-y-5 text-center text-slate-600">
+          <ImportProgressSteps step={step} />
           <div className="animate-spin h-8 w-8 border-4 border-green-500 border-t-transparent rounded-full mx-auto" />
           <p className="text-sm">{productionPreview ? 'Importing Production Monitoring records...' : 'Creating agents and importing records...'}</p>
           {productionPreview && <p className="text-xs text-slate-500">Validating on the server · Saving valid rows · Finalizing the audit trail</p>}
@@ -2521,8 +2559,9 @@ export default function BulkImportPage() {
   return (
     <div className="space-y-6 p-6">
       <PageTitle title="Import Complete" subtitle={importResult?.productionMonitoring ? "Production Monitoring data has been saved" : isKpiPreview ? "KPI data has been saved" : "Production data has been saved"} />
+      <ImportProgressSteps step={step} />
 
-      <Card className="border-green-200">
+      <Card className="motion-card-enter border-green-200">
         <CardHeader>
           <div className="flex items-center gap-2">
             <CheckCircle className="h-5 w-5 text-green-600" />
@@ -2534,45 +2573,45 @@ export default function BulkImportPage() {
             <p className="text-slate-700 font-medium">{importResult.message}</p>
           )}
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
+          <div className="motion-stagger grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div className="motion-stagger-item rounded-lg border border-green-200 bg-green-50 p-3 text-center">
               <p className="text-xl font-bold text-green-700">{importResult?.inserted ?? importResult?.success ?? 0}</p>
               <p className="text-xs text-green-600">{importResult?.productionMonitoring ? 'New Records' : 'Records Inserted'}</p>
             </div>
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-center">
+            <div className="motion-stagger-item rounded-lg border border-blue-200 bg-blue-50 p-3 text-center">
               <p className="text-xl font-bold text-blue-700">{importResult?.skipped ?? 0}</p>
               <p className="text-xs text-blue-600">{importResult?.productionMonitoring ? 'Rows Skipped' : 'Existing Skipped'}</p>
             </div>
             {importResult?.updated > 0 && (
-              <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-center">
+              <div className="motion-stagger-item rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-center">
                 <p className="text-xl font-bold text-indigo-700">{importResult.updated}</p>
                 <p className="text-xs text-indigo-600">Records Updated</p>
               </div>
             )}
             {importResult?.productionMonitoring && importResult?.unchanged > 0 && (
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
+              <div className="motion-stagger-item rounded-lg border border-slate-200 bg-slate-50 p-3 text-center">
                 <p className="text-xl font-bold text-slate-700">{importResult.unchanged}</p>
                 <p className="text-xs text-slate-600">Unchanged</p>
               </div>
             )}
             {importResult?.unmapped > 0 && (
-              <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 text-center">
+              <div className="motion-stagger-item rounded-lg border border-orange-200 bg-orange-50 p-3 text-center">
                 <p className="text-xl font-bold text-orange-700">{importResult.unmapped}</p>
                 <p className="text-xs text-orange-600">Unmapped</p>
               </div>
             )}
-            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
+            <div className="motion-stagger-item rounded-lg border border-red-200 bg-red-50 p-3 text-center">
               <p className="text-xl font-bold text-red-700">{importResult?.invalid ?? 0}</p>
               <p className="text-xs text-red-600">Invalid</p>
             </div>
             {importResult?.created > 0 && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-center">
+              <div className="motion-stagger-item rounded-lg border border-amber-200 bg-amber-50 p-3 text-center">
                 <p className="text-xl font-bold text-amber-700">{importResult.created}</p>
                 <p className="text-xs text-amber-600">New Agents Created</p>
               </div>
             )}
             {importResult?.errors?.length > 0 && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
+              <div className="motion-stagger-item rounded-lg border border-red-200 bg-red-50 p-3 text-center">
                 <p className="text-xl font-bold text-red-700">{importResult.errors.length}</p>
                 <p className="text-xs text-red-600">Errors</p>
               </div>

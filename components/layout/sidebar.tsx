@@ -148,7 +148,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         href={href}
         onClick={onClose}
         className={cn(
-          "group relative flex items-center gap-3 overflow-hidden rounded-md px-3 py-2 text-sm font-medium transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          "motion-sidebar-link group relative flex items-center gap-3 overflow-hidden rounded-md px-3 py-2 text-sm font-medium transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transform-none motion-reduce:transition-none",
           active
             ? "bg-primary/10 text-primary"
             : "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -173,14 +173,14 @@ export function Sidebar({ open, onClose }: SidebarProps) {
       {/* Overlay for mobile */}
       {open && (
         <div
-          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+          className="motion-sidebar-overlay fixed inset-0 z-40 bg-black/50 lg:hidden"
           onClick={onClose}
         />
       )}
 
       <aside
         className={cn(
-          "fixed left-0 top-0 z-50 flex h-full w-64 flex-col border-r bg-card transition-transform duration-300 lg:translate-x-0 lg:z-30",
+          "fixed left-0 top-0 z-50 flex h-full w-64 flex-col border-r bg-card transition-transform duration-200 ease-out motion-reduce:transition-none lg:z-30 lg:translate-x-0",
           open ? "translate-x-0" : "-translate-x-full"
         )}
       >
@@ -197,7 +197,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
               unoptimized
             />
           </Link>
-          <button className="lg:hidden absolute top-4 right-4" onClick={onClose}>
+          <button className="motion-control absolute right-4 top-4 rounded-md p-2 transition-[background-color,transform] duration-150 hover:bg-accent active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:hidden" onClick={onClose} aria-label="Close navigation">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -224,7 +224,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                       type="button"
                       onClick={() => toggleSection(section.label)}
                       aria-expanded={expanded}
-                      className="flex w-full items-center justify-between rounded-md px-3 py-2 text-[11px] font-semibold uppercase text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      className="motion-control flex w-full items-center justify-between rounded-md px-3 py-2 text-[11px] font-semibold uppercase text-muted-foreground transition-[background-color,color,transform] duration-200 hover:bg-accent hover:text-foreground active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transform-none motion-reduce:transition-none"
                     >
                       <span>{section.label}</span>
                       <ChevronDown
@@ -235,7 +235,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                       />
                     </button>
                     {expanded && (
-                      <div className="space-y-1">
+                      <div className="motion-sidebar-section space-y-1">
                         {links.map(renderLink)}
                       </div>
                     )}

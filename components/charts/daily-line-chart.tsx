@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
+import { useReducedMotion } from "@/hooks/use-reduced-motion";
 
 interface DailyLineChartProps {
   data: {
@@ -61,6 +62,7 @@ function ExecutiveTooltip({ active, payload, label }: any) {
 }
 
 export function DailyLineChart({ data, color = "#6366f1", label = "Value" }: DailyLineChartProps) {
+  const reducedMotion = useReducedMotion();
   return (
     <ResponsiveContainer width="100%" height={300}>
       <LineChart data={data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
@@ -78,6 +80,9 @@ export function DailyLineChart({ data, color = "#6366f1", label = "Value" }: Dai
           activeDot={{ r: 5 }}
           connectNulls={false}
           name={label}
+          isAnimationActive={!reducedMotion}
+          animationDuration={600}
+          animationEasing="ease-out"
         />
         {data.some((item) => item.goal != null) && (
           <Line
@@ -90,6 +95,9 @@ export function DailyLineChart({ data, color = "#6366f1", label = "Value" }: Dai
             activeDot={false}
             connectNulls={false}
             name="Daily target"
+            isAnimationActive={!reducedMotion}
+            animationDuration={600}
+            animationEasing="ease-out"
           />
         )}
       </LineChart>

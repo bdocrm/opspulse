@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
+import { useReducedMotion } from "@/hooks/use-reduced-motion";
 
 const COLORS = ["#6366f1", "#8b5cf6", "#a78bfa", "#c4b5fd", "#ddd6fe"];
 
@@ -52,6 +53,7 @@ function ExecutiveTooltip({ active, payload }: any) {
 }
 
 export function LeaderboardChart({ data }: LeaderboardChartProps) {
+  const reducedMotion = useReducedMotion();
   const chartData = [...data]
     .sort((a, b) => b.value - a.value)
     .slice(0, 10)
@@ -72,7 +74,7 @@ export function LeaderboardChart({ data }: LeaderboardChartProps) {
         <XAxis type="number" className="text-xs" tick={{ fontSize: 11 }} />
         <YAxis type="category" dataKey="displayName" className="text-xs" tick={{ fontSize: 11 }} width={120} />
         <Tooltip content={<ExecutiveTooltip />} />
-        <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+        <Bar dataKey="value" radius={[0, 4, 4, 0]} isAnimationActive={!reducedMotion} animationDuration={600} animationEasing="ease-out">
           {chartData.map((_, idx) => (
             <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
           ))}

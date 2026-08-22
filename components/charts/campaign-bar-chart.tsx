@@ -12,6 +12,7 @@ import {
   LabelList,
 } from "recharts";
 import { kpiColorHex } from "@/utils/kpi";
+import { useReducedMotion } from "@/hooks/use-reduced-motion";
 
 interface CampaignBarChartProps {
   data: {
@@ -56,6 +57,7 @@ function ExecutiveTooltip({ active, payload }: any) {
 }
 
 export function CampaignBarChart({ data }: CampaignBarChartProps) {
+  const reducedMotion = useReducedMotion();
   const minWidth = Math.max(900, data.length * 100);
   const renderAchievementLabel = ({ x, y, width, value, index }: any) => {
     const row = data[Number(index)];
@@ -82,7 +84,7 @@ export function CampaignBarChart({ data }: CampaignBarChartProps) {
             <XAxis dataKey="name" className="text-xs" tick={{ fontSize: 11 }} interval={0} />
             <YAxis className="text-xs" tick={{ fontSize: 11 }} />
             <Tooltip content={<ExecutiveTooltip />} />
-            <Bar dataKey="achievement" radius={[4, 4, 0, 0]} minPointSize={3}>
+            <Bar dataKey="achievement" radius={[4, 4, 0, 0]} minPointSize={3} isAnimationActive={!reducedMotion} animationDuration={600} animationEasing="ease-out">
               {data.map((entry, idx) => (
                 <Cell
                   key={idx}

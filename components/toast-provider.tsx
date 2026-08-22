@@ -1,7 +1,8 @@
 'use client';
 
-import { ReactNode, createContext, useContext, useState, useCallback } from 'react';
+import { ReactNode, createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { AlertCircle, CheckCircle, Info, AlertTriangle, X } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 
@@ -29,14 +30,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const addToast = useCallback(
     (type: ToastType, message: string, duration = 4000) => {
-      const id = Date.now().toString();
+      const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       setToasts((prev) => [...prev, { id, type, message, duration }]);
-
-      if (duration > 0) {
-        setTimeout(() => removeToast(id), duration);
-      }
     },
-    [removeToast]
+    []
   );
 
   return (
@@ -63,12 +62,12 @@ function ToastContainer({
   removeToast: (id: string) => void;
 }) {
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+    <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex max-w-[calc(100vw-2rem)] flex-col gap-2" aria-live="polite">
       {toasts.map((toast) => (
         <ToastItem
           key={toast.id}
           toast={toast}
-          onRemove={() => removeToast(toast.id)}
+          removeToast={removeToast}
         />
       ))}
     </div>
@@ -77,11 +76,33 @@ function ToastContainer({
 
 function ToastItem({
   toast,
-  onRemove,
+  removeToast,
 }: {
   toast: Toast;
-  onRemove: () => void;
+  removeToast: (id: string) => void;
 }) {
+  const [closing, setClosing] = useState(false);
+  const manualCloseTimer = useRef<number>();
+
+  useEffect(() => {
+    if (!toast.duration || toast.duration <= 0) return;
+    const exitDuration = 140;
+    const exitTimer = window.setTimeout(() => setClosing(true), Math.max(toast.duration - exitDuration, 0));
+    const removalTimer = window.setTimeout(() => removeToast(toast.id), toast.duration);
+    return () => {
+      window.clearTimeout(exitTimer);
+      window.clearTimeout(removalTimer);
+    };
+  }, [removeToast, toast.duration, toast.id]);
+
+  useEffect(() => () => window.clearTimeout(manualCloseTimer.current), []);
+
+  const close = () => {
+    if (closing) return;
+    setClosing(true);
+    manualCloseTimer.current = window.setTimeout(() => removeToast(toast.id), 140);
+  };
+
   const bgColor = {
     success: 'bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800',
     error: 'bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800',
@@ -112,13 +133,19 @@ function ToastItem({
 
   return (
     <div
-      className={`pointer-events-auto flex gap-3 items-start p-4 rounded-lg border ${bgColor[toast.type]} animate-in fade-in slide-in-from-right-4 duration-300`}
+      role={toast.type === 'error' ? 'alert' : 'status'}
+      aria-atomic="true"
+      className={cn(
+        'pointer-events-auto flex items-start gap-3 rounded-lg border p-4 shadow-lg',
+        bgColor[toast.type],
+        closing ? 'motion-toast-exit' : 'motion-toast-enter'
+      )}
     >
       <Icon className={`h-5 w-5 flex-shrink-0 mt-0.5 ${iconColor[toast.type]}`} />
       <p className={`text-sm font-medium ${textColor[toast.type]}`}>{toast.message}</p>
       <button
-        onClick={onRemove}
-        className={`ml-auto flex-shrink-0 opacity-50 hover:opacity-100 transition ${textColor[toast.type]}`}
+        onClick={close}
+        className={cn('motion-control ml-auto flex-shrink-0 rounded-sm opacity-50 transition-[opacity,transform] duration-150 hover:opacity-100 active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current', textColor[toast.type])}
         aria-label="Close"
       >
         <X className="h-4 w-4" />

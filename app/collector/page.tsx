@@ -334,7 +334,7 @@ function relativeUpdate(value?: string | null) {
 
 function CollectorKpiCard({ label, value, support, icon: Icon, loading }: { label: string; value: string; support?: React.ReactNode; icon: typeof Users; loading: boolean }) {
   return (
-    <Card className="transition-colors hover:border-primary/30">
+    <Card className="motion-stagger-item motion-hover-lift hover:border-primary/30">
       <CardContent className="p-4">
         <div className="flex items-start justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{label}</p>{loading ? <Skeleton className="mt-3 h-9 w-28" /> : <p className="mt-2 truncate text-3xl font-bold tracking-tight" title={value}>{value}</p>}</div><span className="rounded-xl border bg-muted/30 p-2.5"><Icon className="h-5 w-5 text-muted-foreground" /></span></div>
         {!loading && support && <div className="mt-3 text-xs text-muted-foreground">{support}</div>}
@@ -1354,7 +1354,7 @@ export default function CollectorDashboard() {
       )}
 
       {/* KPI Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="motion-stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <CollectorKpiCard
           label={campaigns.length === 1 ? `${kpiLabel(campaigns[0].kpiMetric)} Goal` : 'Campaign Overview'}
           value={campaigns.length === 1 ? (campaigns[0].goal == null ? 'Target unavailable' : formatKpiValue(campaigns[0].kpiMetric, campaigns[0].goal)) : `${campaigns.length} Assigned`}

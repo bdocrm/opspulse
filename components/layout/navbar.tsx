@@ -28,10 +28,10 @@ export function Navbar({ onMenuClick }: NavbarProps) {
   };
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b bg-card px-4 lg:px-6">
+    <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b bg-card/95 px-4 backdrop-blur-sm transition-[background-color,border-color] duration-200 motion-reduce:transition-none lg:px-6">
       {/* Left */}
       <div className="flex items-center gap-3">
-        <button className="lg:hidden" onClick={onMenuClick}>
+        <button className="motion-control rounded-md p-1.5 transition-[background-color,transform] duration-150 hover:bg-accent active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:hidden" onClick={onMenuClick} aria-label="Open navigation">
           <Menu className="h-6 w-6" />
         </button>
         {/* Logo only visible on mobile when sidebar is hidden */}
@@ -56,7 +56,7 @@ export function Navbar({ onMenuClick }: NavbarProps) {
             <p className="text-xs text-muted-foreground">{session?.user?.role}</p>
           </div>
         </div>
-        <Button variant="ghost" size="icon" onClick={handleSignOut} title="Sign out">
+        <Button variant="ghost" size="icon" onClick={handleSignOut} title="Sign out" aria-label="Sign out">
           <LogOut className="h-5 w-5" />
         </Button>
       </div>

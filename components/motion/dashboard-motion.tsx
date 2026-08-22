@@ -7,9 +7,12 @@ interface CountUpProps {
   value: number;
   duration?: number;
   className?: string;
+  decimals?: number;
+  prefix?: string;
+  suffix?: string;
 }
 
-export function CountUp({ value, duration = 800, className }: CountUpProps) {
+export function CountUp({ value, duration = 800, className, decimals = 0, prefix = "", suffix = "" }: CountUpProps) {
   const [displayValue, setDisplayValue] = useState(0);
   const previousValue = useRef(0);
   const hasAnimated = useRef(false);
@@ -30,7 +33,8 @@ export function CountUp({ value, duration = 800, className }: CountUpProps) {
     const update = (now: number) => {
       const progress = Math.min((now - startedAt) / duration, 1);
       const easedProgress = 1 - Math.pow(1 - progress, 3);
-      setDisplayValue(Math.round(startValue + (value - startValue) * easedProgress));
+      const interpolatedValue = startValue + (value - startValue) * easedProgress;
+      setDisplayValue(Number(interpolatedValue.toFixed(decimals)));
 
       if (progress < 1) animationFrame = requestAnimationFrame(update);
       else {
@@ -41,14 +45,23 @@ export function CountUp({ value, duration = 800, className }: CountUpProps) {
 
     animationFrame = requestAnimationFrame(update);
     return () => cancelAnimationFrame(animationFrame);
-  }, [duration, value]);
+  }, [decimals, duration, value]);
+
+  const formattedValue = `${prefix}${displayValue.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })}${suffix}`;
+  const accessibleValue = `${prefix}${value.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })}${suffix}`;
 
   return (
     <>
       <span className={cn("tabular-nums", className)} aria-hidden="true">
-        {displayValue.toLocaleString()}
+        {formattedValue}
       </span>
-      <span className="sr-only">{value.toLocaleString()}</span>
+      <span className="sr-only">{accessibleValue}</span>
     </>
   );
 }

@@ -9,6 +9,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { useReducedMotion } from "@/hooks/use-reduced-motion";
 
 interface DailyBarChartProps {
   data: {
@@ -20,6 +21,7 @@ interface DailyBarChartProps {
 }
 
 export function DailyBarChart({ data, color = "#6366f1", label = "Value" }: DailyBarChartProps) {
+  const reducedMotion = useReducedMotion();
   return (
     <ResponsiveContainer width="100%" height={300}>
       <BarChart data={data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
@@ -34,7 +36,7 @@ export function DailyBarChart({ data, color = "#6366f1", label = "Value" }: Dail
           }}
           formatter={(value: number) => [value, label]}
         />
-        <Bar dataKey="value" fill={color} radius={[4, 4, 0, 0]} />
+        <Bar dataKey="value" fill={color} radius={[4, 4, 0, 0]} isAnimationActive={!reducedMotion} animationDuration={600} animationEasing="ease-out" />
       </BarChart>
     </ResponsiveContainer>
   );

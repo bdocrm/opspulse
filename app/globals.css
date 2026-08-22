@@ -24,6 +24,17 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
     --radius: 0.5rem;
+    --motion-duration-micro: 140ms;
+    --motion-duration-interaction: 180ms;
+    --motion-duration-component: 240ms;
+    --motion-duration-card: 300ms;
+    --motion-duration-section: 360ms;
+    --motion-duration-exit: 140ms;
+    --motion-ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+    --motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+    --motion-distance-xs: 3px;
+    --motion-distance-sm: 6px;
+    --motion-distance-md: 8px;
   }
 
   .dark {
@@ -55,6 +66,7 @@
   }
   body {
     @apply bg-background text-foreground;
+    transition: background-color var(--motion-duration-component) ease-out, color var(--motion-duration-component) ease-out;
   }
 }
 
@@ -316,6 +328,307 @@
   .login-connection-lines,
   .login-data-sweep {
     display: none;
+  }
+}
+
+/* OpsView global motion system ------------------------------------------------ */
+@keyframes opsview-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes opsview-fade-up {
+  from { opacity: 0; transform: translate3d(0, var(--motion-distance, var(--motion-distance-sm)), 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes opsview-fade-down {
+  from { opacity: 0; transform: translate3d(0, calc(0px - var(--motion-distance, var(--motion-distance-xs))), 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes opsview-fade-left {
+  from { opacity: 0; transform: translate3d(var(--motion-distance, var(--motion-distance-sm)), 0, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes opsview-fade-right {
+  from { opacity: 0; transform: translate3d(calc(0px - var(--motion-distance, var(--motion-distance-sm))), 0, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes opsview-scale-in {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes opsview-dialog-in {
+  from { opacity: 0; transform: translate(-50%, calc(-50% + 5px)) scale(0.97); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes opsview-dialog-out {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  to { opacity: 0; transform: translate(-50%, calc(-50% + 3px)) scale(0.985); }
+}
+
+@keyframes opsview-toast-in {
+  from { opacity: 0; transform: translate3d(20px, 0, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes opsview-toast-out {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0; transform: translate3d(10px, 0, 0); }
+}
+
+@keyframes opsview-shimmer {
+  from { transform: translate3d(-110%, 0, 0); }
+  to { transform: translate3d(110%, 0, 0); }
+}
+
+@keyframes opsview-status-reveal {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@layer components {
+  .motion-page-enter {
+    --motion-distance: var(--motion-distance-sm);
+    animation: opsview-fade-up var(--motion-duration-component) var(--motion-ease-standard) backwards;
+  }
+
+  .motion-fade-in {
+    animation: opsview-fade-in var(--motion-duration-component) ease-out var(--motion-delay, 0ms) backwards;
+  }
+
+  .motion-fade-up,
+  .motion-card-enter {
+    animation: opsview-fade-up var(--motion-duration-card) var(--motion-ease-standard) var(--motion-delay, 0ms) backwards;
+  }
+
+  .motion-fade-down {
+    animation: opsview-fade-down var(--motion-duration-component) var(--motion-ease-standard) var(--motion-delay, 0ms) backwards;
+  }
+
+  .motion-fade-left {
+    animation: opsview-fade-left var(--motion-duration-component) var(--motion-ease-standard) var(--motion-delay, 0ms) backwards;
+  }
+
+  .motion-fade-right {
+    animation: opsview-fade-right var(--motion-duration-component) var(--motion-ease-standard) var(--motion-delay, 0ms) backwards;
+  }
+
+  .motion-scale-in {
+    animation: opsview-scale-in var(--motion-duration-component) var(--motion-ease-standard) var(--motion-delay, 0ms) backwards;
+  }
+
+  .motion-stagger > .motion-stagger-item {
+    --motion-distance: var(--motion-distance-md);
+    animation: opsview-fade-up var(--motion-duration-card) var(--motion-ease-standard) var(--motion-delay, 0ms) backwards;
+  }
+
+  .motion-stagger > .motion-stagger-item:nth-child(2) { --motion-delay: 60ms; }
+  .motion-stagger > .motion-stagger-item:nth-child(3) { --motion-delay: 120ms; }
+  .motion-stagger > .motion-stagger-item:nth-child(4) { --motion-delay: 180ms; }
+  .motion-stagger > .motion-stagger-item:nth-child(5) { --motion-delay: 240ms; }
+  .motion-stagger > .motion-stagger-item:nth-child(n + 6) { --motion-delay: 300ms; }
+
+  .motion-hover-lift {
+    transition: transform var(--motion-duration-interaction) ease-out, border-color var(--motion-duration-interaction) ease-out, background-color var(--motion-duration-interaction) ease-out, box-shadow var(--motion-duration-interaction) ease-out;
+  }
+
+  .motion-status-reveal,
+  .motion-new-record {
+    animation: opsview-status-reveal var(--motion-duration-component) var(--motion-ease-standard) backwards;
+  }
+
+  .motion-error-reveal,
+  [role="alert"] {
+    --motion-distance: var(--motion-distance-xs);
+    animation: opsview-fade-down var(--motion-duration-interaction) ease-out backwards;
+  }
+
+  .motion-empty-state {
+    animation: opsview-fade-up var(--motion-duration-card) var(--motion-ease-standard) backwards;
+  }
+
+  .motion-content-update {
+    animation: opsview-fade-in var(--motion-duration-interaction) ease-out backwards;
+  }
+
+  .motion-remove-record {
+    opacity: 0;
+    transform: scale(0.98);
+    transition: opacity var(--motion-duration-exit) var(--motion-ease-exit), transform var(--motion-duration-exit) var(--motion-ease-exit);
+  }
+
+  .motion-dropdown[data-state="open"] {
+    transform-origin: var(--radix-select-content-transform-origin, top center);
+    animation: opsview-fade-down var(--motion-duration-interaction) var(--motion-ease-standard) backwards;
+  }
+
+  .motion-dropdown[data-state="closed"] {
+    animation: opsview-fade-in var(--motion-duration-exit) var(--motion-ease-exit) reverse both;
+  }
+
+  .motion-dialog-overlay[data-state="open"] {
+    animation: opsview-fade-in var(--motion-duration-interaction) ease-out backwards;
+  }
+
+  .motion-dialog-overlay[data-state="closed"] {
+    animation: opsview-fade-in var(--motion-duration-exit) var(--motion-ease-exit) reverse both;
+  }
+
+  .motion-dialog-panel[data-state="open"] {
+    animation: opsview-dialog-in var(--motion-duration-component) var(--motion-ease-standard) both;
+  }
+
+  .motion-dialog-panel[data-state="closed"] {
+    animation: opsview-dialog-out var(--motion-duration-exit) var(--motion-ease-exit) both;
+  }
+
+  .motion-tab-panel[data-state="active"] {
+    animation: opsview-fade-in var(--motion-duration-interaction) ease-out both;
+  }
+
+  .motion-checkbox-indicator[data-state="checked"] {
+    animation: opsview-scale-in var(--motion-duration-micro) var(--motion-ease-standard) backwards;
+  }
+
+  .motion-skeleton {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .motion-skeleton::after {
+    position: absolute;
+    inset: 0;
+    content: "";
+    background: linear-gradient(90deg, transparent, hsl(var(--foreground) / 0.055), transparent);
+    animation: opsview-shimmer 1.6s ease-in-out infinite;
+  }
+
+  .motion-toast-enter {
+    animation: opsview-toast-in var(--motion-duration-component) var(--motion-ease-standard) backwards;
+  }
+
+  .motion-toast-exit {
+    pointer-events: none;
+    animation: opsview-toast-out var(--motion-duration-exit) var(--motion-ease-exit) both;
+  }
+
+  .motion-sidebar-overlay {
+    animation: opsview-fade-in var(--motion-duration-interaction) ease-out backwards;
+  }
+
+  .motion-sidebar-section {
+    animation: opsview-fade-down var(--motion-duration-interaction) var(--motion-ease-standard) backwards;
+  }
+
+  .opsview-shell :is(button, [role="button"], a[href]) {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .opsview-shell :is(input:not([type="checkbox"]):not([type="radio"]), textarea, select) {
+    transition: background-color var(--motion-duration-interaction) ease-out, border-color var(--motion-duration-interaction) ease-out, box-shadow var(--motion-duration-interaction) ease-out, color var(--motion-duration-interaction) ease-out;
+  }
+
+  .opsview-shell :is(input:not([type="checkbox"]):not([type="radio"]), textarea, select):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  .opsview-shell :is(input, textarea, select)[aria-invalid="true"] {
+    border-color: hsl(var(--destructive));
+  }
+
+  .opsview-shell table > tbody > tr {
+    transition: background-color var(--motion-duration-micro) ease-out, color var(--motion-duration-micro) ease-out;
+  }
+
+  .opsview-shell table > tbody > tr:hover {
+    background-color: hsl(var(--muted) / 0.5);
+  }
+
+  .opsview-shell [role="progressbar"],
+  .opsview-shell progress {
+    transition: opacity var(--motion-duration-interaction) ease-out;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .motion-sidebar-link:hover {
+    transform: translate3d(2px, 0, 0);
+  }
+
+  .motion-hover-lift:hover {
+    transform: translate3d(0, -2px, 0);
+    border-color: hsl(var(--primary) / 0.4);
+    box-shadow: 0 4px 14px hsl(var(--foreground) / 0.06);
+  }
+}
+
+@media (max-width: 640px) {
+  .motion-page-enter,
+  .motion-fade-up,
+  .motion-card-enter,
+  .motion-stagger > .motion-stagger-item {
+    --motion-distance: var(--motion-distance-xs);
+  }
+
+  .motion-stagger > .motion-stagger-item:nth-child(n + 4) {
+    --motion-delay: 120ms;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-page-enter,
+  .motion-fade-in,
+  .motion-fade-up,
+  .motion-fade-down,
+  .motion-fade-left,
+  .motion-fade-right,
+  .motion-scale-in,
+  .motion-card-enter,
+  .motion-stagger > .motion-stagger-item,
+  .motion-status-reveal,
+  .motion-new-record,
+  .motion-error-reveal,
+  .motion-empty-state,
+  .motion-content-update,
+  .motion-dropdown,
+  .motion-dialog-overlay,
+  .motion-dialog-panel,
+  .motion-tab-panel,
+  .motion-checkbox-indicator,
+  .motion-toast-enter,
+  .motion-toast-exit,
+  .motion-sidebar-overlay,
+  .motion-sidebar-section,
+  [role="alert"] {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+
+  .motion-skeleton::after {
+    animation: none;
+    display: none;
+  }
+
+  .motion-dialog-panel {
+    transform: translate(-50%, -50%) !important;
+  }
+
+  .motion-hover-lift,
+  .motion-sidebar-link,
+  .opsview-shell *,
+  body {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
 

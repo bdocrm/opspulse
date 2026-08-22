@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { CountUp } from "@/components/motion/dashboard-motion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { KpiStatusBadge } from "@/components/kpi/kpi-status-badge";
 import { KpiImportDialog } from "@/components/kpi/kpi-import-dialog";
@@ -55,10 +56,12 @@ function MetricCard({ label, metric, unit, lower }: { label: string; metric?: Me
   const difference = metric.actual != null && metric.goal != null ? metric.actual - metric.goal : null;
   const onTarget = difference != null ? (lower ? difference <= 0 : difference >= 0) : null;
   return (
-    <Card>
+    <Card className="motion-stagger-item motion-hover-lift">
       <CardContent className="pt-5">
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
-        <p className="mt-2 text-2xl font-bold tabular-nums">{display(metric.actual, unit)}</p>
+        <p className="mt-2 text-2xl font-bold tabular-nums">
+          {metric.actual == null ? "—" : <CountUp value={metric.actual} decimals={2} suffix={unit} />}
+        </p>
         <p className="mt-1 text-xs text-muted-foreground">Goal {lower ? "≤" : ""} {display(metric.goal, unit)}</p>
         <div className={`mt-3 flex items-center gap-1 text-xs font-medium ${onTarget == null ? "text-muted-foreground" : onTarget ? "text-green-700" : "text-red-700"}`}>
           {onTarget == null ? null : onTarget ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
@@ -126,7 +129,7 @@ export default function KpiMonitoringPage() {
         <label className="text-xs font-medium text-muted-foreground">Search employee<div className="relative mt-1"><Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" /><Input className="pl-9" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name" /></div></label>
       </CardContent></Card>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="motion-stagger grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {metricConfig.map((config) => summaryLoading ? <Skeleton key={config.key} className="h-32" /> : <MetricCard key={config.key} label={config.label} metric={summary?.metrics[config.key]} unit={config.unit} lower={config.lower} />)}
       </div>
 

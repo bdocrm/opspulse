@@ -144,7 +144,7 @@ function KpiCard({ title, value, target, variance, trend, status, tone, progress
   status: ExecutiveStatus; tone: ExecutiveTone; progress?: number | null; icon: typeof Target; loading: boolean;
 }) {
   return (
-    <Card className="group overflow-hidden transition-colors duration-200 hover:border-primary/30">
+    <Card className="motion-stagger-item motion-hover-lift group overflow-hidden hover:border-primary/30">
       <CardContent className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
@@ -169,7 +169,7 @@ function KpiCard({ title, value, target, variance, trend, status, tone, progress
 function EmptyState({ kind, periodLabel, canConfigure, onSelectPeriod }: { kind: "production" | "target"; periodLabel: string; canConfigure: boolean; onSelectPeriod?: () => void }) {
   const target = kind === "target";
   return (
-    <div className="flex min-h-[220px] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/10 px-6 py-10 text-center">
+    <div className="motion-empty-state flex min-h-[220px] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/10 px-6 py-10 text-center">
       {target ? <Target className="h-7 w-7 text-muted-foreground" /> : <BarChart3 className="h-7 w-7 text-muted-foreground" />}
       <p className="mt-4 text-sm font-semibold uppercase tracking-wide">{target ? "Target not configured" : "No production data"}</p>
       <p className="mt-2 max-w-md text-sm text-muted-foreground">{target ? "A valid target is required before achievement can be evaluated." : `No production records are available for ${periodLabel}.`}</p>
@@ -312,7 +312,7 @@ export default function DashboardPage() {
         </CardContent>
       </Card>
 
-      <section aria-labelledby="kpi-heading"><h2 id="kpi-heading" className="sr-only">Key performance indicators</h2><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section aria-labelledby="kpi-heading"><h2 id="kpi-heading" className="sr-only">Key performance indicators</h2><div className="motion-stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KpiCard title="Total MTD" value={rows.length === 0 ? "No production data" : formatCurrency(data?.kpis.totalMTD)} target={totalGoal == null ? "Target not configured" : formatCurrency(totalGoal)} variance={data?.kpis.totalMTD != null && totalGoal != null ? formatCurrency(data.kpis.totalMTD - totalGoal) : "Not available"} trend={data?.kpis.totalMTD != null && previousKpis?.totalMTD != null && previousKpis.totalMTD !== 0 ? ((data.kpis.totalMTD - previousKpis.totalMTD) / Math.abs(previousKpis.totalMTD)) * 100 : null} status={overall.status} tone={overall.tone} progress={data?.kpis.avgAchievement} icon={Target} loading={isLoading} />
         <KpiCard title="Achievement" value={data?.kpis.avgAchievement == null ? "Target not configured" : formatPct(data.kpis.avgAchievement)} target="100.0%" variance={data?.kpis.avgAchievement == null ? "Not available" : signedPoints(data.kpis.avgAchievement - 100)} trend={data?.kpis.avgAchievement != null && previousKpis?.avgAchievement != null ? data.kpis.avgAchievement - previousKpis.avgAchievement : null} status={overall.status} tone={overall.tone} progress={data?.kpis.avgAchievement} icon={TrendingUp} loading={isLoading} />
         <KpiCard title="Run Rate" value={data?.kpis.avgRunRate == null ? "No production data" : formatCurrency(data.kpis.avgRunRate)} target={totalGoal == null ? "Target not configured" : formatCurrency(totalGoal)} variance={data?.kpis.avgRunRate != null && totalGoal != null ? formatCurrency(data.kpis.avgRunRate - totalGoal) : "Not available"} trend={data?.kpis.avgRunRate != null && previousKpis?.avgRunRate != null && previousKpis.avgRunRate !== 0 ? ((data.kpis.avgRunRate - previousKpis.avgRunRate) / Math.abs(previousKpis.avgRunRate)) * 100 : null} status={getExecutiveStatus({ hasData: measurable.length > 0, goal: totalGoal, achievement: data?.kpis.avgRRAchievement ?? null }).status} tone={getExecutiveStatus({ hasData: measurable.length > 0, goal: totalGoal, achievement: data?.kpis.avgRRAchievement ?? null }).tone} progress={data?.kpis.avgRRAchievement} icon={Activity} loading={isLoading} />

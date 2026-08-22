@@ -8,6 +8,7 @@ import {
   Tooltip,
   Legend,
 } from "recharts";
+import { useReducedMotion } from "@/hooks/use-reduced-motion";
 
 const COLORS = ["#6366f1", "#22c55e", "#eab308", "#ef4444", "#3b82f6", "#f97316"];
 
@@ -50,6 +51,7 @@ function ExecutiveTooltip({ active, payload }: any) {
 }
 
 export function DistributionPieChart({ data }: DistributionPieChartProps) {
+  const reducedMotion = useReducedMotion();
   return (
     <ResponsiveContainer width="100%" height={300}>
       <PieChart>
@@ -61,6 +63,9 @@ export function DistributionPieChart({ data }: DistributionPieChartProps) {
           outerRadius={100}
           paddingAngle={3}
           dataKey="value"
+          isAnimationActive={!reducedMotion}
+          animationDuration={600}
+          animationEasing="ease-out"
           label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
         >
           {data.map((_, idx) => (
