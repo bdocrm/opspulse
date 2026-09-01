@@ -10,9 +10,10 @@ interface CountUpProps {
   decimals?: number;
   prefix?: string;
   suffix?: string;
+  format?: (value: number) => string;
 }
 
-export function CountUp({ value, duration = 800, className, decimals = 0, prefix = "", suffix = "" }: CountUpProps) {
+export function CountUp({ value, duration = 800, className, decimals = 0, prefix = "", suffix = "", format }: CountUpProps) {
   const [displayValue, setDisplayValue] = useState(0);
   const previousValue = useRef(0);
   const hasAnimated = useRef(false);
@@ -47,14 +48,15 @@ export function CountUp({ value, duration = 800, className, decimals = 0, prefix
     return () => cancelAnimationFrame(animationFrame);
   }, [decimals, duration, value]);
 
-  const formattedValue = `${prefix}${displayValue.toLocaleString(undefined, {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })}${suffix}`;
-  const accessibleValue = `${prefix}${value.toLocaleString(undefined, {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })}${suffix}`;
+  const render = (input: number) =>
+    format
+      ? format(input)
+      : `${prefix}${input.toLocaleString(undefined, {
+          minimumFractionDigits: decimals,
+          maximumFractionDigits: decimals,
+        })}${suffix}`;
+  const formattedValue = render(displayValue);
+  const accessibleValue = render(value);
 
   return (
     <>

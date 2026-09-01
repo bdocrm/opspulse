@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import useSWR from "swr";
+import { useReportPeriod } from "@/components/report-period-provider";
 
 interface ReportPeriodSelectorProps {
-  year: number;
-  month: number;
-  allMonths: boolean;
-  onChange: (year: number, month: number, allMonths: boolean) => void;
+  /** When omitted, the selector reads/writes the global report-period context. */
+  year?: number;
+  month?: number;
+  allMonths?: boolean;
+  onChange?: (year: number, month: number, allMonths: boolean) => void;
   className?: string;
 }
 
@@ -20,18 +22,38 @@ export function ReportPeriodSelector({
   onChange,
   className = "h-10 min-w-[180px] rounded-md border border-input bg-background px-3 py-2 text-sm",
 }: ReportPeriodSelectorProps) {
+  const context = useReportPeriod();
+  // Prefer explicitly-passed (controlled) props; otherwise use the shared context.
+  const effectiveYear = year ?? context.year;
+  const effectiveMonth = month ?? context.month;
+  const effectiveAllMonths = allMonths ?? context.allMonths;
+
+  const commit = useCallback(
+    (nextYear: number, nextMonth: number, nextAllMonths: boolean) => {
+      if (onChange) {
+        onChange(nextYear, nextMonth, nextAllMonths);
+      } else {
+        context.setPeriod(nextYear, nextMonth, nextAllMonths);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [onChange, context.setPeriod]
+  );
+
   const { data } = useSWR("/api/reports/campaign-performance/periods", fetcher);
   const periods = useMemo<Array<{ year: number; month: number }>>(
     () => data?.periods ?? [],
     [data?.periods]
   );
-  const value = allMonths ? "all" : `${year}-${String(month).padStart(2, "0")}`;
+  const value = effectiveAllMonths ? "all" : `${effectiveYear}-${String(effectiveMonth).padStart(2, "0")}`;
 
   useEffect(() => {
-    if (allMonths || periods.length === 0) return;
-    const selectedExists = periods.some((period) => period.year === year && period.month === month);
-    if (!selectedExists) onChange(periods[0].year, periods[0].month, false);
-  }, [allMonths, month, onChange, periods, year]);
+    if (effectiveAllMonths || periods.length === 0) return;
+    const selectedExists = periods.some(
+      (period) => period.year === effectiveYear && period.month === effectiveMonth
+    );
+    if (!selectedExists) commit(periods[0].year, periods[0].month, false);
+  }, [effectiveAllMonths, effectiveMonth, effectiveYear, periods, commit]);
 
   return (
     <select
@@ -39,11 +61,11 @@ export function ReportPeriodSelector({
       value={value}
       onChange={(event) => {
         if (event.target.value === "all") {
-          onChange(year, month, true);
+          commit(effectiveYear, effectiveMonth, true);
           return;
         }
         const [nextYear, nextMonth] = event.target.value.split("-").map(Number);
-        onChange(nextYear, nextMonth, false);
+        commit(nextYear, nextMonth, false);
       }}
       className={className}
     >

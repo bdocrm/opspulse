@@ -62,13 +62,27 @@ npx prisma db seed
 
 This creates default users, campaigns, and sample daily sales data.
 
+**Roles** (`Role` enum in Prisma):
+
+| Role       | Description                                             |
+| ---------- | ------------------------------------------------------- |
+| `CEO`      | System administrator — user/campaign management, all data |
+| `SMT`      | Senior Management Team — executive read access            |
+| `OM`       | Operations Manager — goals, reports, imports              |
+| `COLLECTOR`| Collector — data entry, imports, agent management         |
+| `AGENT`    | Agent — own performance & dashboard views                 |
+
+Role-based access is centralized in `lib/permissions.ts`, which the middleware,
+API guards, and UI all share as a single source of truth.
+
 **Default credentials:**
 
-| Role    | Email                    | Password     |
-| ------- | ------------------------ | ------------ |
-| Admin   | admin@opsview.com       | password123  |
-| Manager | manager@opsview.com     | password123  |
-| Agent   | john.smith@opsview.com  | password123  |
+| Role       | Email                    | Password     |
+| ---------- | ------------------------ | ------------ |
+| CEO        | admin@opsview.com        | password123  |
+| OM         | manager@opsview.com      | password123  |
+| Agent      | john.smith@opsview.com   | password123  |
+| Collector  | collector.1@opsview.com  | password123  |
 
 ### 6. Run development server
 
@@ -138,7 +152,10 @@ components/
 └── providers.tsx
 lib/
 ├── prisma.ts               # Singleton Prisma client
-├── auth.ts                 # NextAuth config
+├── auth.ts                 # NextAuth config (rate-limited credentials)
+├── permissions.ts          # Single source of truth for role-based access
+├── rate-limit.ts           # Brute-force protection for login
+├── logger.ts               # Structured JSON logging
 └── utils.ts                # cn() helper
 utils/
 └── kpi.ts                  # KPI computation helpers
@@ -147,8 +164,50 @@ hooks/
 prisma/
 ├── schema.prisma           # Database schema
 └── seed.ts                 # Seed script
-middleware.ts               # Route protection
+middleware.ts               # Route protection (backed by lib/permissions.ts)
 ```
+
+---
+
+## Testing & CI
+
+Unit tests use **Vitest** (`npm test`). Coverage for the KPI math and
+permission/rate-limit modules lives alongside the code in `__tests__/` folders.
+
+| Command                | Purpose                                   |
+| ---------------------- | ----------------------------------------- |
+| `npm test`             | Run the unit test suite                   |
+| `npm run test:watch`   | Watch mode                                |
+| `npm run test:coverage`| Run with coverage report                  |
+| `npm run lint`         | ESLint                                    |
+| `npx tsc --noEmit`     | Typecheck                                 |
+| `npm run prisma:format`| Format `prisma/schema.prisma`             |
+| `npm run prisma:validate`| Validate the Prisma schema              |
+
+A GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, typecheck,
+Prisma validate, and the full test suite on every push and pull request.
+
+**Security:** credentials login is rate-limited (max 5 attempts / 10 min per
+IP+email via `lib/rate-limit.ts`). Attempts are also persisted to the
+`LoginAttempt` table (best-effort, for ephemeral serverless instances). This
+table must be migrated (see below) for the durable backstop to take effect.
+
+---
+
+## Database Migrations
+
+The project historically used `prisma db push`. For non-destructive, versioned
+schema changes prefer Prisma Migrations:
+
+```bash
+npx prisma migrate dev --name <change>   # create + apply locally
+npx prisma migrate deploy                # apply pending migrations in prod
+```
+
+> Note: a plain `prisma db push` may report **data-loss warnings** if the live
+> database has drifted from `schema.prisma`. Do **not** pass
+> `--accept-data-loss` unless you intentionally want to drop those columns.
+> Prefer an additive migration (e.g. the `LoginAttempt` table) instead.
 
 ---
 

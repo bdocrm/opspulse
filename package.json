@@ -13,6 +13,11 @@
     "prisma:push": "prisma db push",
     "prisma:seed": "ts-node prisma/seed.ts",
     "prisma:studio": "prisma studio",
+    "prisma:format": "prisma format",
+    "prisma:validate": "prisma validate",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:run-rate": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-run-rate-analytics.ts",
     "test:bdo-sgm-import": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-bdo-sgm-ranking-import.ts",
     "test:bdo-sgm-consolidated": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-bdo-sgm-consolidated-import.ts",
@@ -64,6 +69,7 @@
     "@types/react": "^18.2.48",
     "@types/react-dom": "^18.2.18",
     "@types/uuid": "^10.0.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "autoprefixer": "^10.4.17",
     "eslint": "^8.56.0",
     "eslint-config-next": "14.1.0",
@@ -71,6 +77,7 @@
     "prisma": "^5.10.0",
     "tailwindcss": "^3.4.1",
     "ts-node": "^10.9.2",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.11"
   }
 }

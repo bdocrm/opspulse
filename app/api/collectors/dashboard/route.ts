@@ -1066,6 +1066,11 @@ export async function GET(req: NextRequest) {
         )
         .map((record) => `${record.campaignId}|${normalizeImportedAgentName(record.entityName || "")}|${record.year}|${record.month || 0}`)
     );
+    const plProductivityPeriodKeys = new Set(
+      [...preferredAgentDetailRecords.values()]
+        .filter((record) => record.monitoringType === "PL_PRODUCTIVITY" && /^booked volume$/i.test(record.metric.trim()))
+        .map((record) => `${record.campaignId}|${record.year}|${record.month || 0}`)
+    );
 
     // YTD rows are campaign summaries from the workbook. Sum one target and
     // one derived/explicit actual per selected month; never multiply them by
@@ -1091,7 +1096,9 @@ export async function GET(req: NextRequest) {
       const normalizedName = normalizeImportedAgentName(entityName);
       const agentId = actualAgentIdByCampaignAndName.get(`${record.campaignId}|${normalizedName}`) || importedAgentId(record.campaignId, entityName);
       const target = Number(record.target || 0);
-      if (target) {
+      const periodKey = `${record.campaignId}|${record.year}|${record.month || 0}`;
+      const secondaryPlScorecard = record.monitoringType === "PL_SCORECARD" && plProductivityPeriodKeys.has(periodKey);
+      if (target && !secondaryPlScorecard) {
         importedTargetByAgent.set(agentId, (importedTargetByAgent.get(agentId) ?? 0) + target);
         if (record.recordKind === "agent_monitoring") {
           importedAgentGoalByCampaign.set(record.campaignId, (importedAgentGoalByCampaign.get(record.campaignId) ?? 0) + target);
@@ -1101,6 +1108,10 @@ export async function GET(req: NextRequest) {
       if (effectiveActual == null) continue;
       const importedMetric = record.metric.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
       if (importedMetric === "score" || importedMetric === "ranking") continue;
+      if (secondaryPlScorecard) {
+        registerImportedReport(record);
+        continue;
+      }
       if (
         record.monitoringType?.includes("SCORECARD") &&
         importedMetric === "scorecard performance" &&
@@ -1350,7 +1361,8 @@ export async function GET(req: NextRequest) {
       const hasDashboardAgentTargetImport = [...preferredAgentDetailRecords.values()].some((record) =>
         record.campaignId === c.id &&
         record.recordKind === "agent_monitoring" &&
-        record.target != null
+        record.target != null &&
+        !(record.monitoringType === "PL_SCORECARD" && plProductivityPeriodKeys.has(`${record.campaignId}|${record.year}|${record.month || 0}`))
       );
       const hasBdoCccImport = bdoCccKpiRecords.some((record) => record.campaignId === c.id);
       const hasCampaignAgentImport = campaignsWithMonthlyProductionImport.has(c.id)
@@ -1508,7 +1520,7 @@ export async function GET(req: NextRequest) {
           : isMbPlCampaign && hasMbPlImport
             ? mbPlImportedGoal
             : hasCampaignAgentImport
-              ? normalizedPrimaryGoalTotal || importedAgentGoalByCampaign.get(c.id) || 0
+              ? normalizedPrimaryGoalTotal || importedAgentGoalByCampaign.get(c.id) || ceoGoal
               : ceoGoal;
       // Explicit campaign/team goals from the imported workbook always win.
       // Otherwise use one goal per unique agent and reporting period; the

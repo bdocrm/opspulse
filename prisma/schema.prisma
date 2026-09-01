@@ -705,6 +705,20 @@ enum AttendanceStatus {
   HALFDAY
 }
 
+// Brute-force / credential-stuffing protection. A row is written for every
+// login attempt (successful or not) so the app can rate-limit credentials
+// login even on ephemeral serverless instances.
+model LoginAttempt {
+  id        String   @id @default(uuid())
+  email     String
+  ip        String?
+  success   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([ip, createdAt])
+}
+
 model Attendance {
   id         String           @id @default(uuid())
   agentId    String // User ID of the agent

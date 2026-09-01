@@ -1,4 +1,5 @@
 import type { Session } from "next-auth";
+import { canViewPerformance, canImport, isExecutiveRole, isSystemAdmin } from "@/lib/permissions";
 
 export type ProductionSessionUser = {
   id?: string;
@@ -12,19 +13,19 @@ export function getProductionSessionUser(session: Session | null) {
 }
 
 export function canViewProduction(user: ProductionSessionUser) {
-  return ["CEO", "SMT", "OM", "COLLECTOR", "AGENT"].includes(user.role ?? "");
+  return canViewPerformance(user.role);
 }
 
 export function canAdminProduction(user: ProductionSessionUser) {
-  // OpsView currently uses CEO as its administrator role.
-  return user.role === "CEO";
+  // OpsView uses CEO as its administrator role.
+  return isSystemAdmin(user.role);
 }
 
 export function canImportProduction(user: ProductionSessionUser) {
   // Collectors already own the existing Bulk Data Import workflow. They may
   // import Production Monitoring rows only into campaigns assigned to them;
   // creating a brand-new campaign remains a CEO-only action.
-  return user.role === "CEO" || user.role === "COLLECTOR";
+  return canImport(user.role);
 }
 
 export function canViewCampaignMappings(user: ProductionSessionUser) {
@@ -47,10 +48,10 @@ export function productionCampaignIds(user: ProductionSessionUser) {
 }
 
 export function productionCampaignScope(user: ProductionSessionUser) {
-  if (user.role === "CEO" || user.role === "SMT") return {};
+  if (isExecutiveRole(user.role)) return {};
   return { campaignId: { in: productionCampaignIds(user) } };
 }
 
 export function hasProductionCampaignAccess(user: ProductionSessionUser, campaignId: string) {
-  return user.role === "CEO" || user.role === "SMT" || productionCampaignIds(user).includes(campaignId);
+  return isExecutiveRole(user.role) || productionCampaignIds(user).includes(campaignId);
 }

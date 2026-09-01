@@ -1201,64 +1201,51 @@ async function getAssignedCampaigns(userId: string, primaryCampaignId?: string |
   return campaigns;
 }
 
-function bpiWorkbookCampaignName(fileName: string, workbookYear?: number | null) {
-  const baseName = String(fileName || '')
-    .replace(/\.(?:xlsx|xls)$/i, '')
-    // Browsers commonly append " (1)" when the same workbook is downloaded
-    // again. It is a local filename suffix, not part of the campaign identity.
-    .replace(/\s+\(\d+\)$/i, '')
-    .replace(/[_]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return (baseName || `BPI Dashboard ${workbookYear || new Date().getFullYear()}`).slice(0, 160);
-}
-
-async function ensureBpiWorkbookCampaign(fileName: string, workbookYear: number | null | undefined, userId: string) {
-  const campaignName = bpiWorkbookCampaignName(fileName, workbookYear);
-  const normalizedName = campaignName
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
+async function ensureBpiWorkbookCampaigns(userId: string) {
+  const definitions = [
+    { campaignName: 'BPI SIP LOANS', goalType: 'dashboard_import', kpiMetric: 'volume' },
+    { campaignName: 'BPI PL', goalType: 'volume', kpiMetric: 'volume' },
+  ];
   return prisma.$transaction(async (tx) => {
-    let campaign = await tx.campaign.findFirst({
-      where: {
-        OR: [
+    const campaigns: AssignedCampaign[] = [];
+    const createdCampaignIds: string[] = [];
+    for (const definition of definitions) {
+      const normalizedName = definition.campaignName.toUpperCase();
+      let campaign = await tx.campaign.findFirst({
+        where: { OR: [
           { normalizedName },
-          { campaignName: { equals: campaignName, mode: 'insensitive' } },
-        ],
-      },
-      select: { id: true, campaignName: true, normalizedName: true, isActive: true },
-    });
-    const created = !campaign;
-    if (!campaign) {
-      campaign = await tx.campaign.create({
-        data: {
-          campaignName,
-          normalizedName,
-          isActive: true,
-          goalType: 'dashboard_import',
-          monthlyGoal: 0,
-          kpiMetric: 'volume',
-        },
-        select: { id: true, campaignName: true, normalizedName: true, isActive: true },
+          { campaignName: { equals: definition.campaignName, mode: 'insensitive' } },
+        ] },
+        select: { id: true, campaignName: true, isActive: true },
       });
-    } else if (!campaign.isActive) {
-      campaign = await tx.campaign.update({
-        where: { id: campaign.id },
-        data: { isActive: true },
-        select: { id: true, campaignName: true, normalizedName: true, isActive: true },
+      if (!campaign) {
+        campaign = await tx.campaign.create({
+          data: {
+            campaignName: definition.campaignName,
+            normalizedName,
+            isActive: true,
+            goalType: definition.goalType,
+            monthlyGoal: 0,
+            kpiMetric: definition.kpiMetric,
+          },
+          select: { id: true, campaignName: true, isActive: true },
+        });
+        createdCampaignIds.push(campaign.id);
+      } else if (!campaign.isActive || definition.campaignName === 'BPI PL') {
+        campaign = await tx.campaign.update({
+          where: { id: campaign.id },
+          data: { isActive: true, ...(definition.campaignName === 'BPI PL' ? { kpiMetric: 'volume' } : {}) },
+          select: { id: true, campaignName: true, isActive: true },
+        });
+      }
+      await tx.userCampaign.upsert({
+        where: { userId_campaignId: { userId, campaignId: campaign.id } },
+        update: {},
+        create: { userId, campaignId: campaign.id },
       });
+      campaigns.push({ id: campaign.id, campaignName: campaign.campaignName });
     }
-    await tx.userCampaign.upsert({
-      where: { userId_campaignId: { userId, campaignId: campaign.id } },
-      update: {},
-      create: { userId, campaignId: campaign.id },
-    });
-    return { campaign: { id: campaign.id, campaignName: campaign.campaignName }, created };
+    return { campaigns, createdCampaignIds };
   });
 }
 
@@ -2275,12 +2262,23 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
 
 function buildBpiPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCampaigns: AssignedCampaign[], reportPeriodType: ReportPeriodType, sourceFileName = '') {
   const parsed = parseBpiDashboardWorkbook(workbook, reportDate, sourceFileName);
-  const recordMappings = new Map(parsed.records.map((record) => [record, mapWorksheetCampaign(`${record.category || ''} ${record.product || ''} ${record.metric} ${record.worksheetSource}`, selectedCampaigns)]));
+  const sipCampaign = selectedCampaigns.find((campaign) => /^BPI SIP LOANS$/i.test(campaign.campaignName));
+  const plCampaign = selectedCampaigns.find((campaign) => /^BPI PL$/i.test(campaign.campaignName));
+  const recordMappings = new Map(parsed.records.map((record) => {
+    const routedCampaign = /^PL\b/i.test(record.worksheetSource.trim()) ? plCampaign : sipCampaign;
+    return [record, routedCampaign
+      ? { campaign: routedCampaign, source: 'sheet' as const, evidence: record.worksheetSource }
+      : mapWorksheetCampaign(`${record.category || ''} ${record.product || ''} ${record.metric} ${record.worksheetSource}`, selectedCampaigns)];
+  }));
   const sheetMappings = new Map<string, { campaign: AssignedCampaign; source: 'sheet' | 'record' | 'selected' | 'unresolved' }>(parsed.sheets.map((sheet) => {
     const mappings = sheet.records.map((record) => recordMappings.get(record)!);
     const resolved = mappings.filter((mapping) => mapping.source !== 'unresolved');
     if (resolved.length) {
-      const source = resolved.every((mapping) => mapping.source === 'selected') ? 'selected' as const : 'record' as const;
+      const source = resolved.every((mapping) => mapping.source === 'selected')
+        ? 'selected' as const
+        : resolved.every((mapping) => mapping.source === 'sheet' && mapping.campaign.id === resolved[0].campaign.id)
+          ? 'sheet' as const
+          : 'record' as const;
       return [sheet.sheetName, { campaign: resolved[0].campaign, source }];
     }
     return [sheet.sheetName, mapWorksheetCampaign(sheet.sheetName, selectedCampaigns)];
@@ -2953,9 +2951,6 @@ export async function POST(req: NextRequest) {
     if (!['skip', 'update', 'replace_period'].includes(duplicateMode)) {
       return NextResponse.json({ error: 'Duplicate handling must be Skip Existing, Update Existing, or Replace Matching Period Data.' }, { status: 400 });
     }
-    if (!submittedCampaignIds.length) {
-      return NextResponse.json({ error: 'Select at least one campaign before previewing the file.' }, { status: 400 });
-    }
     const metricType = requestedMetricType === 'all' ? 'all_metrics' : requestedMetricType;
 
     await ensureImportMetadataColumns();
@@ -2970,13 +2965,15 @@ export async function POST(req: NextRequest) {
 
     // Resolve the target campaign: prefer the one chosen on the import page,
     // otherwise fall back to the collector's assigned campaign.
-    const effectiveCampaignId = selectedCampaigns[0].id;
+    const effectiveCampaignId = selectedCampaigns[0]?.id || '';
     const campaignExists = selectedCampaigns[0];
     const campaignName = campaignExists?.campaignName || '';
-    let campaignAgents = await prisma.user.findMany({
-      where: { campaignId: effectiveCampaignId, role: 'AGENT' },
-      select: { id: true, name: true },
-    });
+    let campaignAgents = effectiveCampaignId
+      ? await prisma.user.findMany({
+          where: { campaignId: effectiveCampaignId, role: 'AGENT' },
+          select: { id: true, name: true },
+        })
+      : [];
     const findExistingAgent = (importedName: string) =>
       campaignAgents.find((agent) => agentNameMatches(agent.name, importedName)) || null;
     const rememberAgent = (agent: { id: string; name: string }) => {
@@ -2986,7 +2983,7 @@ export async function POST(req: NextRequest) {
     // If the collector has no campaign assigned yet, bind them to the one they
     // are importing into. Without this, their dashboard (which keys off the
     // collector's own campaign) would never show the imported agents.
-    if (mode !== 'preview') {
+    if (mode !== 'preview' && effectiveCampaignId) {
       if (!collectorUser?.campaignId) {
         await prisma.user.update({
           where: { id: user.id },
@@ -3171,11 +3168,11 @@ export async function POST(req: NextRequest) {
         if (importMode === 'single') {
           return NextResponse.json({ error: 'BPI dashboard workbooks require Import All Data or Import Selected Worksheets.' }, { status: 400 });
         }
-        // A BPI Dashboard workbook owns one campaign derived from its filename.
-        // This prevents PA/PL worksheets from leaking into an older campaign
-        // selected in the generic importer while keeping re-imports idempotent.
-        const workbookCampaign = await ensureBpiWorkbookCampaign(file.name, reportYearValue || reportDate.getFullYear(), user.id);
-        const bpiCampaigns = [workbookCampaign.campaign];
+        // Route SIP/PA worksheets to BPI SIP LOANS and Personal Loans
+        // worksheets to BPI PL. Both destinations are detected automatically.
+        const workbookCampaigns = await ensureBpiWorkbookCampaigns(user.id);
+        const bpiCampaigns = workbookCampaigns.campaigns;
+        const sipCampaign = bpiCampaigns.find((campaign) => /^BPI SIP LOANS$/i.test(campaign.campaignName))!;
         const bpiPreview = buildBpiPreview(workbook, reportDate, bpiCampaigns, reportPeriodType, file.name);
         await markExistingBdoRecords(bpiPreview as ReturnType<typeof buildBdoPreview>, bpiCampaigns.map((campaign) => campaign.id), reportPeriodType);
         if (bpiPreview.workbookSummary.worksheetsAccepted === 0 || bpiPreview.workbookSummary.totalValidRecords === 0) {
@@ -3196,8 +3193,9 @@ export async function POST(req: NextRequest) {
             metricType: 'all_metrics',
             reportDate: ymd(reportDate),
             reportPeriodType,
-            workbookCampaign: workbookCampaign.campaign,
-            campaignCreated: workbookCampaign.created,
+            workbookCampaign: sipCampaign,
+            workbookCampaigns: bpiCampaigns,
+            campaignCreated: workbookCampaigns.createdCampaignIds.length > 0,
             previewRecords: bpiPreview.previewRecords,
             monthSummary: bpiPreview.monthSummary,
             workbookSummary: bpiPreview.workbookSummary,
@@ -3245,7 +3243,13 @@ export async function POST(req: NextRequest) {
           selectedWorksheetKeys: selectedBpiSheets.map((sheet) => sheet.key),
           skipUnresolvedRecordMappings: true,
         });
-        return NextResponse.json({ ...result, bpiDashboard: true, workbookCampaign: workbookCampaign.campaign, campaignCreated: workbookCampaign.created, unmapped: bpiPreview.workbookSummary.totalUnmappedRecords, workbookSummary: bpiPreview.workbookSummary, worksheetPreviews: bpiPreview.worksheetPreviews, normalizedImported: result.inserted, normalizedDuplicates: result.skipped });
+        return NextResponse.json({ ...result, bpiDashboard: true, workbookCampaign: sipCampaign, workbookCampaigns: bpiCampaigns, campaignCreated: workbookCampaigns.createdCampaignIds.length > 0, unmapped: bpiPreview.workbookSummary.totalUnmappedRecords, workbookSummary: bpiPreview.workbookSummary, worksheetPreviews: bpiPreview.worksheetPreviews, normalizedImported: result.inserted, normalizedDuplicates: result.skipped });
+      }
+
+      // BPI Dashboard files create and select BPI SIP LOANS automatically.
+      // Every other Excel format still requires an explicit destination.
+      if (!selectedCampaigns.length) {
+        return NextResponse.json({ error: 'This workbook is not a detected BPI Dashboard file. Select at least one campaign before previewing it.' }, { status: 400 });
       }
 
       if (!bdoSgmRankingDetected && isBdoDashboardWorkbook(workbook)) {
@@ -3903,6 +3907,9 @@ export async function POST(req: NextRequest) {
     }
 
     // ─── CSV PATH — same BPI PA column format as Excel ───────────────────────
+    if (!selectedCampaigns.length) {
+      return NextResponse.json({ error: 'Select at least one campaign before previewing a CSV file.' }, { status: 400 });
+    }
     const text = await file.text();
     const lines = text.trim().split('\n').filter(l => l.trim());
 

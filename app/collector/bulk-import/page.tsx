@@ -734,7 +734,6 @@ export default function BulkImportPage() {
           throw new Error(productionData.error || 'Production workbook preview failed.');
         }
       }
-      if (!campaignIds.length) throw new Error('Select at least one campaign for this workbook. Production Monitoring files detect campaigns automatically.');
       const responses = await Promise.all(activeFiles.map(async (activeFile, index) => {
         const fd = new FormData();
         fd.append('file', activeFile);
@@ -757,7 +756,7 @@ export default function BulkImportPage() {
       }));
       const workbookCampaigns = [...new Map(
         responses
-          .map(({ data }) => data.workbookCampaign as { id: string; campaignName: string } | undefined)
+          .flatMap(({ data }) => (data.workbookCampaigns || (data.workbookCampaign ? [data.workbookCampaign] : [])) as Array<{ id: string; campaignName: string }>)
           .filter((campaign): campaign is { id: string; campaignName: string } => Boolean(campaign))
           .map((campaign) => [campaign.id, campaign])
       ).values()];
@@ -1345,7 +1344,7 @@ export default function BulkImportPage() {
             <p><span className="font-medium text-slate-800">ACQ (.xlsx) or CSV:</span> AGENT CODE | LAST NAME | FIRST NAME | DATE ONBOARD | SEAT CATEGORY | TOTAL + per-date NTB/SUPPLEMENTARY pairs — reads name from Last + First and the highest NTB &amp; Supplementary per agent</p>
             <p><span className="font-medium text-slate-800">BDO Dashboard (.xlsx/.xls):</span> Automatically scans YTD Performance, Manpower Monitoring, CI/Cross Sell agent and HOH monitoring, and TLs Scorecard worksheets. Merged monthly groups and populated months are detected dynamically.</p>
             <p><span className="font-medium text-slate-800">BDO CCC KPI Workbook (.xlsx):</span> Detects monthly JANâ€“DEC worksheets with merged ACTUALS, GOAL, and ACVT headers, then imports QA, AHT, Adherence, CM, and CD for every populated month.</p>
-            <p><span className="font-medium text-slate-800">BPI Dashboard (.xlsx/.xls):</span> Imports PA Agents Monitoring, SIP LOANS SCORECARD, PL YTD Productivity, and PL SCORECARD worksheets with dynamic month detection. The sheet named exactly YTD Performance is always excluded.</p>
+            <p><span className="font-medium text-slate-800">BPI Dashboard (.xlsx/.xls):</span> Automatically routes PA/SIP worksheets to BPI SIP LOANS and PL worksheets to BPI PL, with dynamic month detection. The sheet named exactly YTD Performance is always excluded.</p>
             <p><span className="font-medium text-slate-800">MB PA Monthly Dashboard (.xlsx/.xls):</span> Automatically recognizes month blocks with C2G, BT, and BalCon under TRANS and BILLINGS, including totals, Tier, Target, and Achievement—even when the worksheet is named MOM PROD.</p>
             <p><span className="font-medium text-slate-800">MB ACQ / MB PL Annual Dashboard (.xlsx/.xls):</span> Automatically captures every populated agent/month from merged TARGET, ACTUAL, %, SCORE, and ACHIEVEMENT blocks, including zero values and agent metadata.</p>
             <p><span className="font-medium text-slate-800">Production Monitoring (.xlsx):</span> Automatically detects campaigns, business units, reporting months, and every Week 1â€“Week 5 column present in the workbook. OM-name columns are excluded before preview and import.</p>
@@ -1378,7 +1377,7 @@ export default function BulkImportPage() {
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">Campaign</label>
               <CampaignMultiSelect campaigns={availableCampaigns} value={campaignIds} onChange={setCampaignIds} placeholder="Select one or more campaigns..." />
-              <p className="text-xs text-slate-500">Optional for Production Monitoring files because campaigns are detected from the workbook. Required for other formats.</p>
+              <p className="text-xs text-slate-500">Optional for BPI Dashboard and Production Monitoring files because their campaigns are detected automatically. Required for other formats.</p>
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">

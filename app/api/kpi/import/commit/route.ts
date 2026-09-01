@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { canImportKpi, getKpiSessionUser, hasCampaignAccess } from "@/lib/kpi-access";
+import { logger, logApiRequest } from "@/lib/logger";
 import {
   calculateKpiAchievements,
   validateKpiValues,
@@ -39,6 +40,7 @@ function cleanRow(input: CommitRow): CommitRow {
 
 export async function POST(request: NextRequest) {
   const user = getKpiSessionUser(await getServerSession(authOptions));
+  logApiRequest(request, "kpi/import/commit", { userId: user?.id });
   if (!user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (!canImportKpi(user)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   const body = await request.json().catch(() => null) as {
@@ -272,9 +274,23 @@ export async function POST(request: NextRequest) {
       });
       return { batchId: batch.id, imported, updated, skipped, failed, duplicates, unmatched, warnings };
     });
+    logger.info("kpi/import/commit:completed", {
+      userId: user.id,
+      campaignId,
+      batchId: result.batchId,
+      counts: {
+        imported: result.imported,
+        updated: result.updated,
+        skipped: result.skipped,
+        failed: result.failed,
+        duplicates: result.duplicates,
+        unmatched: result.unmatched,
+        warnings: result.warnings,
+      },
+    });
     return NextResponse.json(result);
   } catch (error) {
-    console.error("KPI import commit error", error);
+    logger.errorWithCause("kpi/import/commit:failed", error, { userId: user.id, campaignId });
     let failedBatchId: string | undefined;
     try {
       const failedBatch = await prisma.kpiImportBatch.create({
@@ -298,7 +314,7 @@ export async function POST(request: NextRequest) {
       });
       failedBatchId = failedBatch.id;
     } catch (auditError) {
-      console.error("KPI failed-import audit error", auditError);
+      logger.errorWithCause("kpi/import/commit:audit-failed", auditError, { userId: user.id, campaignId });
     }
     return NextResponse.json(
       { error: "The KPI import was rolled back because it could not be completed safely.", batchId: failedBatchId },
