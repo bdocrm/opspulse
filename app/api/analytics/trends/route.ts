@@ -4,7 +4,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { isExcludedBpiYtdRecord } from '@/lib/bpi-dashboard-import';
 
 const BUSINESS_TIME_ZONE = 'Asia/Manila';
 const BUSINESS_TIME_ZONE_OFFSET = '+08:00';
@@ -84,7 +83,6 @@ function groupImportedMonthlyRows(rows: Array<{
 }>, campaignNames: Map<string, string>) {
   const preferred = new Map<string, (typeof rows)[number]>();
   for (const row of rows) {
-    if (isExcludedBpiYtdRecord(row, campaignNames.get(row.campaignId))) continue;
     const metric = row.metric.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const key = `${row.campaignId}|${row.entityName.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}|${row.year}|${row.month || 0}|${metric}`;
     const priority = row.monitoringType?.endsWith('_AGENT') ? 4 : row.monitoringType?.includes('PRODUCTIVITY') ? 3 : row.monitoringType?.includes('SCORECARD') ? 2 : 1;

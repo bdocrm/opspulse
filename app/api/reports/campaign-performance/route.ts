@@ -6,7 +6,6 @@ import { authOptions } from "@/lib/auth";
 import { getBulkImportedCampaignIds } from "@/lib/bulk-import-reports";
 import { prisma } from "@/lib/prisma";
 import type { KpiMetricKey } from "@/utils/kpi";
-import { isExcludedBpiYtdRecord } from "@/lib/bpi-dashboard-import";
 
 interface AgentPerformance {
   id: string;
@@ -363,8 +362,7 @@ export async function GET(req: NextRequest) {
     ]);
 
     const dashboardRecords = rawDashboardRecords.filter((record) =>
-      !isImportedClassificationRow(record) &&
-      !isExcludedBpiYtdRecord(record, campaign.campaignName)
+      !isImportedClassificationRow(record)
     );
 
     const agentsById = new Map(campaignAgents.map((agent) => [agent.id, agent]));

@@ -83,11 +83,16 @@ assert.equal(parsed.sheets.filter((sheet) => sheet.detectedType !== 'Unsupported
 assert.deepEqual(new Set(parsed.detectedMonths), new Set(['Jan 2026', 'Feb 2026', 'Aug 2026']));
 
 const ytd = parsed.records.filter((record) => record.recordKind === 'ytd');
-assert.equal(ytd.length, 0);
-const excludedYtd = parsed.sheets.find((sheet) => sheet.sheetName === 'YTD Performance');
-assert.equal(excludedYtd?.excluded, true);
-assert.equal(excludedYtd?.records.length, 0);
-assert.match(excludedYtd?.warnings[0]?.message || '', /excluded by OpsView BPI import rules/i);
+assert.equal(ytd.length, 6);
+assert.equal(ytd.every((record) => record.metric === 'YTD Performance'), true);
+assert.deepEqual(
+  new Set(ytd.map((record) => `${record.month}/${record.year}`)),
+  new Set(['1/2026', '2/2026'])
+);
+const ytdSheet = parsed.sheets.find((sheet) => sheet.sheetName === 'YTD Performance');
+assert.equal(ytdSheet?.records.length, ytd.length);
+assert.equal(ytdSheet?.status, 'Ready');
+assert.ok(!ytdSheet?.excluded);
 
 const productivity = parsed.records.filter((record) => record.monitoringType === 'PL_PRODUCTIVITY');
 assert.equal(productivity.length, 12);

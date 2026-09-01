@@ -67,10 +67,6 @@ export function detectBpiWorksheet(name: string): BpiWorksheetType | null {
   return BPI_WORKSHEETS[normalized as keyof typeof BPI_WORKSHEETS] || null;
 }
 
-export function isExcludedBpiYtdRecord(record: { worksheetSource?: string | null }, campaignName?: string | null) {
-  return key(record.worksheetSource) === 'ytd performance' && /^BPI\b/i.test(normalizeBpiText(campaignName));
-}
-
 type BpiStandaloneKind = 'pa_inbound' | 'pl' | null;
 
 function standaloneKindFromFileName(sourceFileName = ''): BpiStandaloneKind {
@@ -750,17 +746,7 @@ export function parseBpiDashboardWorkbook(workbook: XLSX.WorkBook, fallbackDate:
       return parseProductivity(rows, sheetName, 'PL Monthly Productivity', fallbackDate.getFullYear(), plTargets);
     }
     if (!detectedType) return { sheetName, detectedType: 'Unsupported', records: [], months: [], warnings: [{ worksheet: sheetName, message: 'Unsupported worksheet skipped.' }], status: 'Skipped' };
-    if (detectedType === 'YTD Performance') {
-      return {
-        sheetName,
-        detectedType,
-        records: [],
-        months: [],
-        warnings: [{ worksheet: sheetName, message: 'Skipped sheet: YTD Performance - excluded by OpsView BPI import rules.' }],
-        status: 'Skipped',
-        excluded: true,
-      };
-    }
+    if (detectedType === 'YTD Performance') return parseYtd(rows, sheetName, detectedType, fallbackDate.getFullYear());
     if (detectedType === 'Manpower Monitoring') return parseManpower(rows, sheetName, detectedType, fallbackDate.getFullYear());
     if (detectedType === 'PL YTD Productivity') return parseProductivity(rows, sheetName, detectedType, fallbackDate.getFullYear());
     if (detectedType === 'SIP LOANS SCORECARD' || detectedType === 'PL SCORECARD 2026') {

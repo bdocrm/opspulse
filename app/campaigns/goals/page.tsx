@@ -16,8 +16,6 @@ import { AlertCircle, ArrowUpDown, CheckCircle, ChevronDown, ChevronUp, Download
 import { formatNumberWithCommas } from '@/lib/number-format';
 import { MONTH_NAMES } from '@/lib/months';
 import {
-  BPI_KPI_METRICS,
-  BPI_KPI_VALUES,
   KPI_METRICS,
   dashboardExportRows,
   formatInputNumber,
@@ -31,7 +29,6 @@ import {
   statusForCampaign,
   statusLabel,
   stripNumberFormatting,
-  usesBpiThreeKpis,
   type AchievementStatus,
   type Campaign,
   type ConfirmAction,
@@ -215,7 +212,7 @@ export default function GoalsManagement() {
     setMonthlyGoal(formatInputNumber(campaign.monthlyGoal, 2));
     setSupplementaryGoal(formatInputNumber(campaign.supplementaryGoal ?? 0, 2));
     const savedMetric = campaign.kpiMetric || 'transmittals';
-    setKpiMetric(usesBpiThreeKpis(campaign.campaignName) && !BPI_KPI_VALUES.has(savedMetric) ? 'transmittals' : savedMetric);
+    setKpiMetric(savedMetric);
     setWorkingDays((campaign.workingDays ?? 22).toString());
     setDaysLapsed((campaign.daysLapsed ?? 0).toString());
     const targets: Record<string, number> = {};
@@ -1031,15 +1028,10 @@ export default function GoalsManagement() {
                   onChange={(e) => setKpiMetric(e.target.value)}
                   className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  {(usesBpiThreeKpis(selectedCampaign?.campaignName) ? BPI_KPI_METRICS : KPI_METRICS).map((m) => (
+                  {KPI_METRICS.map((m) => (
                     <option key={m.value} value={m.value}>{m.label}</option>
                   ))}
                 </select>
-                {usesBpiThreeKpis(selectedCampaign?.campaignName) && (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    BPI campaigns use Transmittals, Approvals, or Booked. BPI PA OUTBOUND is excluded.
-                  </p>
-                )}
               </div>
 
               {/* Monthly Goal (NTB for ACQ campaigns) */}

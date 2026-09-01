@@ -5,7 +5,6 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { runRate, achievementPct, rrAchievementPct, WORKING_DAYS_DEFAULT } from '@/utils/kpi';
-import { isExcludedBpiYtdRecord } from '@/lib/bpi-dashboard-import';
 
 const BUSINESS_TIME_ZONE = 'Asia/Manila';
 const BUSINESS_TIME_ZONE_OFFSET = '+08:00';
@@ -316,8 +315,7 @@ export async function GET(req: NextRequest) {
     });
 
     const usableDashboardRows = dashboardImportRows.filter((row) =>
-      !isImportedClassificationRow(row) &&
-      !isExcludedBpiYtdRecord(row, campaignById.get(row.campaignId)?.campaignName)
+      !isImportedClassificationRow(row)
     );
     const importedActual = (row: (typeof dashboardImportRows)[number]) => row.actual != null
       ? Number(row.actual)

@@ -6,12 +6,6 @@ import { getCampaignAgents, isAgentInCampaign } from '@/lib/campaign-agents';
 import { ensureCampaignGoalTable, resolveMonthYear } from '@/lib/campaign-goals';
 import { achievementPct, computeMTD, runRate, rrAchievementPct, daysLapsed as computeDaysLapsed, type KpiMetricKey } from '@/utils/kpi';
 
-const BPI_KPI_METRICS = new Set(['transmittals', 'approvals', 'booked']);
-const usesBpiThreeKpis = (name?: string | null) => {
-  const normalized = String(name || '').trim().toUpperCase().replace(/\s+/g, ' ');
-  return normalized.startsWith('BPI ') && normalized !== 'BPI PA OUTBOUND';
-};
-
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -106,9 +100,7 @@ export async function GET(req: NextRequest) {
       const monthlyGoal = Number(m ? m.monthlyGoal : c.monthlyGoal);
       const supplementaryGoal = Number(m ? m.supplementaryGoal : (c as any).supplementaryGoal ?? 0);
       const savedKpiMetric = String(m ? m.kpiMetric : c.kpiMetric);
-      const kpiMetric = usesBpiThreeKpis(c.campaignName) && !BPI_KPI_METRICS.has(savedKpiMetric)
-        ? 'transmittals'
-        : savedKpiMetric;
+      const kpiMetric = savedKpiMetric;
       const workingDays = Number(m ? m.workingDays : extrasById[c.id]?.workingDays ?? 22);
       const configuredDaysLapsed = Number(m ? m.daysLapsed : extrasById[c.id]?.daysLapsed ?? 0);
       const rows = (salesByCampaign[c.id] || []).map((s) => ({
@@ -206,12 +198,6 @@ export async function PUT(req: NextRequest) {
     });
     if (!targetCampaign) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 });
-    }
-    if (usesBpiThreeKpis(targetCampaign.campaignName) && !BPI_KPI_METRICS.has(metric)) {
-      return NextResponse.json(
-        { error: 'BPI campaigns only allow Transmittals, Approvals, or Booked as the KPI metric.' },
-        { status: 400 }
-      );
     }
 
     await ensureCampaignGoalTable();

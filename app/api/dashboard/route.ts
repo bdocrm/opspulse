@@ -7,7 +7,6 @@ import {
   calculateRunRateMetrics,
   type RunRateMetrics,
 } from "@/lib/run-rate-analytics";
-import { isExcludedBpiYtdRecord } from "@/lib/bpi-dashboard-import";
 
 // ─── KPI helpers ──────────────────────────────────────────────────────────────
 
@@ -178,8 +177,7 @@ export async function GET(req: NextRequest) {
     }).catch(() => []);
     const campaignById = new Map(campaigns.map((campaign) => [campaign.id, campaign]));
     const usableDashboardRows = dashboardRows.filter((row) =>
-      !isImportedClassificationRow(row) &&
-      !isExcludedBpiYtdRecord(row, campaignById.get(row.campaignId)?.campaignName)
+      !isImportedClassificationRow(row)
     );
     const importedActual = (row: (typeof dashboardRows)[number]) => row.actual != null
       ? Number(row.actual)

@@ -5,7 +5,6 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { getAssignedCampaignIds } from '@/lib/user-campaigns';
-import { isExcludedBpiYtdRecord } from '@/lib/bpi-dashboard-import';
 
 const BUSINESS_TIME_ZONE = 'Asia/Manila';
 const BUSINESS_TIME_ZONE_OFFSET = '+08:00';
@@ -418,8 +417,7 @@ export async function GET(req: NextRequest) {
     // AGENT and HOH worksheets. Keep the most specific row for each metric.
     const preferredImportedRows = new Map<string, (typeof rawImportedRows)[number]>();
     for (const row of rawImportedRows.filter((candidate) =>
-      !isImportedClassificationRow(candidate) &&
-      !isExcludedBpiYtdRecord(candidate, campaignNames.get(candidate.campaignId))
+      !isImportedClassificationRow(candidate)
     )) {
       const key = [
         row.campaignId,

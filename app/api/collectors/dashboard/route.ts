@@ -16,7 +16,6 @@ import {
 } from "@/lib/bdo-ccc-kpi";
 import { isSelectedPeriod, monthName, monthSelectionRange, normalizeMonthSelection } from "@/lib/month-selection";
 import { summarizeProductionMonitoringForDashboard } from "@/lib/production-monitoring-dashboard";
-import { isExcludedBpiYtdRecord } from "@/lib/bpi-dashboard-import";
 
 const BUSINESS_TIME_ZONE = "Asia/Manila";
 const BUSINESS_TIME_ZONE_OFFSET = "+08:00";
@@ -564,7 +563,7 @@ export async function GET(req: NextRequest) {
 
     const campaignNameById = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
     const usableDashboardAgentRecords = dashboardAgentRecords.filter(
-      (record) => !isImportedClassificationRow(record) && !isExcludedBpiYtdRecord(record, campaignNameById.get(record.campaignId))
+      (record) => !isImportedClassificationRow(record)
     );
     const monitoringRecords = rawMonitoringRecords.filter((record) =>
       periodSelected(record.reportYear, record.reportMonth)
