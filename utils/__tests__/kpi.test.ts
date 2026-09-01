@@ -30,6 +30,14 @@ const row = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("computeMTD", () => {
+  it("aggregates every production field for ALL KPI", () => {
+    const rows = [
+      row({ transmittals: 10, activations: 2, approvals: 8, booked: 6, volume: 100, transaction: 4 }),
+      row({ transmittals: 5, activations: 1, approvals: 4, booked: 3, volume: 50, transaction: 2 }),
+    ];
+    expect(computeMTD(rows, "allKpi")).toBe(195);
+  });
+
   it("sums counting metrics", () => {
     const rows = [
       row({ transmittals: 5 }),
@@ -135,6 +143,16 @@ describe("weekBucket", () => {
 });
 
 describe("groupByWeek", () => {
+  it("groups ALL KPI without including percentage rates", () => {
+    const rows = [
+      row({ date: "2026-05-01", transmittals: 2, approvals: 1, booked: 1, volume: 10, qualityRate: 99 }),
+      row({ date: "2026-05-08", activations: 3, transaction: 4, conversionRate: 80 }),
+    ];
+    const result = groupByWeek(rows, "allKpi");
+    expect(result.W1).toBe(14);
+    expect(result.W2).toBe(7);
+  });
+
   it("groups counting metric by week", () => {
     const rows = [
       row({ date: "2026-05-01", transmittals: 5 }),

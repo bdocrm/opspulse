@@ -53,6 +53,7 @@ export type ConfirmAction =
   | { type: "permanent-delete"; items: GoalKey[] };
 
 export const KPI_METRICS = [
+  { value: "allKpi", label: "ALL KPI" },
   { value: "transmittals", label: "Transmittals" },
   { value: "approvals", label: "Approvals" },
   { value: "booked", label: "Booked" },

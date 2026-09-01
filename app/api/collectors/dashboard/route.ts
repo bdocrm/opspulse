@@ -1560,6 +1560,11 @@ export async function GET(req: NextRequest) {
       const productionFromAgents = Object.values(production).reduce(
         (sum, row) => {
           if (isAcqCampaign) return sum + Number(row.ntb || 0);
+          if (resolvedKpiMetric === "allKpi") {
+            return sum + Number(row.transmittals || 0) + Number(row.activations || 0)
+              + Number(row.approvals || 0) + Number(row.booked || 0)
+              + Number(row.volume || 0) + Number(row.transaction || 0);
+          }
           return sum + Number(row[resolvedKpiMetric] || 0);
         },
         0

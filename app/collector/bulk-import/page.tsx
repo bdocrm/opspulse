@@ -240,6 +240,7 @@ interface WorkbookSummary {
   worksheetsSkipped: number;
   totalValidRecords: number;
   totalInvalidRecords: number;
+  totalWarningRecords?: number;
   totalDuplicateRecords: number;
   totalUnmappedRecords?: number;
   workbookYear?: number;
@@ -253,6 +254,13 @@ interface WorkbookSummary {
   agentCount?: number;
   teamLeaderCount?: number;
   manpowerRecordCount?: number;
+  recordTypeSummary?: {
+    production: number;
+    hoh: number;
+    scorecard: number;
+    ytd: number;
+    warnings: number;
+  };
   detectedWorksheet?: string;
   finalFcTotal?: number;
   finalBcTotal?: number;
@@ -2210,6 +2218,16 @@ export default function BulkImportPage() {
                 </div>
               )}
 
+              {workbookSummary.recordTypeSummary && (
+                <div className="grid grid-cols-2 gap-2 rounded-lg border border-blue-100 bg-blue-50/40 p-4 text-center text-sm md:grid-cols-5">
+                  <div><p className="font-semibold text-blue-800">{workbookSummary.recordTypeSummary.production}</p><p className="text-xs text-slate-600">Production</p></div>
+                  <div><p className="font-semibold text-blue-800">{workbookSummary.recordTypeSummary.scorecard}</p><p className="text-xs text-slate-600">CI Scorecard</p></div>
+                  <div><p className="font-semibold text-blue-800">{workbookSummary.recordTypeSummary.hoh}</p><p className="text-xs text-slate-600">HOH</p></div>
+                  <div><p className="font-semibold text-blue-800">{workbookSummary.recordTypeSummary.ytd}</p><p className="text-xs text-slate-600">YTD</p></div>
+                  <div><p className="font-semibold text-amber-700">{workbookSummary.recordTypeSummary.warnings}</p><p className="text-xs text-slate-600">Warnings</p></div>
+                </div>
+              )}
+
               {Boolean(workbookSummary.campaignDistribution?.length) && (
                 <div className="space-y-2 rounded-lg border p-4">
                   <p className="font-semibold text-slate-800">Campaign Distribution</p>
@@ -2639,6 +2657,27 @@ export default function BulkImportPage() {
               </div>
             )}
           </div>
+
+          {importResult?.breakdown && (
+            <div className="space-y-2 rounded-lg border p-4">
+              <p className="text-sm font-semibold text-slate-800">Imported BDO record breakdown</p>
+              <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-3 lg:grid-cols-6">
+                {[
+                  ['CI Production', importResult.breakdown.ciProduction],
+                  ['Cross Sell', importResult.breakdown.crossSellProduction],
+                  ['CI Scorecard', importResult.breakdown.ciScorecard],
+                  ['CI HOH', importResult.breakdown.ciHoh],
+                  ['Cross Sell HOH', importResult.breakdown.crossSellHoh],
+                  ['YTD Performance', importResult.breakdown.ytdPerformance],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-md border bg-slate-50 p-2">
+                    <p className="font-semibold text-blue-800">{Number(value || 0).toLocaleString()}</p>
+                    <p className="text-slate-600">{label}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {importResult?.detectedWorksheets?.length > 0 && (
             <div className="space-y-3 rounded-lg border p-4">

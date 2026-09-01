@@ -1,6 +1,7 @@
 // ---------- KPI computation helpers ----------
 
 export type KpiMetricKey =
+  | "allKpi"
   | "transmittals"
   | "activations"
   | "approvals"
@@ -22,6 +23,17 @@ export interface DailySalesRow {
   conversionRate: number | null;
   volume: number;
   transaction: number;
+}
+
+export const ALL_KPI_FIELDS = [
+  "transmittals", "activations", "approvals", "booked", "volume", "transaction",
+] as const;
+
+export function kpiMetricValue(row: Partial<DailySalesRow>, metric: KpiMetricKey): number {
+  if (metric === "allKpi") {
+    return ALL_KPI_FIELDS.reduce((sum, field) => sum + Number(row[field] ?? 0), 0);
+  }
+  return Number(row[metric] ?? 0);
 }
 
 /**
@@ -74,7 +86,7 @@ export function getWorkingDaysElapsed(date: Date): number {
 export function computeMTD(rows: DailySalesRow[], metric: KpiMetricKey): number {
   if (rows.length === 0) return 0;
   const isRate = metric === "qualityRate" || metric === "conversionRate";
-  const values = rows.map((r) => (r[metric] as number) ?? 0);
+  const values = rows.map((r) => kpiMetricValue(r, metric));
   const total = values.reduce((a, b) => a + b, 0);
   return isRate ? total / rows.length : total;
 }
@@ -144,7 +156,7 @@ export function groupByWeek(
   rows.forEach((r) => {
     const d = new Date(r.date).getDate();
     const b = weekBucket(d);
-    buckets[b].push((r[metric] as number) ?? 0);
+    buckets[b].push(kpiMetricValue(r, metric));
   });
 
   const isRate = metric === "qualityRate" || metric === "conversionRate";

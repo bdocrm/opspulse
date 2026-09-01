@@ -27,6 +27,7 @@
     "test:kpi-import": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-kpi-import.ts",
     "test:production-monitoring": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-production-monitoring.ts",
     "test:campaign-mapping": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-campaign-mapping.ts",
+    "test:bdo-blue4": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-bdo-blue4-dashboard-import.ts",
     "test:production-monitoring-dashboard": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/test-production-monitoring-dashboard.ts",
     "repair:collapsed-campaigns": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/repair-collapsed-production-campaigns.ts",
     "verify:campaign-import-dashboard": "set TS_NODE_COMPILER_OPTIONS={\"module\":\"CommonJS\"}&& ts-node scripts/verify-campaign-import-dashboard.ts",

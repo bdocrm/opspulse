@@ -8,6 +8,7 @@ import {
   runRate,
   rrAchievementPct,
   groupByWeek,
+  kpiMetricValue,
   WORKING_DAYS_DEFAULT,
   type KpiMetricKey,
 } from '@/utils/kpi';
@@ -120,7 +121,7 @@ export async function GET(req: NextRequest) {
     // Calculate agent-level metrics
     const agents = campaign.users.map((user) => {
       const agentData = agentDataMap.get(user.id) || [];
-      const metricValues = agentData.map((d) => (d[metric] as number) || 0);
+      const metricValues = agentData.map((d) => kpiMetricValue(d, metric));
       const mtd = metricValues.reduce((a, b) => a + b, 0);
       const elapsed = new Set(agentData.map((d) => d.date.toISOString().split('T')[0])).size;
       

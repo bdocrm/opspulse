@@ -140,6 +140,7 @@ function mergeTotals(target: AgentTotals, source: AgentTotals) {
 
 function normalizeMetric(metric: string | null | undefined): KpiMetricKey {
   const normalized = (metric ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (["all", "allkpi"].includes(normalized)) return "allKpi";
   if (["activation", "activations", "activated", "act"].includes(normalized)) return "activations";
   if (["approval", "approvals", "approved", "appr"].includes(normalized)) return "approvals";
   if (["book", "booked", "booking", "bookings"].includes(normalized)) return "booked";
@@ -149,6 +150,7 @@ function normalizeMetric(metric: string | null | undefined): KpiMetricKey {
 }
 
 function metricValue(metric: KpiMetricKey, totals: MetricTotals) {
+  if (metric === "allKpi") return totals.transmittals + totals.activations + totals.approvals + totals.booked + totals.volume + totals.transaction;
   if (metric === "activations") return totals.activations;
   if (metric === "approvals") return totals.approvals;
   if (metric === "booked") return totals.booked;
@@ -183,7 +185,7 @@ function resolveEffectiveMetric(
   // Some imported campaigns store peso-volume goals while the legacy KPI field
   // still says "transmittals". In that case, using count actuals against volume
   // goals makes every achievement look like 0%.
-  if (configuredMetric !== "volume" && looksLikeMoneyGoal && hasMeaningfulVolume) {
+  if (configuredMetric !== "volume" && configuredMetric !== "allKpi" && looksLikeMoneyGoal && hasMeaningfulVolume) {
     return "volume";
   }
 

@@ -477,6 +477,8 @@ model DashboardImportRecord {
   numericValue     Float?
   declaredSeat     Float?
   actualHeadCount  Float?
+  dateHired        DateTime?
+  dataStatus       String?
   remark           String?
   sourceFile       String
   importedById     String

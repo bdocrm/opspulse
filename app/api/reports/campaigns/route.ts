@@ -43,10 +43,11 @@ type MetricTotals = {
   transaction: number;
 };
 
-type MetricKey = keyof MetricTotals;
+type MetricKey = keyof MetricTotals | 'allKpi';
 
 function normalizeMetric(metric: string | null | undefined): MetricKey {
   const normalized = (metric ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (['all', 'allkpi'].includes(normalized)) return 'allKpi';
   if (['activation', 'activations', 'activated', 'act'].includes(normalized)) return 'activations';
   if (['approval', 'approvals', 'approved', 'appr'].includes(normalized)) return 'approvals';
   if (['book', 'booked', 'booking', 'bookings'].includes(normalized)) return 'booked';
@@ -56,6 +57,7 @@ function normalizeMetric(metric: string | null | undefined): MetricKey {
 }
 
 function metricValue(metric: string, totals: MetricTotals) {
+  if (metric === 'allKpi') return totals.transmittals + totals.activations + totals.approvals + totals.booked + totals.volume + totals.transaction;
   if (metric === 'activations') return totals.activations;
   if (metric === 'approvals') return totals.approvals;
   if (metric === 'booked') return totals.booked;
@@ -69,7 +71,7 @@ function resolveEffectiveMetric(metric: MetricKey, goal: number, totals: MetricT
   const looksLikeMoneyGoal = goal >= 1_000_000;
   const hasMeaningfulVolume = totals.volume > configuredActual && totals.volume > 0;
 
-  return metric !== 'volume' && looksLikeMoneyGoal && hasMeaningfulVolume ? 'volume' : metric;
+  return metric !== 'volume' && metric !== 'allKpi' && looksLikeMoneyGoal && hasMeaningfulVolume ? 'volume' : metric;
 }
 
 function percent(numerator: number, denominator: number) {

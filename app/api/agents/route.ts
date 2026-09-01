@@ -47,7 +47,9 @@ export async function GET(req: NextRequest) {
 
     sales.forEach((s) => {
       const metric = s.campaign.kpiMetric;
-      const val = Number((s as any)[metric] ?? 0);
+      const val = metric === 'allKpi'
+        ? Number(s.transmittals) + Number(s.activations) + Number(s.approvals) + Number(s.booked) + Number(s.volume) + Number(s.transaction)
+        : Number((s as any)[metric] ?? 0);
       const existing = agentMap.get(s.userId) ?? { mtd: 0, goal: 0, count: 0 };
       existing.mtd += val;
       existing.goal = s.campaign.monthlyGoal; // simplified: use last campaign goal

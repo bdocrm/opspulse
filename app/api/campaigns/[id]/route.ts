@@ -41,6 +41,7 @@ function toBusinessYmd(value: Date) {
 
 function normalizeMetric(metric: string | null | undefined): KpiMetricKey {
   const normalized = (metric ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (["all", "allkpi"].includes(normalized)) return "allKpi";
   if (["activation", "activations", "activated", "act"].includes(normalized)) return "activations";
   if (["approval", "approvals", "approved", "appr"].includes(normalized)) return "approvals";
   if (["book", "booked", "booking", "bookings"].includes(normalized)) return "booked";
@@ -50,6 +51,7 @@ function normalizeMetric(metric: string | null | undefined): KpiMetricKey {
 }
 
 function metricValue(metric: KpiMetricKey, totals: MetricTotals) {
+  if (metric === "allKpi") return totals.transmittals + totals.activations + totals.approvals + totals.booked + totals.volume + totals.transaction;
   if (metric === "activations") return totals.activations;
   if (metric === "approvals") return totals.approvals;
   if (metric === "booked") return totals.booked;
@@ -65,7 +67,7 @@ function resolveEffectiveMetric(metric: KpiMetricKey, goal: number, totals: Metr
   const looksLikeMoneyGoal = goal >= 1_000_000 || averageAgentGoal >= 1_000_000;
   const hasMeaningfulVolume = totals.volume > configuredActual && totals.volume > 0;
 
-  if (metric !== "volume" && looksLikeMoneyGoal && hasMeaningfulVolume) {
+  if (metric !== "volume" && metric !== "allKpi" && looksLikeMoneyGoal && hasMeaningfulVolume) {
     return "volume";
   }
 
@@ -208,7 +210,7 @@ export async function GET(
     const dailyMap = new Map<string, number>();
     salesRows.forEach((r) => {
       const key = new Date(r.date).toISOString().slice(0, 10);
-      dailyMap.set(key, (dailyMap.get(key) ?? 0) + Number((r as any)[effectiveMetric] ?? 0));
+      dailyMap.set(key, (dailyMap.get(key) ?? 0) + metricValue(effectiveMetric, r));
     });
     const dailyTrend = Array.from(dailyMap.entries())
       .sort()

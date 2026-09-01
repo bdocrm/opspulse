@@ -192,6 +192,11 @@ async function ensureImportMetadataColumns() {
       ADD COLUMN IF NOT EXISTS "unmappedCount" INTEGER NOT NULL DEFAULT 0;
   `);
   await prisma.$executeRawUnsafe(`
+    ALTER TABLE "DashboardImportRecord"
+      ADD COLUMN IF NOT EXISTS "dateHired" TIMESTAMP(3),
+      ADD COLUMN IF NOT EXISTS "dataStatus" TEXT;
+  `);
+  await prisma.$executeRawUnsafe(`
     ALTER TABLE "ProductionDetail"
       ADD COLUMN IF NOT EXISTS "transmittedVolume" BIGINT NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS "approvalsVolume" BIGINT NOT NULL DEFAULT 0,
@@ -2196,13 +2201,14 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
     goal: record.target ?? null,
     actual: record.actual ?? null,
     achievement: record.achievement ?? null,
-    status: 'New',
+    status: record.dataStatus || record.remark ? 'Warning' : 'New',
     validationMessage: record.remark || '',
     row: record.sourceRow,
     });
   });
   const monthMap = new Map<string, any>();
   for (const record of parsed.records) {
+    if (!record.month) continue;
     const month = `${record.year}-${String(record.month || 1).padStart(2, '0')}`;
     const current = monthMap.get(month) || { month, label: new Date(record.year, (record.month || 1) - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }), reportDate: `${month}-01`, new: 0, existing: 0, invalid: 0 };
     current.new++;
@@ -2225,7 +2231,8 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
     reportDate: sheet.records[0] ? ymd(sheet.records[0].reportDate) : ymd(reportDate),
     totalRows: sheet.records.length + sheet.warnings.length,
     validRows: sheet.records.length,
-    invalidRows: sheet.warnings.filter((warning) => !/unsupported worksheet/i.test(warning.message)).length,
+    invalidRows: sheet.warnings.filter((warning) => /invalid numeric|formula returned|text value skipped|no valid|malformed/i.test(warning.message)).length,
+    warningCount: sheet.warnings.filter((warning) => !/invalid numeric|formula returned|text value skipped|no valid|malformed|unsupported worksheet/i.test(warning.message)).length,
     duplicateRows: 0,
     detectedMonths: sheet.months,
     warnings: [...mappingWarnings, ...sheet.warnings.map((warning) => warning.message)],
@@ -2233,6 +2240,7 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
     status: sheet.status,
     });
   });
+  const unmappedRecords = parsed.records.filter((record) => recordMappings.get(record)?.source === 'unresolved').length;
   return {
     parsed,
     recordMappings,
@@ -2244,9 +2252,11 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
       worksheetsAccepted: parsed.sheets.filter((sheet) => sheet.records.length > 0).length,
       worksheetsSkipped: parsed.sheets.filter((sheet) => sheet.records.length === 0).length,
       totalValidRecords: parsed.records.length,
-      totalInvalidRecords: parsed.issues.filter((issue) => !/unsupported worksheet/i.test(issue.message)).length,
+      totalInvalidRecords: parsed.issues.filter((issue) => /invalid numeric|formula returned|text value skipped|no valid|malformed/i.test(issue.message)).length,
+      totalWarningRecords: parsed.issues.filter((issue) => !/invalid numeric|formula returned|text value skipped|no valid|malformed|unsupported worksheet/i.test(issue.message)).length,
       totalDuplicateRecords: duplicateCount,
       inWorkbookDuplicateRecords: duplicateCount,
+      totalUnmappedRecords: unmappedRecords,
       workbookYear: parsed.workbookYear,
       supportedWorksheets: parsed.sheets.filter((sheet) => sheet.detectedType !== 'Unsupported').map((sheet) => sheet.sheetName),
       unsupportedWorksheets: parsed.sheets.filter((sheet) => sheet.detectedType === 'Unsupported').map((sheet) => sheet.sheetName),
@@ -2256,6 +2266,25 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
       agentCount: parsed.agents.length,
       teamLeaderCount: parsed.teamLeaders.length,
       manpowerRecordCount: parsed.records.filter((record) => record.recordKind === 'manpower').length,
+      recordTypeSummary: {
+        production: parsed.records.filter((record) => record.recordKind === 'agent_monitoring' && !/HOH/.test(record.monitoringType || '')).length,
+        hoh: parsed.records.filter((record) => record.recordKind === 'agent_monitoring' && /HOH/.test(record.monitoringType || '')).length,
+        scorecard: parsed.records.filter((record) => record.recordKind === 'scorecard').length,
+        ytd: parsed.records.filter((record) => record.recordKind === 'ytd').length,
+        warnings: parsed.issues.length,
+      },
+      campaignDistribution: selectedCampaigns.map((campaign) => {
+        const campaignRecords = parsed.records.filter((record) => recordMappings.get(record)?.campaign.id === campaign.id && recordMappings.get(record)?.source !== 'unresolved');
+        return {
+          campaignId: campaign.id,
+          campaignName: campaign.campaignName,
+          worksheets: [...new Set(campaignRecords.map((record) => record.worksheetSource))],
+          agents: new Set(campaignRecords.map((record) => record.entityName).filter(Boolean)).size,
+          metrics: new Set(campaignRecords.map((record) => record.metric)).size,
+          records: campaignRecords.length,
+          months: [...new Set(campaignRecords.filter((record) => record.month).map((record) => dashboardMonthLabel(record.year, record.month!)))],
+        };
+      }).filter((item) => item.records > 0),
     },
   };
 }
@@ -2399,6 +2428,41 @@ function buildBpiPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
   };
 }
 
+async function matchBdoAgents(preview: ReturnType<typeof buildBdoPreview>, campaignIds: string[]) {
+  const exactNameSignature = (name: string) => normalizeAgentName(name).split(' ').filter(Boolean).sort().join('|');
+  const agents = await prisma.user.findMany({
+    where: {
+      role: 'AGENT',
+      OR: [
+        { campaignId: { in: campaignIds } },
+        { campaignAssignments: { some: { campaignId: { in: campaignIds } } } },
+      ],
+    },
+    select: { id: true, name: true, campaignId: true, campaignAssignments: { select: { campaignId: true } } },
+  });
+  const byCampaignAndName = new Map<string, typeof agents[number]>();
+  for (const agent of agents) {
+    const assignedIds = new Set([agent.campaignId, ...agent.campaignAssignments.map((assignment) => assignment.campaignId)].filter(Boolean));
+    for (const campaignId of assignedIds) byCampaignAndName.set(`${campaignId}|${exactNameSignature(agent.name)}`, agent);
+  }
+  const matched: any[] = [];
+  const notFound: any[] = [];
+  const seen = new Set<string>();
+  for (const record of preview.parsed.records) {
+    if (!record.entityName || !['agent_monitoring', 'scorecard'].includes(record.recordKind)) continue;
+    const mapping = preview.recordMappings.get(record);
+    if (!mapping || mapping.source === 'unresolved') continue;
+    const key = `${mapping.campaign.id}|${exactNameSignature(record.entityName)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const agent = byCampaignAndName.get(key);
+    const common = { name: record.entityName, count: 0, volume: 0, sheet: record.worksheetSource, campaignName: mapping.campaign.campaignName, row: record.sourceRow };
+    if (agent) matched.push({ ...common, agentId: agent.id, agentName: agent.name });
+    else notFound.push(common);
+  }
+  return { matched, notFound };
+}
+
 async function markExistingBdoRecords(preview: ReturnType<typeof buildBdoPreview>, selectedCampaignIds: string[], reportPeriodType: ReportPeriodType) {
   if (!preview.parsed.records.length) return;
   const years = [...new Set(preview.parsed.records.map((record) => record.year))];
@@ -2510,7 +2574,8 @@ async function persistBdoImport({
       await tx.$executeRaw`
         UPDATE "DashboardImportRecord" SET "batchId" = ${batchId}, "sourceRow" = ${record.sourceRow}, "monitoringType" = ${record.monitoringType || null}, "level" = ${record.level || null},
           "reportDate" = ${record.reportDate}, "target" = ${record.target ?? null}, "actual" = ${record.actual ?? null}, "achievement" = ${record.achievement ?? null},
-          "numericValue" = ${record.numericValue ?? null}, "declaredSeat" = ${record.declaredSeat ?? null}, "actualHeadCount" = ${record.actualHeadCount ?? null}, "remark" = ${record.remark || null}, "sourceFile" = ${fileName}, "importedById" = ${importedById}, "updatedAt" = CURRENT_TIMESTAMP
+          "numericValue" = ${record.numericValue ?? null}, "declaredSeat" = ${record.declaredSeat ?? null}, "actualHeadCount" = ${record.actualHeadCount ?? null},
+          "dateHired" = ${record.dateHired ?? null}, "dataStatus" = ${record.dataStatus || null}, "remark" = ${record.remark || null}, "sourceFile" = ${fileName}, "importedById" = ${importedById}, "updatedAt" = CURRENT_TIMESTAMP
         WHERE "id" = ${existingId}
       `;
       updated++;
@@ -2525,10 +2590,10 @@ async function persistBdoImport({
         ${record.monitoringType || null}, ${record.entityName || ''}, ${record.level || null}, ${record.category || ''}, ${record.product || ''},
         ${record.metric}, ${record.month || 0}, ${record.year}, ${reportPeriodType}, ${record.reportDate}, ${record.target ?? null},
         ${record.actual ?? null}, ${record.achievement ?? null}, ${record.numericValue ?? null}, ${record.declaredSeat ?? null},
-        ${record.actualHeadCount ?? null}, ${record.remark || null}, ${fileName}, ${importedById}
+        ${record.actualHeadCount ?? null}, ${record.dateHired ?? null}, ${record.dataStatus || null}, ${record.remark || null}, ${fileName}, ${importedById}
       )`);
       inserted += await tx.$executeRaw(Prisma.sql`
-        INSERT INTO "DashboardImportRecord" ("id", "batchId", "campaignId", "worksheetSource", "sourceRow", "recordKind", "monitoringType", "entityName", "level", "category", "product", "metric", "month", "year", "reportPeriodType", "reportDate", "target", "actual", "achievement", "numericValue", "declaredSeat", "actualHeadCount", "remark", "sourceFile", "importedById")
+        INSERT INTO "DashboardImportRecord" ("id", "batchId", "campaignId", "worksheetSource", "sourceRow", "recordKind", "monitoringType", "entityName", "level", "category", "product", "metric", "month", "year", "reportPeriodType", "reportDate", "target", "actual", "achievement", "numericValue", "declaredSeat", "actualHeadCount", "dateHired", "dataStatus", "remark", "sourceFile", "importedById")
         VALUES ${Prisma.join(values)}
         ON CONFLICT ("campaignId", "worksheetSource", "recordKind", "entityName", "category", "product", "metric", "year", "month", "reportPeriodType") DO NOTHING
       `);
@@ -2544,10 +2609,27 @@ async function persistBdoImport({
       `);
     }
     const actionableIssues = preview.parsed.issues.filter((issue) => !/unsupported worksheet|excluded by OpsView BPI import rules/i.test(issue.message));
-    const invalid = actionableIssues.filter((issue) => /invalid numeric|formula returned|text value skipped|no valid|not found|malformed/i.test(issue.message)).length;
+    const invalidIssues = actionableIssues.filter((issue) => /invalid numeric|formula returned|text value skipped|no valid|not found|malformed/i.test(issue.message));
+    const invalid = invalidIssues.length;
+    const invalidIssueSet = new Set(invalidIssues);
+    const breakdown = {
+      ciProduction: records.filter(({ record }) => record.monitoringType === 'CI_AGENT').length,
+      crossSellProduction: records.filter(({ record }) => record.monitoringType === 'CROSS_SELL_AGENT').length,
+      ciScorecard: records.filter(({ record }) => record.recordKind === 'scorecard').length,
+      ciHoh: records.filter(({ record }) => record.monitoringType === 'CI_HOH').length,
+      crossSellHoh: records.filter(({ record }) => record.monitoringType === 'CROSS_SELL_HOH').length,
+      ytdPerformance: records.filter(({ record }) => record.recordKind === 'ytd').length,
+    };
     const completedStatus = actionableIssues.length > 0 ? 'COMPLETED_WITH_WARNINGS' : 'COMPLETED';
     await tx.$executeRaw`UPDATE "DashboardImportBatch" SET "insertedCount" = ${inserted}, "updatedCount" = ${updated}, "skippedCount" = ${skipped}, "duplicateCount" = ${skipped}, "failedCount" = ${invalid}, "status" = ${completedStatus}, "completedAt" = CURRENT_TIMESTAMP WHERE "id" = ${batchId}`;
-    return { batchId, inserted, updated, skipped, invalid, importedCampaignIds, importedCampaigns: importedCampaignIds.length, success: inserted + updated, created: 0, details: [], errors: preview.parsed.issues.slice(0, 50).map((issue) => `${issue.worksheet}${issue.row ? ` row ${issue.row}` : ''}: ${issue.message}`), message: `Import completed for ${importedCampaignIds.length} campaign${importedCampaignIds.length === 1 ? '' : 's'}: ${inserted} inserted, ${updated} updated, ${skipped} skipped, and ${invalid} invalid.` };
+    console.info('BDO dashboard import batch committed', { batchId, fileName, inserted, updated, skipped, warnings: actionableIssues.length - invalid, errors: invalid });
+    return {
+      batchId, inserted, updated, skipped, invalid, breakdown, importedCampaignIds, importedCampaigns: importedCampaignIds.length,
+      success: inserted + updated, created: 0, details: [],
+      warnings: actionableIssues.filter((issue) => !invalidIssueSet.has(issue)).slice(0, 200).map((issue) => `${issue.worksheet}${issue.row ? ` row ${issue.row}` : ''}: ${issue.message}`),
+      errors: invalidIssues.slice(0, 50).map((issue) => `${issue.worksheet}${issue.row ? ` row ${issue.row}` : ''}: ${issue.message}`),
+      message: `Import completed for ${importedCampaignIds.length} campaign${importedCampaignIds.length === 1 ? '' : 's'}: ${inserted} inserted, ${updated} updated, ${skipped} skipped, and ${invalid} invalid.`,
+    };
   }, { timeout: 120000 });
 }
 
@@ -3174,7 +3256,7 @@ export async function POST(req: NextRequest) {
         const bpiCampaigns = workbookCampaigns.campaigns;
         const sipCampaign = bpiCampaigns.find((campaign) => /^BPI SIP LOANS$/i.test(campaign.campaignName))!;
         const bpiPreview = buildBpiPreview(workbook, reportDate, bpiCampaigns, reportPeriodType, file.name);
-        await markExistingBdoRecords(bpiPreview as ReturnType<typeof buildBdoPreview>, bpiCampaigns.map((campaign) => campaign.id), reportPeriodType);
+        await markExistingBdoRecords(bpiPreview as unknown as ReturnType<typeof buildBdoPreview>, bpiCampaigns.map((campaign) => campaign.id), reportPeriodType);
         if (bpiPreview.workbookSummary.worksheetsAccepted === 0 || bpiPreview.workbookSummary.totalValidRecords === 0) {
           return NextResponse.json({
             error: 'The workbook contains supported BPI worksheets, but no valid mapped monthly data was found.',
@@ -3231,7 +3313,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 'The selected worksheets have no records that can be matched to the chosen campaigns. If campaign values are not present in the workbook, select one campaign as the fallback.' }, { status: 400 });
         }
         const result = await persistBdoImport({
-          preview: bpiPreview as ReturnType<typeof buildBdoPreview>,
+          preview: bpiPreview as unknown as ReturnType<typeof buildBdoPreview>,
           selectedCampaigns: bpiCampaigns,
           campaignMappings,
           fileName: file.name,
@@ -3266,12 +3348,13 @@ export async function POST(req: NextRequest) {
           }, { status: 400 });
         }
         if (mode === 'preview') {
+          const agentMatches = await matchBdoAgents(bdoPreview, selectedCampaigns.map((campaign) => campaign.id));
           return NextResponse.json({
             preview: true,
             multiSheet: true,
             bdoDashboard: true,
-            matched: [],
-            notFound: [],
+            matched: agentMatches.matched,
+            notFound: agentMatches.notFound,
             metricType: 'all_metrics',
             reportDate: ymd(reportDate),
             reportPeriodType,

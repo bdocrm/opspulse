@@ -6,8 +6,9 @@ import Papa from "papaparse";
 
 const BUSINESS_TIME_ZONE_OFFSET = "+08:00";
 
-type MetricKey = "transmittals" | "activations" | "approvals" | "booked" | "volume" | "transaction";
-type MetricTotals = Record<MetricKey, number>;
+type BaseMetricKey = "transmittals" | "activations" | "approvals" | "booked" | "volume" | "transaction";
+type MetricKey = BaseMetricKey | "allKpi";
+type MetricTotals = Record<BaseMetricKey, number>;
 
 function monthRange(year: number, month: number) {
   const mm = String(month).padStart(2, "0");
@@ -21,6 +22,7 @@ function monthRange(year: number, month: number) {
 
 function normalizeMetric(metric: string | null | undefined): MetricKey {
   const normalized = (metric ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (["all", "allkpi"].includes(normalized)) return "allKpi";
   if (["activation", "activations", "activated", "act"].includes(normalized)) return "activations";
   if (["approval", "approvals", "approved", "appr"].includes(normalized)) return "approvals";
   if (["book", "booked", "booking", "bookings"].includes(normalized)) return "booked";
@@ -29,14 +31,22 @@ function normalizeMetric(metric: string | null | undefined): MetricKey {
   return "transmittals";
 }
 
+function metricValue(metric: MetricKey, totals: MetricTotals) {
+  return metric === "allKpi"
+    ? totals.transmittals + totals.activations + totals.approvals + totals.booked + totals.volume + totals.transaction
+    : totals[metric];
+}
+
 function resolveEffectiveMetric(metric: MetricKey, goal: number, totals: MetricTotals, agentGoals: number[]) {
-  const configuredActual = totals[metric];
+  const configuredActual = metric === "allKpi"
+    ? totals.transmittals + totals.activations + totals.approvals + totals.booked + totals.volume + totals.transaction
+    : totals[metric];
   const averageAgentGoal =
     agentGoals.length > 0 ? agentGoals.reduce((sum, value) => sum + value, 0) / agentGoals.length : 0;
   const looksLikeMoneyGoal = goal >= 1_000_000 || averageAgentGoal >= 1_000_000;
   const hasMeaningfulVolume = totals.volume > configuredActual && totals.volume > 0;
 
-  return metric !== "volume" && looksLikeMoneyGoal && hasMeaningfulVolume ? "volume" : metric;
+  return metric !== "volume" && metric !== "allKpi" && looksLikeMoneyGoal && hasMeaningfulVolume ? "volume" : metric;
 }
 
 export async function GET(req: NextRequest) {
@@ -111,7 +121,7 @@ export async function GET(req: NextRequest) {
         "Date Range": `${startDate.toISOString().slice(0, 10)} to ${endDate.toISOString().slice(0, 10)}`,
         "Monthly Goal": goal,
         "KPI Metric": effectiveMetric,
-        MTD: totals[effectiveMetric],
+        MTD: metricValue(effectiveMetric, totals),
         Transmittals: totals.transmittals,
         Activations: totals.activations,
         Approvals: totals.approvals,
