@@ -5,6 +5,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { getAssignedCampaignIds } from '@/lib/user-campaigns';
+import { isExcludedBpiYtdRecord } from '@/lib/bpi-dashboard-import';
 
 const BUSINESS_TIME_ZONE = 'Asia/Manila';
 const BUSINESS_TIME_ZONE_OFFSET = '+08:00';
@@ -184,6 +185,7 @@ type AgentAccumulator = {
   importedAchievements: Map<string, number>;
   detailAchievements: number[];
   qualityScores: number[];
+  scorecardScores: number[];
   workedDates: Set<string>;
   attendanceDays: number;
   hasAttendance: boolean;
@@ -377,6 +379,7 @@ export async function GET(req: NextRequest) {
           importedAchievements: new Map(),
           detailAchievements: [],
           qualityScores: [],
+          scorecardScores: [],
           workedDates: new Set(),
           attendanceDays: 0,
           hasAttendance: false,
@@ -414,7 +417,10 @@ export async function GET(req: NextRequest) {
     // Dashboard workbooks frequently include the same agent metric in both
     // AGENT and HOH worksheets. Keep the most specific row for each metric.
     const preferredImportedRows = new Map<string, (typeof rawImportedRows)[number]>();
-    for (const row of rawImportedRows.filter((candidate) => !isImportedClassificationRow(candidate))) {
+    for (const row of rawImportedRows.filter((candidate) =>
+      !isImportedClassificationRow(candidate) &&
+      !isExcludedBpiYtdRecord(candidate, campaignNames.get(candidate.campaignId))
+    )) {
       const key = [
         row.campaignId,
         normalizeName(row.entityName),
@@ -433,6 +439,10 @@ export async function GET(req: NextRequest) {
       const registered = registeredByCampaignAndName.get(`${row.campaignId}|${normalizeName(row.entityName)}`);
       const agent = getAgent(row.campaignId, row.entityName, registered);
       const actual = Number(row.actual ?? 0);
+
+      if (normalizeMetric(row.metric) === 'score' && row.actual != null) {
+        agent.scorecardScores.push(Number(row.actual));
+      }
 
       if (isImportedTaskMetric(row)) {
         agent.importedTasks += actual;
@@ -488,6 +498,7 @@ export async function GET(req: NextRequest) {
           ? percent(counts.approvals, counts.transmittals)
           : null;
         const quality = average(agent.qualityScores) ?? derivedQuality;
+        const scorecardScore = average(agent.scorecardScores);
         const avgTaskTime = tasksCompleted != null && tasksCompleted > 0 && daysWorked != null
           ? (daysWorked * 480) / tasksCompleted
           : null;
@@ -502,7 +513,12 @@ export async function GET(req: NextRequest) {
           avgTaskTime: round(avgTaskTime, 2),
           efficiencyScore: round(efficiency),
           qualityScore: round(quality),
+          scorecardScore: round(scorecardScore),
           conversionScore: round(percent(counts.booked, counts.transmittals)),
+          bookingRate: round(percent(counts.booked, counts.approvals)),
+          transmitted: round(counts.transmittals, 0),
+          approved: round(counts.approvals, 0),
+          booked: round(counts.booked, 0),
           daysWorked: round(daysWorked, 1),
           overtimeHours: null,
           dataSource: [...agent.sources].join(' + '),
@@ -523,11 +539,15 @@ export async function GET(req: NextRequest) {
     const taskValues = metrics.flatMap((metric) =>
       metric.tasksCompleted == null ? [] : [metric.tasksCompleted]
     );
+    const scoreValues = metrics.flatMap((metric) =>
+      metric.scorecardScore == null ? [] : [metric.scorecardScore]
+    );
 
     const summary = {
       avgEfficiency: round(average(efficiencyValues)),
       avgQuality: round(average(qualityValues)),
       avgTasksPerAgent: round(average(taskValues)),
+      avgScore: round(average(scoreValues)),
       topPerformer: metrics.find((metric) => metric.efficiencyScore != null) ?? metrics[0] ?? null,
       totalAgents: metrics.length,
     };

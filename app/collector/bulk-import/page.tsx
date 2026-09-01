@@ -211,6 +211,7 @@ interface WorksheetPreview {
   key: string;
   sheetName: string;
   hidden: boolean;
+  excluded?: boolean;
   selected: boolean;
   format: string;
   campaignName: string;
@@ -244,6 +245,7 @@ interface WorkbookSummary {
   workbookYear?: number;
   supportedWorksheets?: string[];
   unsupportedWorksheets?: string[];
+  excludedWorksheets?: string[];
   detectedMonths?: string[];
   detectedCategories?: string[];
   detectedMetrics?: string[];
@@ -378,6 +380,7 @@ interface MonthImportSummary {
 type WorksheetCampaignMappings = Record<string, string[]>;
 
 function worksheetValidationReason(sheet: WorksheetPreview, mappings: WorksheetCampaignMappings) {
+  if (sheet.excluded || /^excluded$/i.test(sheet.format)) return 'Excluded by OpsView BPI import rules.';
   if (sheet.validRows <= 0) return sheet.totalRows <= 0 ? 'Worksheet is empty.' : 'No valid importable records were detected.';
   if (/^(unsupported|skipped|invalid)$/i.test(sheet.format)) return `Unsupported or invalid worksheet format: ${sheet.format}.`;
   if (sheet.errors.length > 0) return sheet.errors[0] || 'Worksheet validation failed.';
@@ -752,6 +755,18 @@ export default function BulkImportPage() {
         if (!res.ok) throw new Error(`${activeFile.name}: ${data.error || 'Preview failed'}`);
         return { data, file: activeFile, index };
       }));
+      const workbookCampaigns = [...new Map(
+        responses
+          .map(({ data }) => data.workbookCampaign as { id: string; campaignName: string } | undefined)
+          .filter((campaign): campaign is { id: string; campaignName: string } => Boolean(campaign))
+          .map((campaign) => [campaign.id, campaign])
+      ).values()];
+      if (workbookCampaigns.length) {
+        // Keep the picker and worksheet mapping in sync with campaigns created
+        // automatically from BPI workbook filenames during preview.
+        setCampaignIds((current) => [...new Set([...current, ...workbookCampaigns.map((campaign) => campaign.id)])]);
+        await mutateImportHistory();
+      }
       setPreviewFiles(responses.map(({ file: previewFile, index }) => ({ file: previewFile, index })));
       setMatched(responses.flatMap(({ data, file: previewFile }) => (data.matched || []).map((row: any) => ({ ...row, fileName: previewFile.name }))));
       setNewAgents(responses.flatMap(({ data, file: previewFile }) => (data.notFound || []).map((row: any) => ({ ...row, fileName: previewFile.name }))).map((a: any) => ({ ...a, volume: a.volume ?? 0, approved: true })));
@@ -782,6 +797,7 @@ export default function BulkImportPage() {
         workbookYear: summaries.map((s) => s.workbookYear).filter(Boolean).sort().at(-1),
         supportedWorksheets: [...new Set(summaries.flatMap((s) => s.supportedWorksheets || []))],
         unsupportedWorksheets: [...new Set(summaries.flatMap((s) => s.unsupportedWorksheets || []))],
+        excludedWorksheets: [...new Set(summaries.flatMap((s) => s.excludedWorksheets || []))],
         detectedMonths: [...new Set(summaries.flatMap((s) => s.detectedMonths || []))],
         detectedCategories: [...new Set(summaries.flatMap((s) => s.detectedCategories || []))],
         detectedMetrics: [...new Set(summaries.flatMap((s) => s.detectedMetrics || []))],
@@ -1329,7 +1345,7 @@ export default function BulkImportPage() {
             <p><span className="font-medium text-slate-800">ACQ (.xlsx) or CSV:</span> AGENT CODE | LAST NAME | FIRST NAME | DATE ONBOARD | SEAT CATEGORY | TOTAL + per-date NTB/SUPPLEMENTARY pairs — reads name from Last + First and the highest NTB &amp; Supplementary per agent</p>
             <p><span className="font-medium text-slate-800">BDO Dashboard (.xlsx/.xls):</span> Automatically scans YTD Performance, Manpower Monitoring, CI/Cross Sell agent and HOH monitoring, and TLs Scorecard worksheets. Merged monthly groups and populated months are detected dynamically.</p>
             <p><span className="font-medium text-slate-800">BDO CCC KPI Workbook (.xlsx):</span> Detects monthly JANâ€“DEC worksheets with merged ACTUALS, GOAL, and ACVT headers, then imports QA, AHT, Adherence, CM, and CD for every populated month.</p>
-            <p><span className="font-medium text-slate-800">BPI Dashboard (.xlsx/.xls):</span> Automatically scans YTD Performance, Manpower Monitoring, PA agent/HOH monitoring, PL productivity, and PL HOH monitoring. Campaign sections, month groups, Count, and Volume metrics are mapped independently.</p>
+            <p><span className="font-medium text-slate-800">BPI Dashboard (.xlsx/.xls):</span> Imports PA Agents Monitoring, SIP LOANS SCORECARD, PL YTD Productivity, and PL SCORECARD worksheets with dynamic month detection. The sheet named exactly YTD Performance is always excluded.</p>
             <p><span className="font-medium text-slate-800">MB PA Monthly Dashboard (.xlsx/.xls):</span> Automatically recognizes month blocks with C2G, BT, and BalCon under TRANS and BILLINGS, including totals, Tier, Target, and Achievement—even when the worksheet is named MOM PROD.</p>
             <p><span className="font-medium text-slate-800">MB ACQ / MB PL Annual Dashboard (.xlsx/.xls):</span> Automatically captures every populated agent/month from merged TARGET, ACTUAL, %, SCORE, and ACHIEVEMENT blocks, including zero values and agent metadata.</p>
             <p><span className="font-medium text-slate-800">Production Monitoring (.xlsx):</span> Automatically detects campaigns, business units, reporting months, and every Week 1â€“Week 5 column present in the workbook. OM-name columns are excluded before preview and import.</p>
@@ -1579,7 +1595,7 @@ export default function BulkImportPage() {
                 Imported {formatDateTime(selectedImport?.importedAt)} into {selectedImport?.campaignName}
               </DialogDescription>
             </DialogHeader>
-            {selectedImport && (selectedImport.sourceKind === 'production_monitoring' || selectedImport.sourceKind === 'kpi') ? (
+            {selectedImport && (selectedImport.sourceKind === 'production_monitoring' || selectedImport.sourceKind === 'kpi' || selectedImport.sourceKind === 'dashboard') ? (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-3">
                   {[
@@ -2188,6 +2204,7 @@ export default function BulkImportPage() {
                   <div><p className="font-medium text-slate-700">Manpower Records</p><p className="text-slate-600">{(workbookSummary.manpowerRecordCount || 0).toLocaleString()}</p></div>
                   <div><p className="font-medium text-slate-700">Detected Months</p><p className="text-slate-600">{workbookSummary.detectedMonths?.join(', ') || 'None'}</p></div>
                   <div className="md:col-span-2"><p className="font-medium text-slate-700">Supported Worksheets</p><p className="text-slate-600">{workbookSummary.supportedWorksheets.join(', ') || 'None'}</p></div>
+                  <div className="md:col-span-2"><p className="font-medium text-slate-700">Excluded by Import Rules</p><p className="text-slate-600">{workbookSummary.excludedWorksheets?.join(', ') || 'None'}</p></div>
                   <div className="md:col-span-2"><p className="font-medium text-slate-700">Skipped Worksheets</p><p className="text-slate-600">{workbookSummary.unsupportedWorksheets?.join(', ') || 'None'}</p></div>
                   <div className="md:col-span-2"><p className="font-medium text-slate-700">Categories</p><p className="text-slate-600">{workbookSummary.detectedCategories?.join(', ') || 'None'}</p></div>
                   <div className="md:col-span-2"><p className="font-medium text-slate-700">Metrics</p><p className="text-slate-600">{workbookSummary.detectedMetrics?.join(', ') || 'None'}</p></div>
@@ -2237,10 +2254,11 @@ export default function BulkImportPage() {
                           <div className="flex flex-wrap items-center gap-2">
                             <p className="font-semibold text-slate-800">{sheet.sheetName}</p>
                             {sheet.hidden && <span className="rounded-full bg-slate-200 px-2 py-0.5 text-xs text-slate-600">Hidden</span>}
+                            {sheet.excluded && <span className="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-700">Excluded</span>}
                             <span className="rounded-full bg-white px-2 py-0.5 text-xs text-slate-600">{sheet.format}</span>
                           </div>
                           {sheet.fileName && <p className="mt-1 truncate text-xs font-medium text-blue-700">{sheet.fileName}</p>}
-                          <CampaignMultiSelect
+                          {!sheet.excluded && <CampaignMultiSelect
                             id={`worksheet-campaigns-${sheet.key.replace(/[^a-zA-Z0-9_-]/g, '-')}`}
                             campaigns={selectedCampaigns}
                             value={worksheetCampaigns[sheet.key] ?? []}
@@ -2248,14 +2266,14 @@ export default function BulkImportPage() {
                             placeholder={sheet.campaignMapping === 'record' ? 'Detected per record — optionally limit campaigns' : 'Select campaign mapping…'}
                             className={`mt-2 [&>button]:min-h-8 [&>button]:px-2 [&>button]:py-1 [&>button]:text-xs ${sheet.campaignMapping === 'unresolved' && !worksheetCampaigns[sheet.key]?.length ? '[&>button]:border-amber-400' : ''}`}
                             maxVisibleChips={2}
-                          />
-                          <p className="mt-1 text-xs text-slate-500">
+                          />}
+                          {!sheet.excluded && <p className="mt-1 text-xs text-slate-500">
                             {worksheetCampaigns[sheet.key]?.length
                               ? `${worksheetCampaigns[sheet.key].length} campaign${worksheetCampaigns[sheet.key].length === 1 ? '' : 's'} selected`
                               : sheet.campaignMapping === 'record'
                                 ? 'Campaign detected per record'
                                 : 'Campaign mapping required'} ({sheet.campaignMapping === 'sheet' ? 'matched from sheet' : sheet.campaignMapping === 'record' ? 'matched from record data' : sheet.campaignMapping === 'unresolved' ? 'confirmation required' : 'selected campaign'}) · {metricLabel(sheet.metricType)} · {formatDate(sheet.reportDate)}
-                          </p>
+                          </p>}
                           {Boolean(worksheetCampaigns[sheet.key]?.length && worksheetCampaigns[sheet.key].length > 1) && (
                             <p className="mt-1 text-xs text-blue-700">
                               Multiple selections limit this worksheet to those campaigns. Each record still uses its detected campaign; unresolved records are not duplicated.

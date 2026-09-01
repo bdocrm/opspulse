@@ -6,6 +6,7 @@ import { authOptions } from "@/lib/auth";
 import { getBulkImportedCampaignIds } from "@/lib/bulk-import-reports";
 import { prisma } from "@/lib/prisma";
 import type { KpiMetricKey } from "@/utils/kpi";
+import { isExcludedBpiYtdRecord } from "@/lib/bpi-dashboard-import";
 
 interface AgentPerformance {
   id: string;
@@ -19,6 +20,9 @@ interface AgentPerformance {
   booked: number;
   qualityRate: number;
   conversionRate: number;
+  bookingRate: number;
+  score: number | null;
+  ranking: number | null;
   goal: number;
   actual: number;
   achievement: number;
@@ -358,7 +362,10 @@ export async function GET(req: NextRequest) {
       }).catch(() => []),
     ]);
 
-    const dashboardRecords = rawDashboardRecords.filter((record) => !isImportedClassificationRow(record));
+    const dashboardRecords = rawDashboardRecords.filter((record) =>
+      !isImportedClassificationRow(record) &&
+      !isExcludedBpiYtdRecord(record, campaign.campaignName)
+    );
 
     const agentsById = new Map(campaignAgents.map((agent) => [agent.id, agent]));
     productionDetails.forEach((detail) => {
@@ -501,6 +508,16 @@ export async function GET(req: NextRequest) {
       if (!existing || priority > existingPriority) preferredDashboardRows.set(key, record);
     });
     const uniqueDashboardAgentRows = [...preferredDashboardRows.values()];
+    const scorecardValuesByAgent = new Map<string, { scores: number[]; rankings: number[] }>();
+    uniqueDashboardAgentRows.forEach((record) => {
+      const metric = normalizeImportedMetric(record.metric);
+      if (metric !== 'score' && metric !== 'ranking' || record.actual == null) return;
+      const name = normalizeName(record.entityName);
+      const values = scorecardValuesByAgent.get(name) ?? { scores: [], rankings: [] };
+      if (metric === 'score') values.scores.push(Number(record.actual));
+      else values.rankings.push(Number(record.actual));
+      scorecardValuesByAgent.set(name, values);
+    });
     const dashboardCurrencyMetric = dashboardRecords.some(
       (record) => Number(record.target ?? 0) >= 1_000_000
     ) || uniqueDashboardAgentRows.some(
@@ -510,7 +527,7 @@ export async function GET(req: NextRequest) {
       uniqueDashboardAgentRows.map((record) => normalizeImportedMetric(record.metric))
     );
     const preferredMetricNames = dashboardCurrencyMetric
-      ? ["booked volume", "cash installment", "volume"]
+      ? ["booked volume", "cash installment", "pa performance", "pl performance", "scorecard performance", "volume"]
       : configuredCampaignMetric === "approvals"
         ? ["approvals count", "approvals"]
         : configuredCampaignMetric === "booked"
@@ -703,6 +720,10 @@ export async function GET(req: NextRequest) {
       const goal = importedPerformance?.goal || compatibleConfiguredGoal(agent) || fallbackGoal;
       const achievement = goal > 0 ? (Number(actual) / goal) * 100 : 0;
       const status = performanceStatus(achievement);
+      const scorecardValues = scorecardValuesByAgent.get(normalizeName(agent.name));
+      const averageValue = (values: number[] | undefined) => values?.length
+        ? Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 100) / 100
+        : null;
 
       agentPerformances.push({
         id: agent.id,
@@ -716,6 +737,9 @@ export async function GET(req: NextRequest) {
         booked: agentTotals.booked,
         qualityRate: percent(agentTotals.approvals, agentTotals.transmittals),
         conversionRate: percent(agentTotals.booked, agentTotals.transmittals),
+        bookingRate: percent(agentTotals.booked, agentTotals.approvals),
+        score: averageValue(scorecardValues?.scores),
+        ranking: averageValue(scorecardValues?.rankings),
         goal,
         actual,
         achievement: Math.round(achievement * 100) / 100,

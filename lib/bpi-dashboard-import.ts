@@ -6,7 +6,9 @@ export const BPI_WORKSHEETS = {
   'ytd performance': 'YTD Performance',
   'manpower monitoring': 'Manpower Monitoring',
   'pa agents monitoring': 'PA Agents Monitoring',
+  'sip loans scorecard': 'SIP LOANS SCORECARD',
   'pl ytd productivity': 'PL YTD Productivity',
+  'pl scorecard 2026': 'PL SCORECARD 2026',
   'pa hoh monitoring': 'PA HOH Monitoring',
   'pl hoh monitoring': 'PL HOH Monitoring',
 } as const;
@@ -15,6 +17,19 @@ export type BpiWorksheetType = typeof BPI_WORKSHEETS[keyof typeof BPI_WORKSHEETS
 export type BpiStandaloneWorksheetType = 'PA Inbound YTD Productivity' | 'PL Monthly Productivity';
 export type BpiImportRecord = BdoImportRecord;
 
+export function bpiImportRecordIdentity(record: Pick<BpiImportRecord, 'worksheetSource' | 'recordKind' | 'entityName' | 'category' | 'product' | 'metric' | 'year' | 'month'>) {
+  return [
+    record.worksheetSource,
+    record.recordKind,
+    record.entityName || '',
+    record.category || '',
+    record.product || '',
+    record.metric,
+    record.year,
+    record.month || 0,
+  ].map((value) => key(value)).join('|');
+}
+
 type SheetResult = {
   sheetName: string;
   detectedType: BpiWorksheetType | BpiStandaloneWorksheetType | 'Unsupported';
@@ -22,6 +37,7 @@ type SheetResult = {
   months: string[];
   warnings: BdoImportIssue[];
   status: 'Ready' | 'Skipped' | 'Warning';
+  excluded?: boolean;
 };
 
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
@@ -32,7 +48,13 @@ const SUMMARY_NAME = /^(?:total|grand total|average|avg|summary|summary[\s-]*ave
 const INVALID_NUMBER = /^#(?:div\/0!|value!|n\/a|ref!|num!|name\?|null!)$/i;
 
 export function normalizeBpiText(value: unknown) {
-  return String(value ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function key(value: unknown) {
@@ -40,7 +62,13 @@ function key(value: unknown) {
 }
 
 export function detectBpiWorksheet(name: string): BpiWorksheetType | null {
-  return BPI_WORKSHEETS[key(name) as keyof typeof BPI_WORKSHEETS] || null;
+  const normalized = key(name);
+  if (/^pl scorecard(?: 20\d{2})?$/.test(normalized)) return 'PL SCORECARD 2026';
+  return BPI_WORKSHEETS[normalized as keyof typeof BPI_WORKSHEETS] || null;
+}
+
+export function isExcludedBpiYtdRecord(record: { worksheetSource?: string | null }, campaignName?: string | null) {
+  return key(record.worksheetSource) === 'ytd performance' && /^BPI\b/i.test(normalizeBpiText(campaignName));
 }
 
 type BpiStandaloneKind = 'pa_inbound' | 'pl' | null;
@@ -137,7 +165,10 @@ function parseNumeric(value: unknown, percentage = false): { value?: number; iss
   if (!text || /^(?:-|—|n\/?a|na)$/i.test(text)) return { remark: text || undefined };
   if (INVALID_NUMBER.test(text)) return { issue: `Invalid numeric cell: ${text}`, remark: text };
   const hasPercent = text.includes('%');
-  const cleaned = text.replace(/[₱$€£,%\s]/g, '').replace(/\(([^)]+)\)/, '-$1');
+  const cleaned = text
+    .replace(/[₱$€£,%\s]/g, '')
+    .replace(/\(([^)]+)\)/, '-$1')
+    .replace(/(?<=\d)(?:st|nd|rd|th)$/i, '');
   if (!/^[-+]?\d*\.?\d+(?:e[-+]?\d+)?$/i.test(cleaned)) return { issue: `Text value skipped: ${text}`, remark: text };
   const parsed = Number(cleaned);
   if (!Number.isFinite(parsed)) return { issue: `Invalid numeric cell: ${text}`, remark: text };
@@ -366,6 +397,140 @@ function parseProductivity(
   return { sheetName, detectedType, records, months: [...new Set(records.map((record) => monthLabel(record.year, record.month!)))], warnings, status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped' };
 }
 
+type ScorecardColumn = {
+  col: number;
+  month: number;
+  year: number;
+  metric: string;
+  field: 'target' | 'actual' | 'achievement';
+};
+
+function scorecardColumn(labels: unknown[]): Pick<ScorecardColumn, 'metric' | 'field'> | null {
+  const text = key(labels.map(normalizeBpiText).filter(Boolean).join(' '));
+  const stage = /transmit/.test(text)
+    ? 'Transmitted'
+    : /approval/.test(text)
+      ? 'Approvals'
+      : /booked|booking/.test(text)
+        ? 'Booked'
+        : '';
+  const isVolume = /\b(?:volume|vol)\b/.test(text);
+  const isCount = /\b(?:count|cnt|transaction|transactions|txn)\b/.test(text);
+  const isAchievement = /\b(?:achievement|achvt|attainment|percentage|percent)\b/.test(text) || text.includes('%');
+  const isTarget = /\b(?:target|goal|plan)\b/.test(text);
+  const isRanking = /\b(?:rank|ranking)\b/.test(text);
+  const isScore = /\bscore\b/.test(text) && !/scorecard/.test(text);
+  const isActual = /\b(?:actual|actuals|performance|mtd)\b/.test(text);
+
+  let metric = '';
+  if (stage) metric = `${stage} ${isVolume ? 'Volume' : 'Count'}`;
+  else if (isRanking) metric = 'Ranking';
+  else if (isScore) metric = 'Score';
+  else if (isVolume) metric = 'Volume';
+  else if (isCount) metric = 'Count';
+  else if (isTarget || isActual || isAchievement) metric = 'Scorecard Performance';
+  if (!metric) return null;
+
+  const field = isAchievement ? 'achievement' : isTarget && !isActual ? 'target' : 'actual';
+  return { metric, field };
+}
+
+function parseScorecard(
+  rows: unknown[][],
+  sheetName: string,
+  detectedType: Extract<BpiWorksheetType, 'SIP LOANS SCORECARD' | 'PL SCORECARD 2026'>,
+  fallbackYear: number,
+): SheetResult {
+  const year = workbookYear(rows, fallbackYear);
+  const warnings: BdoImportIssue[] = [];
+  const records: BpiImportRecord[] = [];
+  const nameHit = findColumn(rows, [/^(?:agent|agent name|full name|employee name|name)$/]);
+  if (!nameHit) {
+    return { sheetName, detectedType, records, months: [], warnings: [{ worksheet: sheetName, message: 'No valid agent-name column was found in the scorecard.' }], status: 'Skipped' };
+  }
+
+  const idHit = findColumn(rows, [/^(?:agent id|employee id|employee number|employee no|agent code|employee code)$/]);
+  const headerRows = rows.slice(0, Math.min(rows.length, Math.max(nameHit.row + 2, 12)));
+  const maxColumns = Math.max(0, ...headerRows.map((row) => row.length));
+  const columns = Array.from({ length: maxColumns }, (_, col) => {
+    const period = headerRows.map((row) => monthFrom(row[col])).find(Boolean);
+    const descriptor = scorecardColumn(headerRows.map((row) => row[col]));
+    return period && descriptor ? { col, month: period.month, year: period.year || year, ...descriptor } : null;
+  }).filter(Boolean) as ScorecardColumn[];
+
+  if (!columns.length) {
+    return { sheetName, detectedType, records, months: [], warnings: [{ worksheet: sheetName, message: 'No dynamic month/metric scorecard columns were found.' }], status: 'Skipped' };
+  }
+
+  const campaignCategory = detectedType === 'SIP LOANS SCORECARD' ? 'PA SIP Loans Outbound' : 'Personal Loans';
+  const monitoringType = detectedType === 'SIP LOANS SCORECARD' ? 'SIP_LOANS_SCORECARD' : 'PL_SCORECARD';
+  const groups = [...new Map(columns.map((column) => [
+    `${column.year}|${column.month}|${column.metric}`,
+    { year: column.year, month: column.month, metric: column.metric },
+  ])).values()];
+  let skippedSummaryRows = 0;
+
+  for (let rowIndex = nameHit.row + 1; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex] || [];
+    const name = normalizeBpiText(row[nameHit.col]);
+    if (!name || /^(?:agent|agent name|full name|employee name|name)$/i.test(name)) continue;
+    if (SUMMARY_NAME.test(name)) {
+      skippedSummaryRows++;
+      continue;
+    }
+    const agentIdentifier = idHit ? normalizeBpiText(row[idHit.col]) : '';
+
+    for (const group of groups) {
+      const groupColumns = columns.filter((column) => column.year === group.year && column.month === group.month && column.metric === group.metric);
+      const values = new Map<ScorecardColumn['field'], number>();
+      const sourceColumns: string[] = [];
+      for (const column of groupColumns) {
+        const parsed = parseNumeric(row[column.col], column.field === 'achievement');
+        addIssue(warnings, sheetName, rowIndex + 1, parsed, row[column.col]);
+        if (parsed.value == null) continue;
+        values.set(column.field, parsed.value);
+        sourceColumns.push(XLSX.utils.encode_col(column.col));
+      }
+      const target = values.get('target');
+      const actual = values.get('actual');
+      const suppliedAchievement = values.get('achievement');
+      if (target == null && actual == null && suppliedAchievement == null) continue;
+      const calculatedAchievement = target === 0
+        ? undefined
+        : achievement(target, actual, suppliedAchievement);
+      records.push({
+        worksheetSource: sheetName,
+        sourceRow: rowIndex + 1,
+        recordKind: 'agent_monitoring',
+        monitoringType,
+        entityName: name,
+        category: campaignCategory,
+        product: 'Scorecard',
+        metric: group.metric,
+        month: group.month,
+        year: group.year,
+        reportDate: new Date(group.year, group.month - 1, 1),
+        target,
+        actual,
+        achievement: calculatedAchievement,
+        remark: [agentIdentifier && `Agent ID: ${agentIdentifier}`, sourceColumns.length && `Source Columns: ${sourceColumns.join(', ')}`].filter(Boolean).join('; ') || undefined,
+      });
+    }
+  }
+
+  if (skippedSummaryRows > 0) {
+    warnings.push({ worksheet: sheetName, message: `Skipped ${skippedSummaryRows} summary/total row${skippedSummaryRows === 1 ? '' : 's'}; dashboard totals are calculated from normalized monthly agent records.` });
+  }
+  return {
+    sheetName,
+    detectedType,
+    records,
+    months: [...new Set(records.map((record) => monthLabel(record.year, record.month!)))],
+    warnings,
+    status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped',
+  };
+}
+
 function inboundGoalsByMonth(rows: unknown[][]) {
   const goals = new Map<number, number>();
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
@@ -585,9 +750,22 @@ export function parseBpiDashboardWorkbook(workbook: XLSX.WorkBook, fallbackDate:
       return parseProductivity(rows, sheetName, 'PL Monthly Productivity', fallbackDate.getFullYear(), plTargets);
     }
     if (!detectedType) return { sheetName, detectedType: 'Unsupported', records: [], months: [], warnings: [{ worksheet: sheetName, message: 'Unsupported worksheet skipped.' }], status: 'Skipped' };
-    if (detectedType === 'YTD Performance') return parseYtd(rows, sheetName, detectedType, fallbackDate.getFullYear());
+    if (detectedType === 'YTD Performance') {
+      return {
+        sheetName,
+        detectedType,
+        records: [],
+        months: [],
+        warnings: [{ worksheet: sheetName, message: 'Skipped sheet: YTD Performance - excluded by OpsView BPI import rules.' }],
+        status: 'Skipped',
+        excluded: true,
+      };
+    }
     if (detectedType === 'Manpower Monitoring') return parseManpower(rows, sheetName, detectedType, fallbackDate.getFullYear());
     if (detectedType === 'PL YTD Productivity') return parseProductivity(rows, sheetName, detectedType, fallbackDate.getFullYear());
+    if (detectedType === 'SIP LOANS SCORECARD' || detectedType === 'PL SCORECARD 2026') {
+      return parseScorecard(rows, sheetName, detectedType, fallbackDate.getFullYear());
+    }
     return parseMonitoring(rows, sheetName, detectedType, fallbackDate.getFullYear());
   });
   const records = sheets.flatMap((sheet) => sheet.records);

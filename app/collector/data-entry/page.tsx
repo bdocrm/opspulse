@@ -50,9 +50,15 @@ interface AgentTotals {
 interface CampaignBlock {
   id: string;
   campaignName: string;
+  kpiMetric?: string;
   agents: any[];
   dataEntryAgentIds?: string[];
   production?: Record<string, Partial<AgentTotals>>;
+  importedPerformance?: Record<string, {
+    goal: number;
+    actual: number;
+    achievement: number;
+  }>;
   dataPeriod?: { source: string; year?: number; month?: number };
   agentDataPeriod?: { source: string; year?: number; month?: number };
 }
@@ -97,6 +103,7 @@ const createEmptyAgentDetail = (agentId: string): AgentDetail => ({
 });
 
 const formatRate = (value: number) => `${value.toFixed(1)}%`;
+const formatCurrency = (value: number) => `₱${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 
 const getQualityRate = (metrics: Pick<AgentTotals, 'transmittals' | 'approvals'>) => (
   metrics.transmittals > 0 ? (metrics.approvals / metrics.transmittals) * 100 : 0
@@ -162,6 +169,14 @@ export default function DataEntryPage() {
   }, [campaignBlocks, session]);
 
   const selectedCampaign = campaignBlocks.find((campaign) => campaign.id === selectedCampaignId);
+  const usesImportedVolumeKpi = selectedCampaign?.kpiMetric === 'volume';
+  const importedVolumeGoal = useMemo(
+    () => Object.values(selectedCampaign?.importedPerformance || {}).reduce(
+      (sum, performance) => sum + Number(performance.goal || 0),
+      0
+    ),
+    [selectedCampaign?.importedPerformance]
+  );
 
   // Fetch saved/imported production data for the full selected month.
   const { data: savedData, mutate: mutateSaved, isLoading: loadingSaved } = useSWR(
@@ -189,6 +204,10 @@ export default function DataEntryPage() {
     const visibleIds = new Set(importedIds);
     return roster.filter((agent: any) => visibleIds.has(agent.id));
   }, [selectedCampaign]);
+  const hasCampaignTotalOnly = agents.length === 1 && Boolean(
+    agents[0]?.importedOnly &&
+    String(agents[0]?.name || '').trim().toLowerCase() === `${selectedCampaign?.campaignName || ''} total`.trim().toLowerCase()
+  );
   const savedEntries: SavedEntry[] = useMemo(() => savedData?.entries || [], [savedData]);
   const importedAgentTotals = useMemo<Record<string, AgentTotals>>(
     () => Object.fromEntries(
@@ -334,6 +353,9 @@ export default function DataEntryPage() {
     booked:       importedSummaryTotals.booked       + pendingTotals.booked,
     volume:       importedSummaryTotals.volume       + pendingTotals.volume,
   }), [importedSummaryTotals, pendingTotals]);
+  const importedVolumeAchievement = importedVolumeGoal > 0
+    ? (monthlyTotals.volume / importedVolumeGoal) * 100
+    : 0;
 
   // Filter agents based on search
   const filteredAgents = useMemo(() => {
@@ -555,36 +577,60 @@ export default function DataEntryPage() {
           </div>
         </div>
         
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-          <div className="text-center p-3 bg-background/80 rounded-lg">
-            <p className="text-xs text-muted-foreground mb-1">Transmittals</p>
-            <p className="text-2xl font-bold text-primary">{monthlyTotals.transmittals}</p>
+        {usesImportedVolumeKpi ? (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="text-center p-3 bg-background/80 rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">Excel Goal</p>
+              <p className="text-xl font-bold text-primary">{formatCurrency(importedVolumeGoal)}</p>
+            </div>
+            <div className="text-center p-3 bg-background/80 rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">Actual Volume</p>
+              <p className="text-xl font-bold text-primary">{formatCurrency(monthlyTotals.volume)}</p>
+            </div>
+            <div className="text-center p-3 bg-background/80 rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">Achievement</p>
+              <p className="text-2xl font-bold text-emerald-500">{formatRate(importedVolumeAchievement)}</p>
+            </div>
           </div>
-          <div className="text-center p-3 bg-background/80 rounded-lg">
-            <p className="text-xs text-muted-foreground mb-1">Activations</p>
-            <p className="text-2xl font-bold text-primary">{monthlyTotals.activations}</p>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <div className="text-center p-3 bg-background/80 rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">Transmittals</p>
+              <p className="text-2xl font-bold text-primary">{monthlyTotals.transmittals}</p>
+            </div>
+            <div className="text-center p-3 bg-background/80 rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">Activations</p>
+              <p className="text-2xl font-bold text-primary">{monthlyTotals.activations}</p>
+            </div>
+            <div className="text-center p-3 bg-background/80 rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">Approvals</p>
+              <p className="text-2xl font-bold text-primary">{monthlyTotals.approvals}</p>
+            </div>
+            <div className="text-center p-3 bg-background/80 rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">Booked</p>
+              <p className="text-2xl font-bold text-primary">{monthlyTotals.booked}</p>
+            </div>
+            <div className="text-center p-3 bg-background/80 rounded-lg col-span-2 sm:col-span-1">
+              <p className="text-xs text-muted-foreground mb-1">Volume (₱)</p>
+              <p className="text-xl font-bold text-primary">
+                {monthlyTotals.volume > 0 ? formatCurrency(monthlyTotals.volume) : '—'}
+              </p>
+            </div>
           </div>
-          <div className="text-center p-3 bg-background/80 rounded-lg">
-            <p className="text-xs text-muted-foreground mb-1">Approvals</p>
-            <p className="text-2xl font-bold text-primary">{monthlyTotals.approvals}</p>
-          </div>
-          <div className="text-center p-3 bg-background/80 rounded-lg">
-            <p className="text-xs text-muted-foreground mb-1">Booked</p>
-            <p className="text-2xl font-bold text-primary">{monthlyTotals.booked}</p>
-          </div>
-          <div className="text-center p-3 bg-background/80 rounded-lg col-span-2 sm:col-span-1">
-            <p className="text-xs text-muted-foreground mb-1">Volume (₱)</p>
-            <p className="text-xl font-bold text-primary">
-              {monthlyTotals.volume > 0 ? `₱${monthlyTotals.volume.toLocaleString()}` : '—'}
-            </p>
-          </div>
-        </div>
+        )}
       </Card>
 
       {!loadingSaved && selectedCampaignId && agents.length > 0 && importedDetailCount === 0 && (
         <div className="p-3 rounded-lg text-sm flex items-center gap-2 bg-yellow-500/10 text-yellow-600 border border-yellow-500/20">
           <AlertCircle className="w-4 h-4" />
           No imported data found for {selectedCampaign?.campaignName || 'this campaign'} in {formatMonth(month)}.
+        </div>
+      )}
+
+      {!loadingSaved && hasCampaignTotalOnly && (
+        <div className="p-3 rounded-lg text-sm flex items-center gap-2 bg-blue-500/10 text-blue-500 border border-blue-500/20">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          The bulk-import Excel file contains only the campaign-level YTD total for {formatMonth(month)}; it has no per-agent monitoring rows for this month.
         </div>
       )}
 
@@ -709,6 +755,9 @@ export default function DataEntryPage() {
               };
               const qualityRate = getQualityRate(total);
               const conversionRate = getConversionRate(total);
+              const importedPerformance = selectedCampaign?.importedPerformance?.[agent.id];
+              const volumeGoal = Number(importedPerformance?.goal ?? agent.monthlyTarget ?? 0);
+              const volumeAchievement = volumeGoal > 0 ? (total.volume / volumeGoal) * 100 : 0;
               const isPresent = attendance[agent.id] !== false;
               
               return (
@@ -737,53 +786,82 @@ export default function DataEntryPage() {
                     </div>
                   </div>
                   <div className="text-right bg-primary/10 px-2 py-1 rounded">
-                    <p className="text-[10px] text-muted-foreground uppercase">Total Booked</p>
-                    <p className="text-xl font-bold text-primary">{total.booked}</p>
+                    <p className="text-[10px] text-muted-foreground uppercase">
+                      {usesImportedVolumeKpi ? 'Actual Volume' : 'Total Booked'}
+                    </p>
+                    <p className="text-xl font-bold text-primary">
+                      {usesImportedVolumeKpi ? formatCurrency(total.volume) : total.booked}
+                    </p>
                   </div>
                 </div>
 
                 {/* Total Stats Summary - Always Visible */}
-                <div className="grid grid-cols-5 gap-2 mb-3 p-2 bg-muted/50 rounded-lg text-center">
-                  <div>
-                    <p className="text-[10px] text-muted-foreground">TRANS</p>
-                    <p className="text-sm font-bold">{total.transmittals}</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-muted-foreground">ACT</p>
-                    <p className="text-sm font-bold">{total.activations}</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-muted-foreground">APPR</p>
-                    <p className="text-sm font-bold">{total.approvals}</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-muted-foreground">BOOK</p>
-                    <p className="text-sm font-bold text-primary">{total.booked}</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-muted-foreground">Q%</p>
-                    <p className="text-sm font-bold text-emerald-500">{formatRate(qualityRate)}</p>
-                  </div>
-                </div>
-                <div className="mb-3 rounded-md bg-muted/30 px-2 py-1 text-center">
-                  <p className="text-[10px] text-muted-foreground">TOTAL VOLUME</p>
-                  <p className="text-sm font-semibold text-primary">
-                    {total.volume > 0 ? `₱${total.volume.toLocaleString()}` : '—'}
-                  </p>
-                </div>
+                {usesImportedVolumeKpi ? (
+                  <>
+                    <div className="grid grid-cols-3 gap-2 mb-3 p-2 bg-muted/50 rounded-lg text-center">
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">EXCEL GOAL</p>
+                        <p className="text-sm font-bold">{formatCurrency(volumeGoal)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">ACTUAL</p>
+                        <p className="text-sm font-bold text-primary">{formatCurrency(total.volume)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">ACH%</p>
+                        <p className="text-sm font-bold text-emerald-500">{formatRate(volumeAchievement)}</p>
+                      </div>
+                    </div>
+                    <div className="mb-3 rounded-md bg-slate-500/10 px-2 py-1 text-center">
+                      <p className="text-[10px] text-muted-foreground">BULK IMPORT SOURCE</p>
+                      <p className="font-semibold text-slate-700">Goal • Actual • Achievement</p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-5 gap-2 mb-3 p-2 bg-muted/50 rounded-lg text-center">
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">TRANS</p>
+                        <p className="text-sm font-bold">{total.transmittals}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">ACT</p>
+                        <p className="text-sm font-bold">{total.activations}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">APPR</p>
+                        <p className="text-sm font-bold">{total.approvals}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">BOOK</p>
+                        <p className="text-sm font-bold text-primary">{total.booked}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Q%</p>
+                        <p className="text-sm font-bold text-emerald-500">{formatRate(qualityRate)}</p>
+                      </div>
+                    </div>
+                    <div className="mb-3 rounded-md bg-muted/30 px-2 py-1 text-center">
+                      <p className="text-[10px] text-muted-foreground">TOTAL VOLUME</p>
+                      <p className="text-sm font-semibold text-primary">
+                        {total.volume > 0 ? formatCurrency(total.volume) : '—'}
+                      </p>
+                    </div>
 
-                <div className="mb-3 grid grid-cols-2 gap-2 text-center text-xs">
-                  <div className="rounded-md bg-blue-500/10 px-2 py-1">
-                    <p className="text-[10px] text-muted-foreground">CONVERSION %</p>
-                    <p className="font-semibold text-blue-600">{formatRate(conversionRate)}</p>
-                  </div>
-                  <div className="rounded-md bg-slate-500/10 px-2 py-1">
-                    <p className="text-[10px] text-muted-foreground">IMPORTED</p>
-                    <p className="font-semibold text-slate-700">
-                      T {saved.transmittals} • B {saved.booked}
-                    </p>
-                  </div>
-                </div>
+                    <div className="mb-3 grid grid-cols-2 gap-2 text-center text-xs">
+                      <div className="rounded-md bg-blue-500/10 px-2 py-1">
+                        <p className="text-[10px] text-muted-foreground">CONVERSION %</p>
+                        <p className="font-semibold text-blue-600">{formatRate(conversionRate)}</p>
+                      </div>
+                      <div className="rounded-md bg-slate-500/10 px-2 py-1">
+                        <p className="text-[10px] text-muted-foreground">IMPORTED</p>
+                        <p className="font-semibold text-slate-700">
+                          T {saved.transmittals} • B {saved.booked}
+                        </p>
+                      </div>
+                    </div>
+                  </>
+                )}
 
                 {/* New Entry Section */}
                 <div className="flex-1">
@@ -909,6 +987,8 @@ export default function DataEntryPage() {
                     const hasSaved = saved.booked > 0 || saved.transmittals > 0 || saved.activations > 0 || saved.approvals > 0 || saved.volume > 0;
                     const qualityRate = getQualityRate(saved);
                     const conversionRate = getConversionRate(saved);
+                    const volumeGoal = Number(selectedCampaign?.importedPerformance?.[agent.id]?.goal ?? agent.monthlyTarget ?? 0);
+                    const volumeAchievement = volumeGoal > 0 ? (saved.volume / volumeGoal) * 100 : 0;
                     const isPresent = attendance[agent.id] !== false;
                     return (
                     <tr key={agent.id} className={`border-b hover:bg-muted/30 ${idx % 2 === 0 ? '' : 'bg-muted/10'} ${!isPresent ? 'opacity-50' : ''}`}>
@@ -931,11 +1011,17 @@ export default function DataEntryPage() {
                         )}
                       </td>
                       <td className="py-1 px-1 text-center">
-                        {hasSaved ? (
+                        {usesImportedVolumeKpi && hasSaved ? (
+                          <div className="text-[10px] text-green-500 leading-tight">
+                            <div>Goal: {formatCurrency(volumeGoal)}</div>
+                            <div>Actual: {formatCurrency(saved.volume)}</div>
+                            <div>Ach: {formatRate(volumeAchievement)}</div>
+                          </div>
+                        ) : hasSaved ? (
                           <div className="text-[10px] text-green-500 leading-tight">
                             <div>{saved.transmittals}/{saved.activations}/{saved.approvals}/{saved.booked}</div>
                             <div>Q:{formatRate(qualityRate)} C:{formatRate(conversionRate)}</div>
-                            {saved.volume > 0 && <div>₱{saved.volume.toLocaleString()}</div>}
+                            {saved.volume > 0 && <div>{formatCurrency(saved.volume)}</div>}
                           </div>
                         ) : (
                           <span className="text-muted-foreground text-xs">-</span>

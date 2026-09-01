@@ -33,6 +33,11 @@ interface ProductivityMetric {
   avgTaskTime: number | null;
   efficiencyScore: number | null;
   qualityScore: number | null;
+  bookingRate: number | null;
+  scorecardScore: number | null;
+  transmitted: number | null;
+  approved: number | null;
+  booked: number | null;
   daysWorked: number | null;
   overtimeHours: number | null;
   dataSource: string;
@@ -45,7 +50,7 @@ export default function ProductivityAnalyticsPage() {
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [allMonths, setAllMonths] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const [sortBy, setSortBy] = useState<'efficiency' | 'quality' | 'tasks'>('efficiency');
+  const [sortBy, setSortBy] = useState<'efficiency' | 'quality' | 'score' | 'tasks'>('efficiency');
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -76,6 +81,7 @@ export default function ProductivityAnalyticsPage() {
     avgEfficiency: null,
     avgQuality: null,
     avgTasksPerAgent: null,
+    avgScore: null,
     topPerformer: null,
     totalAgents: 0,
   };
@@ -85,6 +91,7 @@ export default function ProductivityAnalyticsPage() {
     .sort((a, b) => {
       if (sortBy === 'efficiency') return (b.efficiencyScore ?? -Infinity) - (a.efficiencyScore ?? -Infinity);
       if (sortBy === 'quality') return (b.qualityScore ?? -Infinity) - (a.qualityScore ?? -Infinity);
+      if (sortBy === 'score') return (b.scorecardScore ?? -Infinity) - (a.scorecardScore ?? -Infinity);
       return (b.tasksCompleted ?? -Infinity) - (a.tasksCompleted ?? -Infinity);
     });
 
@@ -151,7 +158,7 @@ export default function ProductivityAnalyticsPage() {
       </div>
 
       {/* Summary KPIs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         <KpiCard
           title="Avg Efficiency"
           value={summary.avgEfficiency == null ? "N/A" : `${summary.avgEfficiency.toFixed(1)}%`}
@@ -165,6 +172,10 @@ export default function ProductivityAnalyticsPage() {
         <KpiCard
           title="Avg Tasks/Agent"
           value={summary.avgTasksPerAgent == null ? "N/A" : Math.round(summary.avgTasksPerAgent)}
+        />
+        <KpiCard
+          title="Avg Score"
+          value={summary.avgScore == null ? "N/A" : summary.avgScore.toFixed(1)}
         />
         <KpiCard
           title="Total Agents"
@@ -186,7 +197,7 @@ export default function ProductivityAnalyticsPage() {
 
       {/* Sorting Options */}
       <div className="flex gap-2">
-        {(['efficiency', 'quality', 'tasks'] as const).map(sort => (
+        {(['efficiency', 'quality', 'score', 'tasks'] as const).map(sort => (
           <Button
             key={sort}
             variant={sortBy === sort ? 'default' : 'outline'}
@@ -212,8 +223,13 @@ export default function ProductivityAnalyticsPage() {
                   <TableHead>Campaign</TableHead>
                   <TableHead>Seat</TableHead>
                   <TableHead>Tasks</TableHead>
+                  <TableHead>Transmitted</TableHead>
+                  <TableHead>Approved</TableHead>
+                  <TableHead>Booked</TableHead>
                   <TableHead>Efficiency %</TableHead>
                   <TableHead>Quality %</TableHead>
+                  <TableHead>Booking %</TableHead>
+                  <TableHead>Score</TableHead>
                   <TableHead>Avg Task Time</TableHead>
                   <TableHead>Days Worked</TableHead>
                   <TableHead>Overtime Hrs</TableHead>
@@ -223,13 +239,13 @@ export default function ProductivityAnalyticsPage() {
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-6">
-                      <TableSkeleton rows={6} columns={10} label="Loading productivity data" />
+                    <TableCell colSpan={15} className="py-6">
+                      <TableSkeleton rows={6} columns={15} label="Loading productivity data" />
                     </TableCell>
                   </TableRow>
                 ) : filteredMetrics.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={15} className="py-8 text-center text-muted-foreground">
                       No productivity data is available for the selected period.
                     </TableCell>
                   </TableRow>
@@ -239,6 +255,9 @@ export default function ProductivityAnalyticsPage() {
                     <TableCell>{metric.campaignName}</TableCell>
                     <TableCell>{metric.seatNumber || '-'}</TableCell>
                     <TableCell>{metric.tasksCompleted == null ? 'N/A' : metric.tasksCompleted.toLocaleString()}</TableCell>
+                    <TableCell>{metric.transmitted == null ? 'N/A' : metric.transmitted.toLocaleString()}</TableCell>
+                    <TableCell>{metric.approved == null ? 'N/A' : metric.approved.toLocaleString()}</TableCell>
+                    <TableCell>{metric.booked == null ? 'N/A' : metric.booked.toLocaleString()}</TableCell>
                     <TableCell>
                       {metric.efficiencyScore == null ? 'N/A' : (
                         <span className={metric.efficiencyScore >= 80 ? 'text-green-600 font-semibold' : 'text-orange-600'}>
@@ -253,6 +272,8 @@ export default function ProductivityAnalyticsPage() {
                         </span>
                       )}
                     </TableCell>
+                    <TableCell>{metric.bookingRate == null ? 'N/A' : `${metric.bookingRate.toFixed(1)}%`}</TableCell>
+                    <TableCell>{metric.scorecardScore == null ? 'N/A' : metric.scorecardScore.toFixed(1)}</TableCell>
                     <TableCell>{metric.avgTaskTime == null ? 'N/A' : `${metric.avgTaskTime.toFixed(2)} min`}</TableCell>
                     <TableCell>{metric.daysWorked == null ? 'N/A' : metric.daysWorked}</TableCell>
                     <TableCell>{metric.overtimeHours == null ? 'N/A' : metric.overtimeHours.toFixed(1)}</TableCell>

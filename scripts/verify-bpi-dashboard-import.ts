@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import * as XLSX from 'xlsx';
-import { isBpiDashboardWorkbook, parseBpiDashboardWorkbook } from '../lib/bpi-dashboard-import';
+import { bpiImportRecordIdentity, isBpiDashboardWorkbook, parseBpiDashboardWorkbook } from '../lib/bpi-dashboard-import';
 import { isBdoDashboardWorkbook } from '../lib/bdo-dashboard-import';
 import { mapWorksheetCampaign } from '../lib/campaign-import-selection';
 
@@ -24,6 +24,13 @@ add('PA Agents Monitoring', [
   ['Agent Name', 'Level', 'January', 'January', 'January', 'February', 'February', 'February'],
   ['Agent Name', 'Level', 'Goal', 'Actual', 'Achievement', 'Goal', 'Actual', 'Achievement'],
   ['Agent One', 'Core', 10, 8, 0.8, 12, 12, 1],
+]);
+add('SIP LOANS SCORECARD', [
+  ['SIP Loans Scorecard 2026'],
+  ['Agent Name', 'January', 'January', 'January', 'January', 'January', 'August', 'August', 'August'],
+  ['Agent Name', 'Performance Target', 'Performance Actual', 'Performance Achievement', 'Score', 'Ranking', 'Performance Target', 'Performance Actual', 'Performance Achievement'],
+  ['  Agent   One\u00a0', 10, 8, 0.8, 95, 1, 20, 10, 0.5],
+  ['TOTAL', 10, 8, 0.8, 95, 1, 20, 10, 0.5],
 ]);
 add('PL YTD Productivity', [
   ['Personal Loans 2026'],
@@ -50,6 +57,13 @@ add('PL HOH Monitoring', [
   ['Agent Name', 'Level', 'Goal', 'Actual', 'Achievement', 'Level', 'Goal', 'Actual', 'Achievement'],
   ['PL Agent', 'Rookie', 10, 8, 0.8, 'Core', 12, 11, 0.9167],
 ]);
+add('PL SCORECARD 2026', [
+  ['PL Scorecard 2026'],
+  ['Agent Name', 'January Volume', 'January Volume', 'January Volume', 'January Count'],
+  ['Agent Name', 'Target', 'Actual', 'Achievement', 'Actual'],
+  ['PL Agent', 1_000_000, 800_000, 0.8, 4],
+  ['Bad Formula Agent', 0, '#DIV/0!', '#DIV/0!', 0],
+]);
 
 const campaigns = [
   { id: 'bl', campaignName: 'BPI BL' },
@@ -64,14 +78,16 @@ XLSX.utils.book_append_sheet(bdoWorkbook, XLSX.utils.aoa_to_sheet([['Agent', 'Ja
 assert.equal(isBpiDashboardWorkbook(bdoWorkbook), false);
 assert.equal(isBdoDashboardWorkbook(bdoWorkbook), true);
 const parsed = parseBpiDashboardWorkbook(workbook, new Date(2026, 0, 1));
-assert.equal(parsed.sheets.length, 6);
-assert.equal(parsed.sheets.filter((sheet) => sheet.detectedType !== 'Unsupported').length, 6);
-assert.deepEqual(new Set(parsed.detectedMonths), new Set(['Jan 2026', 'Feb 2026']));
+assert.equal(parsed.sheets.length, 8);
+assert.equal(parsed.sheets.filter((sheet) => sheet.detectedType !== 'Unsupported').length, 8);
+assert.deepEqual(new Set(parsed.detectedMonths), new Set(['Jan 2026', 'Feb 2026', 'Aug 2026']));
 
 const ytd = parsed.records.filter((record) => record.recordKind === 'ytd');
-assert.equal(ytd.length, 6);
-assert.equal(ytd.some((record) => /^Fulfillment$/i.test(record.category || '')), false);
-assert.deepEqual(new Set(ytd.map((record) => mapWorksheetCampaign(`${record.category} ${record.metric}`, campaigns).campaign.campaignName)), new Set(['BPI PA OUTBOUND', 'BPI PA INBOUND', 'BPI PL']));
+assert.equal(ytd.length, 0);
+const excludedYtd = parsed.sheets.find((sheet) => sheet.sheetName === 'YTD Performance');
+assert.equal(excludedYtd?.excluded, true);
+assert.equal(excludedYtd?.records.length, 0);
+assert.match(excludedYtd?.warnings[0]?.message || '', /excluded by OpsView BPI import rules/i);
 
 const productivity = parsed.records.filter((record) => record.monitoringType === 'PL_PRODUCTIVITY');
 assert.equal(productivity.length, 12);
@@ -86,6 +102,27 @@ assert.equal(paRecords.every((record) => mapWorksheetCampaign(`${record.category
 const manpower = parsed.records.filter((record) => record.recordKind === 'manpower');
 assert.equal(manpower.length, 4);
 assert.equal(mapWorksheetCampaign(`${manpower[0].category} ${manpower[0].worksheetSource}`, campaigns).source, 'unresolved');
+
+const sipScorecard = parsed.records.filter((record) => record.monitoringType === 'SIP_LOANS_SCORECARD');
+assert.equal(sipScorecard.length, 4);
+assert.deepEqual(new Set(sipScorecard.map((record) => record.metric)), new Set(['Scorecard Performance', 'Score', 'Ranking']));
+assert.equal(sipScorecard.every((record) => record.entityName === 'Agent One'), true);
+assert.equal(sipScorecard.every((record) => mapWorksheetCampaign(`${record.category} ${record.worksheetSource}`, campaigns).campaign.campaignName === 'BPI PA OUTBOUND'), true);
+
+const plScorecard = parsed.records.filter((record) => record.monitoringType === 'PL_SCORECARD');
+assert.equal(plScorecard.some((record) => record.metric === 'Volume' && record.target === 1_000_000 && record.actual === 800_000), true);
+assert.equal(plScorecard.some((record) => record.entityName === 'Bad Formula Agent' && record.metric === 'Volume' && record.achievement == null), true);
+assert.equal(parsed.issues.some((issue) => issue.rawValue === '#DIV/0!'), true);
+const normalizedIdentitySource = sipScorecard.find((record) => record.metric === 'Scorecard Performance' && record.month === 1)!;
+assert.equal(
+  bpiImportRecordIdentity(normalizedIdentitySource),
+  bpiImportRecordIdentity({ ...normalizedIdentitySource, entityName: '\u200b  AGENT   ONE\u00a0' }),
+);
+
+const januaryToFebruaryProductivity = productivity
+  .filter((record) => record.month != null && record.month >= 1 && record.month <= 2)
+  .reduce((sum, record) => sum + Number(record.actual || 0), 0);
+assert.equal(januaryToFebruaryProductivity, 270027);
 
 const inboundWorkbook = XLSX.utils.book_new();
 const inboundSheet = XLSX.utils.aoa_to_sheet([

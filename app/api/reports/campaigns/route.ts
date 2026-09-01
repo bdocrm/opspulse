@@ -5,6 +5,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { runRate, achievementPct, rrAchievementPct, WORKING_DAYS_DEFAULT } from '@/utils/kpi';
+import { isExcludedBpiYtdRecord } from '@/lib/bpi-dashboard-import';
 
 const BUSINESS_TIME_ZONE = 'Asia/Manila';
 const BUSINESS_TIME_ZONE_OFFSET = '+08:00';
@@ -314,7 +315,10 @@ export async function GET(req: NextRequest) {
       report.workedDates.add(toBusinessYmd(detail.productionEntry.periodEnd ?? detail.productionEntry.date));
     });
 
-    const usableDashboardRows = dashboardImportRows.filter((row) => !isImportedClassificationRow(row));
+    const usableDashboardRows = dashboardImportRows.filter((row) =>
+      !isImportedClassificationRow(row) &&
+      !isExcludedBpiYtdRecord(row, campaignById.get(row.campaignId)?.campaignName)
+    );
     const importedActual = (row: (typeof dashboardImportRows)[number]) => row.actual != null
       ? Number(row.actual)
       : row.target != null && row.achievement != null
@@ -400,20 +404,22 @@ export async function GET(req: NextRequest) {
         : configuredMetric;
       const actual = importedActual(row);
       if (actual == null) return [];
+      const isGenericPerformanceMetric = /\b(?:performance|actual)\b/.test(metric)
+        && !/\b(?:score|ranking)\b/.test(metric);
 
       const matchesKpi =
         (effectiveMetric === 'transmittals' && (metric === 'transmitted count'
-          || !/\b(?:volume|approvals|booked)\b/.test(metric)))
+          || isGenericPerformanceMetric))
         || (effectiveMetric === 'approvals' && (metric === 'approvals count'
-          || !/\b(?:volume|transmitted|booked)\b/.test(metric)))
+          || isGenericPerformanceMetric))
         || (effectiveMetric === 'booked' && (metric === 'booked count'
-          || !/\b(?:volume|transmitted|approvals)\b/.test(metric)))
-        || (effectiveMetric === 'activations'
-          && !/\b(?:volume|transmitted|approvals|booked)\b/.test(metric))
+          || isGenericPerformanceMetric))
+        || (effectiveMetric === 'activations' && isGenericPerformanceMetric)
         || (effectiveMetric === 'volume' && (
           row.recordKind === 'ytd'
           || metric.includes('booked volume')
           || metric.includes('cash installment')
+          || isGenericPerformanceMetric
           || (!campaignsWithAgentRows.has(row.campaignId) && metric.includes('volume'))
         ));
 

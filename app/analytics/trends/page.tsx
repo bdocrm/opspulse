@@ -29,11 +29,14 @@ interface TrendData {
   activations: number;
   approvals: number;
   booked: number;
+  volume?: number;
+  achievement?: number | null;
+  score?: number | null;
 }
 
-type TrendMetric = 'all' | 'transmittals' | 'activations' | 'approvals' | 'booked';
+type TrendMetric = 'all' | 'transmittals' | 'activations' | 'approvals' | 'booked' | 'volume' | 'achievement' | 'score';
 
-const METRIC_OPTIONS: TrendMetric[] = ['all', 'transmittals', 'activations', 'approvals', 'booked'];
+const METRIC_OPTIONS: TrendMetric[] = ['all', 'transmittals', 'activations', 'approvals', 'booked', 'volume', 'achievement', 'score'];
 const SINGLE_METRICS = ['transmittals', 'activations', 'approvals', 'booked'] as const;
 const METRIC_LABELS: Record<TrendMetric, string> = {
   all: 'All',
@@ -41,12 +44,18 @@ const METRIC_LABELS: Record<TrendMetric, string> = {
   activations: 'Activations',
   approvals: 'Approvals',
   booked: 'Booked',
+  volume: 'Booked Volume',
+  achievement: 'Achievement',
+  score: 'Score',
 };
 const METRIC_COLORS = {
   transmittals: '#2563eb',
   activations: '#16a34a',
   approvals: '#f59e0b',
   booked: '#dc2626',
+  volume: '#7c3aed',
+  achievement: '#059669',
+  score: '#0891b2',
 };
 
 function totalForMetric(trend: TrendData, metric: TrendMetric) {
@@ -54,7 +63,7 @@ function totalForMetric(trend: TrendData, metric: TrendMetric) {
     return SINGLE_METRICS.reduce((sum, key) => sum + (trend[key] || 0), 0);
   }
 
-  return trend[metric] || 0;
+  return Number(trend[metric] || 0);
 }
 
 function AllMetricsChart({ data }: { data: Array<TrendData & { label: string }> }) {

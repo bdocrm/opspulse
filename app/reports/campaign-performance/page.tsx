@@ -23,6 +23,9 @@ interface AgentPerformance {
   booked: number;
   qualityRate: number;
   conversionRate: number;
+  bookingRate: number;
+  score: number | null;
+  ranking: number | null;
   goal: number;
   actual: number;
   achievement: number;
@@ -692,6 +695,9 @@ function CampaignDetailView({
                 <th className="px-4 py-2 text-right">Booked</th>
                 <th className="px-4 py-2 text-right">Quality %</th>
                 <th className="px-4 py-2 text-right">Conversion %</th>
+                <th className="px-4 py-2 text-right">Booking %</th>
+                <th className="px-4 py-2 text-right">Score</th>
+                <th className="px-4 py-2 text-right">Rank</th>
                 <th className="px-4 py-2 text-left">Level</th>
                 <th className="px-4 py-2 text-right">Goal</th>
                 <th className="px-4 py-2 text-right">Actual</th>
@@ -728,6 +734,15 @@ function CampaignDetailView({
                   </td>
                   <td className="px-4 py-3 text-right">
                     {agent.conversionRate.toFixed(1)}%
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {agent.bookingRate.toFixed(1)}%
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {agent.score == null ? 'N/A' : agent.score.toFixed(1)}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {agent.ranking == null ? 'N/A' : agent.ranking.toFixed(1)}
                   </td>
                   <td className="px-4 py-3">
                     <span
@@ -766,7 +781,7 @@ function CampaignDetailView({
               ))}
               {filteredAgents.length === 0 && (
                 <tr>
-                  <td colSpan={14} className="px-4 py-8 text-center text-muted-foreground">
+                  <td colSpan={17} className="px-4 py-8 text-center text-muted-foreground">
                     No agents match your search.
                   </td>
                 </tr>

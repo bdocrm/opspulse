@@ -485,8 +485,10 @@ model DashboardImportRecord {
 
   @@unique([campaignId, worksheetSource, recordKind, entityName, category, product, metric, year, month, reportPeriodType], map: "DashboardImportRecord_natural_key")
   @@index([campaignId, year, month])
+  @@index([campaignId, year, month, metric])
   @@index([entityName])
   @@index([batchId])
+  @@index([batchId, monitoringType])
 }
 
 model DashboardImportIssue {

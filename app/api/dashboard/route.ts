@@ -7,6 +7,7 @@ import {
   calculateRunRateMetrics,
   type RunRateMetrics,
 } from "@/lib/run-rate-analytics";
+import { isExcludedBpiYtdRecord } from "@/lib/bpi-dashboard-import";
 
 // ─── KPI helpers ──────────────────────────────────────────────────────────────
 
@@ -175,8 +176,11 @@ export async function GET(req: NextRequest) {
       select: { campaignId: true, recordKind: true, worksheetSource: true, entityName: true, monitoringType: true, metric: true, year: true, month: true, reportDate: true, target: true, actual: true, achievement: true, updatedAt: true },
       orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
     }).catch(() => []);
-    const usableDashboardRows = dashboardRows.filter((row) => !isImportedClassificationRow(row));
     const campaignById = new Map(campaigns.map((campaign) => [campaign.id, campaign]));
+    const usableDashboardRows = dashboardRows.filter((row) =>
+      !isImportedClassificationRow(row) &&
+      !isExcludedBpiYtdRecord(row, campaignById.get(row.campaignId)?.campaignName)
+    );
     const importedActual = (row: (typeof dashboardRows)[number]) => row.actual != null
       ? Number(row.actual)
       : row.target != null && row.achievement != null
@@ -210,12 +214,13 @@ export async function GET(req: NextRequest) {
       const kpi = /cash installment/.test(metric) || bpiCurrencyCampaigns.has(row.campaignId) ? "volume" : campaign.kpiMetric || "booked";
       const actual = importedActual(row);
       if (actual == null || (row.recordKind === "ytd" && actual === 0 && Number(row.target || 0) === 0)) return [];
+      const isGenericPerformanceMetric = /\b(?:performance|actual)\b/.test(metric) && !/\b(?:score|ranking)\b/.test(metric);
       const matchesKpi =
-        (kpi === "transmittals" && (metric === "transmitted count" || !/\b(?:volume|approvals|booked)\b/.test(metric))) ||
-        (kpi === "approvals" && (metric === "approvals count" || !/\b(?:volume|transmitted|booked)\b/.test(metric))) ||
-        (kpi === "booked" && (metric === "booked count" || !/\b(?:volume|transmitted|approvals)\b/.test(metric))) ||
-        (kpi === "activations" && !/\b(?:volume|transmitted|approvals|booked)\b/.test(metric)) ||
-        (kpi === "volume" && (row.recordKind === "ytd" || metric.includes("booked volume") || metric.includes("cash installment") || (!campaignsWithAgentRows.has(row.campaignId) && metric.includes("volume"))));
+        (kpi === "transmittals" && (metric === "transmitted count" || isGenericPerformanceMetric)) ||
+        (kpi === "approvals" && (metric === "approvals count" || isGenericPerformanceMetric)) ||
+        (kpi === "booked" && (metric === "booked count" || isGenericPerformanceMetric)) ||
+        (kpi === "activations" && isGenericPerformanceMetric) ||
+        (kpi === "volume" && (row.recordKind === "ytd" || metric.includes("booked volume") || metric.includes("cash installment") || isGenericPerformanceMetric || (!campaignsWithAgentRows.has(row.campaignId) && metric.includes("volume"))));
       return matchesKpi ? [{ ...row, value: actual, agentName: row.entityName || `${campaign.campaignName} Total` }] : [];
     });
     const campaignPeriodsWithYtdSummary = new Set(importedRows

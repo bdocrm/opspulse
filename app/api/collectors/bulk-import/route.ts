@@ -7,7 +7,7 @@ import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { matchMetricAlias, normalizeMetricHeader } from '@/lib/metric-import-mapping';
 import { isBdoDashboardWorkbook, parseBdoDashboardWorkbook, type BdoImportRecord } from '@/lib/bdo-dashboard-import';
-import { isBpiDashboardWorkbook, parseBpiDashboardWorkbook } from '@/lib/bpi-dashboard-import';
+import { bpiImportRecordIdentity, isBpiDashboardWorkbook, parseBpiDashboardWorkbook } from '@/lib/bpi-dashboard-import';
 import { mapWorksheetCampaign } from '@/lib/campaign-import-selection';
 import { isMbPaMonthlyLayout, parseMbPaMonthlyRows } from '@/lib/mb-pa-import';
 import { isMbGoalAchievementLayout, parseMbGoalAchievementRows } from '@/lib/mb-goal-achievement-import';
@@ -1201,6 +1201,67 @@ async function getAssignedCampaigns(userId: string, primaryCampaignId?: string |
   return campaigns;
 }
 
+function bpiWorkbookCampaignName(fileName: string, workbookYear?: number | null) {
+  const baseName = String(fileName || '')
+    .replace(/\.(?:xlsx|xls)$/i, '')
+    // Browsers commonly append " (1)" when the same workbook is downloaded
+    // again. It is a local filename suffix, not part of the campaign identity.
+    .replace(/\s+\(\d+\)$/i, '')
+    .replace(/[_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (baseName || `BPI Dashboard ${workbookYear || new Date().getFullYear()}`).slice(0, 160);
+}
+
+async function ensureBpiWorkbookCampaign(fileName: string, workbookYear: number | null | undefined, userId: string) {
+  const campaignName = bpiWorkbookCampaignName(fileName, workbookYear);
+  const normalizedName = campaignName
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return prisma.$transaction(async (tx) => {
+    let campaign = await tx.campaign.findFirst({
+      where: {
+        OR: [
+          { normalizedName },
+          { campaignName: { equals: campaignName, mode: 'insensitive' } },
+        ],
+      },
+      select: { id: true, campaignName: true, normalizedName: true, isActive: true },
+    });
+    const created = !campaign;
+    if (!campaign) {
+      campaign = await tx.campaign.create({
+        data: {
+          campaignName,
+          normalizedName,
+          isActive: true,
+          goalType: 'dashboard_import',
+          monthlyGoal: 0,
+          kpiMetric: 'volume',
+        },
+        select: { id: true, campaignName: true, normalizedName: true, isActive: true },
+      });
+    } else if (!campaign.isActive) {
+      campaign = await tx.campaign.update({
+        where: { id: campaign.id },
+        data: { isActive: true },
+        select: { id: true, campaignName: true, normalizedName: true, isActive: true },
+      });
+    }
+    await tx.userCampaign.upsert({
+      where: { userId_campaignId: { userId, campaignId: campaign.id } },
+      update: {},
+      create: { userId, campaignId: campaign.id },
+    });
+    return { campaign: { id: campaign.id, campaignName: campaign.campaignName }, created };
+  });
+}
+
 function classifyEntries(entries: ParsedEntry[], agentsByCampaign: Map<string, { id: string; name: string }[]>) {
   const matched: any[] = [];
   const notFound: any[] = [];
@@ -2218,13 +2279,16 @@ function buildBpiPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
   const sheetMappings = new Map<string, { campaign: AssignedCampaign; source: 'sheet' | 'record' | 'selected' | 'unresolved' }>(parsed.sheets.map((sheet) => {
     const mappings = sheet.records.map((record) => recordMappings.get(record)!);
     const resolved = mappings.filter((mapping) => mapping.source !== 'unresolved');
-    if (resolved.length) return [sheet.sheetName, { campaign: resolved[0].campaign, source: 'record' as const }];
+    if (resolved.length) {
+      const source = resolved.every((mapping) => mapping.source === 'selected') ? 'selected' as const : 'record' as const;
+      return [sheet.sheetName, { campaign: resolved[0].campaign, source }];
+    }
     return [sheet.sheetName, mapWorksheetCampaign(sheet.sheetName, selectedCampaigns)];
   }));
   const seen = new Set<string>();
   let duplicateCount = 0;
   parsed.records = parsed.records.filter((record) => {
-    const recordKey = bdoNaturalKey(record);
+    const recordKey = bpiImportRecordIdentity(record);
     if (seen.has(recordKey)) { duplicateCount++; return false; }
     seen.add(recordKey);
     return true;
@@ -2273,17 +2337,18 @@ function buildBpiPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
       key: `${index}:${sheet.sheetName}`,
       sheetName: sheet.sheetName,
       hidden: false,
+      excluded: Boolean(sheet.excluded),
       selected: sheet.records.length > 0 && unmappedRecords === 0,
-      format: sheet.detectedType,
+      format: sheet.excluded ? 'Excluded' : sheet.detectedType,
       campaignId: mapping.campaign?.id || '',
-      campaignName: mapping.source === 'unresolved' ? 'Unmapped' : mapping.source === 'record' ? `Detected per record (${mappedCampaigns.join(', ')})` : mapping.campaign.campaignName,
+      campaignName: sheet.excluded ? 'Not applicable' : mapping.source === 'unresolved' ? 'Unmapped' : mapping.source === 'record' ? `Detected per record (${mappedCampaigns.join(', ')})` : mapping.campaign.campaignName,
       campaignMapping: mapping.source,
       metricType: 'all_metrics',
       metricSource: 'sheet' as const,
       reportDate: sheet.records[0] ? ymd(sheet.records[0].reportDate) : ymd(reportDate),
       totalRows: sheet.records.length + sheet.warnings.length,
       validRows: sheet.records.length,
-      invalidRows: sheet.warnings.filter((warning) => !/unsupported worksheet/i.test(warning.message)).length,
+      invalidRows: sheet.excluded ? 0 : sheet.warnings.filter((warning) => !/unsupported worksheet/i.test(warning.message)).length,
       duplicateRows: 0,
       unmappedRows: unmappedRecords,
       detectedMonths: sheet.months,
@@ -2306,13 +2371,14 @@ function buildBpiPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
       worksheetsAccepted: worksheetPreviews.filter((sheet) => sheet.validRows > 0).length,
       worksheetsSkipped: worksheetPreviews.filter((sheet) => sheet.validRows === 0).length,
       totalValidRecords: parsed.records.length - unmappedRecords,
-      totalInvalidRecords: parsed.issues.filter((issue) => !/unsupported worksheet/i.test(issue.message)).length,
+      totalInvalidRecords: parsed.issues.filter((issue) => !/unsupported worksheet|excluded by OpsView BPI import rules/i.test(issue.message)).length,
       totalDuplicateRecords: duplicateCount,
       inWorkbookDuplicateRecords: duplicateCount,
       totalUnmappedRecords: unmappedRecords,
       workbookYear: parsed.workbookYear,
-      supportedWorksheets: parsed.sheets.filter((sheet) => sheet.detectedType !== 'Unsupported').map((sheet) => sheet.sheetName),
+      supportedWorksheets: parsed.sheets.filter((sheet) => sheet.detectedType !== 'Unsupported' && !sheet.excluded).map((sheet) => sheet.sheetName),
       unsupportedWorksheets: parsed.sheets.filter((sheet) => sheet.detectedType === 'Unsupported').map((sheet) => sheet.sheetName),
+      excludedWorksheets: parsed.sheets.filter((sheet) => sheet.excluded).map((sheet) => sheet.sheetName),
       detectedMonths: parsed.detectedMonths,
       detectedCategories: parsed.detectedCategories,
       detectedMetrics: parsed.detectedMetrics,
@@ -2479,8 +2545,10 @@ async function persistBdoImport({
         VALUES ${Prisma.join(values)}
       `);
     }
-    const invalid = preview.parsed.issues.filter((issue) => !/unsupported worksheet/i.test(issue.message)).length;
-    await tx.$executeRaw`UPDATE "DashboardImportBatch" SET "insertedCount" = ${inserted}, "updatedCount" = ${updated}, "skippedCount" = ${skipped}, "duplicateCount" = ${skipped}, "failedCount" = ${invalid}, "status" = 'COMPLETED', "completedAt" = CURRENT_TIMESTAMP WHERE "id" = ${batchId}`;
+    const actionableIssues = preview.parsed.issues.filter((issue) => !/unsupported worksheet|excluded by OpsView BPI import rules/i.test(issue.message));
+    const invalid = actionableIssues.filter((issue) => /invalid numeric|formula returned|text value skipped|no valid|not found|malformed/i.test(issue.message)).length;
+    const completedStatus = actionableIssues.length > 0 ? 'COMPLETED_WITH_WARNINGS' : 'COMPLETED';
+    await tx.$executeRaw`UPDATE "DashboardImportBatch" SET "insertedCount" = ${inserted}, "updatedCount" = ${updated}, "skippedCount" = ${skipped}, "duplicateCount" = ${skipped}, "failedCount" = ${invalid}, "status" = ${completedStatus}, "completedAt" = CURRENT_TIMESTAMP WHERE "id" = ${batchId}`;
     return { batchId, inserted, updated, skipped, invalid, importedCampaignIds, importedCampaigns: importedCampaignIds.length, success: inserted + updated, created: 0, details: [], errors: preview.parsed.issues.slice(0, 50).map((issue) => `${issue.worksheet}${issue.row ? ` row ${issue.row}` : ''}: ${issue.message}`), message: `Import completed for ${importedCampaignIds.length} campaign${importedCampaignIds.length === 1 ? '' : 's'}: ${inserted} inserted, ${updated} updated, ${skipped} skipped, and ${invalid} invalid.` };
   }, { timeout: 120000 });
 }
@@ -2516,7 +2584,36 @@ export async function GET(req: NextRequest) {
         `;
         const batch = dashboardBatches[0];
         if (batch) {
-          return NextResponse.json({ importFile: { id: batch.id, campaignId: batch.campaignId, campaignName: batch.campaignName, fileName: batch.fileName, metricType: 'all_metrics', reportDate: batch.reportDate, importedAt: batch.createdAt, detailCount: Number(batch.detailCount || 0), totals: { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 }, details: [], sourceKind: 'dashboard', deletable: true } });
+          const issues = await prisma.dashboardImportIssue.findMany({
+            where: { batchId: batch.id },
+            orderBy: [{ worksheetSource: 'asc' }, { sourceRow: 'asc' }],
+            take: 200,
+          });
+          return NextResponse.json({ importFile: {
+            id: batch.id,
+            campaignId: batch.campaignId,
+            campaignName: batch.campaignName,
+            fileName: batch.fileName,
+            metricType: 'all_metrics',
+            reportDate: batch.reportDate,
+            importedAt: batch.createdAt,
+            detailCount: Number(batch.detailCount || 0),
+            totals: { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 },
+            details: [],
+            sourceKind: 'dashboard',
+            status: batch.status,
+            deletable: true,
+            batchStats: {
+              detected: Number(batch.insertedCount || 0) + Number(batch.updatedCount || 0) + Number(batch.skippedCount || 0) + Number(batch.failedCount || 0),
+              imported: Number(batch.insertedCount || 0),
+              updated: Number(batch.updatedCount || 0),
+              unchanged: 0,
+              skipped: Number(batch.skippedCount || 0),
+              warnings: issues.length,
+              errors: Number(batch.failedCount || 0),
+            },
+            issues: issues.map((issue) => ({ id: issue.id, level: 'WARNING', code: 'BPI_DATA_QUALITY', message: issue.message, sourceSheet: issue.worksheetSource, sourceRow: issue.sourceRow })),
+          } });
         }
 
         const productionBatch = await prisma.productionImport.findFirst({
@@ -2680,10 +2777,10 @@ export async function GET(req: NextRequest) {
       LIMIT 50
     `;
     const dashboardRows = await prisma.$queryRaw<any[]>`
-      SELECT b.id, b."campaignId", COALESCE((SELECT STRING_AGG(c2."campaignName", ', ' ORDER BY c2."campaignName") FROM "Campaign" c2 WHERE c2.id = ANY(STRING_TO_ARRAY(b."selectedCampaignIds", ','))), c."campaignName") AS "campaignName", b."fileName", b."reportDate", b."createdAt", (b."insertedCount" + b."updatedCount") AS "detailCount"
+      SELECT b.id, b."campaignId", COALESCE((SELECT STRING_AGG(c2."campaignName", ', ' ORDER BY c2."campaignName") FROM "Campaign" c2 WHERE c2.id = ANY(STRING_TO_ARRAY(b."selectedCampaignIds", ','))), c."campaignName") AS "campaignName", b."fileName", b."reportDate", b."createdAt", b.status, b."insertedCount", b."updatedCount", b."skippedCount", b."failedCount", (b."insertedCount" + b."updatedCount") AS "detailCount"
       FROM "DashboardImportBatch" b
       JOIN "Campaign" c ON c.id = b."campaignId"
-      WHERE b."importedById" = ${user.id} AND b.status = 'COMPLETED'
+      WHERE b."importedById" = ${user.id} AND b.status LIKE 'COMPLETED%'
       ORDER BY b."createdAt" DESC
       LIMIT 50
     `;
@@ -2718,7 +2815,29 @@ export async function GET(req: NextRequest) {
     });
     const emptyTotals = { transmittals: 0, approvals: 0, booked: 0, volume: 0, ntb: 0, supplementary: 0 };
     const legacyImports = rows.map((row) => ({ ...formatImportSummary(row), sourceKind: 'production_entry', deletable: true }));
-    const dashboardImports = dashboardRows.map((batch) => ({ id: batch.id, campaignId: batch.campaignId, campaignName: batch.campaignName, fileName: batch.fileName, metricType: 'all_metrics', reportDate: batch.reportDate, importedAt: batch.createdAt, detailCount: Number(batch.detailCount || 0), totals: emptyTotals, sourceKind: 'dashboard', deletable: true }));
+    const dashboardImports = dashboardRows.map((batch) => ({
+      id: batch.id,
+      campaignId: batch.campaignId,
+      campaignName: batch.campaignName,
+      fileName: batch.fileName,
+      metricType: 'all_metrics',
+      reportDate: batch.reportDate,
+      importedAt: batch.createdAt,
+      detailCount: Number(batch.detailCount || 0),
+      totals: emptyTotals,
+      sourceKind: 'dashboard',
+      status: batch.status,
+      deletable: true,
+      batchStats: {
+        detected: Number(batch.insertedCount || 0) + Number(batch.updatedCount || 0) + Number(batch.skippedCount || 0) + Number(batch.failedCount || 0),
+        imported: Number(batch.insertedCount || 0),
+        updated: Number(batch.updatedCount || 0),
+        unchanged: 0,
+        skipped: Number(batch.skippedCount || 0),
+        warnings: Number(batch.failedCount || 0),
+        errors: Number(batch.failedCount || 0),
+      },
+    }));
     const productionImports = productionRows.map((batch) => ({
       id: batch.id,
       campaignName: batch.campaignName || 'Production Monitoring',
@@ -3052,8 +3171,13 @@ export async function POST(req: NextRequest) {
         if (importMode === 'single') {
           return NextResponse.json({ error: 'BPI dashboard workbooks require Import All Data or Import Selected Worksheets.' }, { status: 400 });
         }
-        const bpiPreview = buildBpiPreview(workbook, reportDate, selectedCampaigns, reportPeriodType, file.name);
-        await markExistingBdoRecords(bpiPreview as ReturnType<typeof buildBdoPreview>, selectedCampaigns.map((campaign) => campaign.id), reportPeriodType);
+        // A BPI Dashboard workbook owns one campaign derived from its filename.
+        // This prevents PA/PL worksheets from leaking into an older campaign
+        // selected in the generic importer while keeping re-imports idempotent.
+        const workbookCampaign = await ensureBpiWorkbookCampaign(file.name, reportYearValue || reportDate.getFullYear(), user.id);
+        const bpiCampaigns = [workbookCampaign.campaign];
+        const bpiPreview = buildBpiPreview(workbook, reportDate, bpiCampaigns, reportPeriodType, file.name);
+        await markExistingBdoRecords(bpiPreview as ReturnType<typeof buildBdoPreview>, bpiCampaigns.map((campaign) => campaign.id), reportPeriodType);
         if (bpiPreview.workbookSummary.worksheetsAccepted === 0 || bpiPreview.workbookSummary.totalValidRecords === 0) {
           return NextResponse.json({
             error: 'The workbook contains supported BPI worksheets, but no valid mapped monthly data was found.',
@@ -3072,6 +3196,8 @@ export async function POST(req: NextRequest) {
             metricType: 'all_metrics',
             reportDate: ymd(reportDate),
             reportPeriodType,
+            workbookCampaign: workbookCampaign.campaign,
+            campaignCreated: workbookCampaign.created,
             previewRecords: bpiPreview.previewRecords,
             monthSummary: bpiPreview.monthSummary,
             workbookSummary: bpiPreview.workbookSummary,
@@ -3090,7 +3216,7 @@ export async function POST(req: NextRequest) {
         if (!selectedBpiSheets.length) return NextResponse.json({ error: 'No selected worksheets contain valid mapped rows to import.' }, { status: 400 });
         const invalidMapping = selectedBpiSheets.find((sheet) => {
           const mappedIds = campaignMappings[sheet.key] || [];
-          return (sheet.campaignMapping === 'unresolved' && mappedIds.length === 0) || hasInvalidCampaignMapping(mappedIds, selectedCampaigns);
+          return (sheet.campaignMapping === 'unresolved' && mappedIds.length === 0) || hasInvalidCampaignMapping(mappedIds, bpiCampaigns);
         });
         if (invalidMapping) return NextResponse.json({ error: 'Some BPI worksheets or sections are unmapped. Review the campaign mapping before importing.' }, { status: 400 });
         const hasImportableBpiRecord = selectedBpiSheets.some((sheet) => {
@@ -3108,7 +3234,7 @@ export async function POST(req: NextRequest) {
         }
         const result = await persistBdoImport({
           preview: bpiPreview as ReturnType<typeof buildBdoPreview>,
-          selectedCampaigns,
+          selectedCampaigns: bpiCampaigns,
           campaignMappings,
           fileName: file.name,
           importMode,
@@ -3119,7 +3245,7 @@ export async function POST(req: NextRequest) {
           selectedWorksheetKeys: selectedBpiSheets.map((sheet) => sheet.key),
           skipUnresolvedRecordMappings: true,
         });
-        return NextResponse.json({ ...result, bpiDashboard: true, unmapped: bpiPreview.workbookSummary.totalUnmappedRecords, workbookSummary: bpiPreview.workbookSummary, worksheetPreviews: bpiPreview.worksheetPreviews, normalizedImported: result.inserted, normalizedDuplicates: result.skipped });
+        return NextResponse.json({ ...result, bpiDashboard: true, workbookCampaign: workbookCampaign.campaign, campaignCreated: workbookCampaign.created, unmapped: bpiPreview.workbookSummary.totalUnmappedRecords, workbookSummary: bpiPreview.workbookSummary, worksheetPreviews: bpiPreview.worksheetPreviews, normalizedImported: result.inserted, normalizedDuplicates: result.skipped });
       }
 
       if (!bdoSgmRankingDetected && isBdoDashboardWorkbook(workbook)) {

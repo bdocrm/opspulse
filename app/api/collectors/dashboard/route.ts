@@ -16,6 +16,7 @@ import {
 } from "@/lib/bdo-ccc-kpi";
 import { isSelectedPeriod, monthName, monthSelectionRange, normalizeMonthSelection } from "@/lib/month-selection";
 import { summarizeProductionMonitoringForDashboard } from "@/lib/production-monitoring-dashboard";
+import { isExcludedBpiYtdRecord } from "@/lib/bpi-dashboard-import";
 
 const BUSINESS_TIME_ZONE = "Asia/Manila";
 const BUSINESS_TIME_ZONE_OFFSET = "+08:00";
@@ -561,8 +562,9 @@ export async function GET(req: NextRequest) {
         })
       : [];
 
+    const campaignNameById = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
     const usableDashboardAgentRecords = dashboardAgentRecords.filter(
-      (record) => !isImportedClassificationRow(record)
+      (record) => !isImportedClassificationRow(record) && !isExcludedBpiYtdRecord(record, campaignNameById.get(record.campaignId))
     );
     const monitoringRecords = rawMonitoringRecords.filter((record) =>
       periodSelected(record.reportYear, record.reportMonth)
@@ -708,7 +710,6 @@ export async function GET(req: NextRequest) {
           && detail.productionEntry.reportPeriodType === "monthly")
         .map((detail) => detail.campaignId)
     );
-    const campaignNameById = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
     const mbPaCampaignIds = new Set(campaigns.filter((campaign) => /\bMB\s*PA\b/i.test(campaign.campaignName)).map((campaign) => campaign.id));
     const mbPlCampaignIds = new Set(campaigns.filter((campaign) => /\bMB\s*PL\b/i.test(campaign.campaignName)).map((campaign) => campaign.id));
     const importedMetricGoalsByCampaign = new Map<string, Record<string, Record<string, number>>>();
@@ -1056,6 +1057,15 @@ export async function GET(req: NextRequest) {
       string,
       Record<string, { importedTarget: number; actual: number }>
     >();
+    const primaryPerformancePeriodKeys = new Set(
+      [...preferredAgentDetailRecords.values()]
+        .filter((record) =>
+          record.recordKind === "agent_monitoring" &&
+          !record.monitoringType?.includes("SCORECARD") &&
+          /\bperformance\b/i.test(record.metric)
+        )
+        .map((record) => `${record.campaignId}|${normalizeImportedAgentName(record.entityName || "")}|${record.year}|${record.month || 0}`)
+    );
 
     // YTD rows are campaign summaries from the workbook. Sum one target and
     // one derived/explicit actual per selected month; never multiply them by
@@ -1089,7 +1099,18 @@ export async function GET(req: NextRequest) {
       }
       const effectiveActual = importedActual(record);
       if (effectiveActual == null) continue;
-      if (record.recordKind === "agent_monitoring") {
+      const importedMetric = record.metric.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      if (importedMetric === "score" || importedMetric === "ranking") continue;
+      if (
+        record.monitoringType?.includes("SCORECARD") &&
+        importedMetric === "scorecard performance" &&
+        primaryPerformancePeriodKeys.has(`${record.campaignId}|${normalizedName}|${record.year}|${record.month || 0}`)
+      ) continue;
+      const isAgentPerformanceRow = record.recordKind === "agent_monitoring" || (
+        record.recordKind === "ytd" &&
+        !campaignsWithSelectedImportedAgentMonitoring.has(record.campaignId)
+      );
+      if (isAgentPerformanceRow) {
         const byAgent = importedAgentPerformanceByCampaign.get(record.campaignId) ?? {};
         const performance = byAgent[agentId] ?? { importedTarget: 0, actual: 0 };
         performance.importedTarget += target;
@@ -1101,7 +1122,6 @@ export async function GET(req: NextRequest) {
       const cur = byAgent[agentId] ?? emptyProduction();
       const actual = effectiveActual;
       const kpiMetric = campaignKpiById.get(record.campaignId);
-      const importedMetric = record.metric.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
       if (importedMetric === "transmitted count") {
         cur.transmittals += actual;
       } else if (importedMetric === "transmitted volume") {
