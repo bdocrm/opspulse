@@ -80,7 +80,7 @@ function groupImportedMonthlyRows(rows: Array<{
   year: number;
   month: number | null;
   reportDate: Date;
-}>, campaignNames: Map<string, string>) {
+}>) {
   const preferred = new Map<string, (typeof rows)[number]>();
   for (const row of rows) {
     const metric = row.metric.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -171,7 +171,7 @@ export async function GET(req: NextRequest) {
       campaignId: true, worksheetSource: true, monitoringType: true, entityName: true,
       metric: true, actual: true, target: true, achievement: true, year: true, month: true, reportDate: true,
     } as const;
-    const [details, previousDetails, importedRows, previousImportedRows, campaigns] = await Promise.all([
+    const [details, previousDetails, importedRows, previousImportedRows] = await Promise.all([
       prisma.productionDetail.findMany({
         where: {
           ...campaignWhere,
@@ -196,12 +196,10 @@ export async function GET(req: NextRequest) {
         where: { ...dashboardWhere, recordKind: 'agent_monitoring', year: prev.year, month: prev.month },
         select: dashboardSelect,
       }).catch(() => []),
-      prisma.campaign.findMany({ where: dashboardCampaignId ? { id: dashboardCampaignId } : {}, select: { id: true, campaignName: true } }),
     ]);
 
-    const campaignNames = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
-    const importedTrends = groupImportedMonthlyRows(importedRows, campaignNames);
-    const previousImportedTrends = groupImportedMonthlyRows(previousImportedRows, campaignNames);
+    const importedTrends = groupImportedMonthlyRows(importedRows);
+    const previousImportedTrends = groupImportedMonthlyRows(previousImportedRows);
     const importedMonths = new Set(importedTrends.map((point) => point.date.slice(0, 7)));
     const previousImportedMonths = new Set(previousImportedTrends.map((point) => point.date.slice(0, 7)));
     const trends = [
