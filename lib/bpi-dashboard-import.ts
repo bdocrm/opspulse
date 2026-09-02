@@ -748,7 +748,9 @@ export function parseBpiDashboardWorkbook(workbook: XLSX.WorkBook, fallbackDate:
     if (!detectedType) return { sheetName, detectedType: 'Unsupported', records: [], months: [], warnings: [{ worksheet: sheetName, message: 'Unsupported worksheet skipped.' }], status: 'Skipped' };
     if (detectedType === 'YTD Performance') return parseYtd(rows, sheetName, detectedType, fallbackDate.getFullYear());
     if (detectedType === 'Manpower Monitoring') return parseManpower(rows, sheetName, detectedType, fallbackDate.getFullYear());
-    if (detectedType === 'PL YTD Productivity') return parseProductivity(rows, sheetName, detectedType, fallbackDate.getFullYear());
+    if (detectedType === 'PL YTD Productivity') {
+      return parseProductivity(rows, sheetName, detectedType, fallbackDate.getFullYear(), productivityTargetsByType(rows));
+    }
     if (detectedType === 'SIP LOANS SCORECARD' || detectedType === 'PL SCORECARD 2026') {
       return parseScorecard(rows, sheetName, detectedType, fallbackDate.getFullYear());
     }

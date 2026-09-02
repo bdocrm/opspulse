@@ -34,6 +34,31 @@ export interface CampaignAchievementSummary {
   lowestCampaign: CampaignAchievement | null;
 }
 
+export interface CampaignGoalSources {
+  configuredGoal?: number | null;
+  monitoringGoal?: number | null;
+  importedCampaignGoal?: number | null;
+  fallbackGoal?: number | null;
+}
+
+/**
+ * The month-specific goal saved by the CEO is authoritative. Imported team
+ * and agent-derived targets are fallbacks for months without a configured
+ * campaign goal.
+ */
+export function resolveCampaignGoal(sources: CampaignGoalSources): number | null {
+  for (const value of [
+    sources.configuredGoal,
+    sources.monitoringGoal,
+    sources.importedCampaignGoal,
+    sources.fallbackGoal,
+  ]) {
+    const goal = Number(value || 0);
+    if (Number.isFinite(goal) && goal > 0) return goal;
+  }
+  return null;
+}
+
 export function calculateCampaignAchievement(
   input: CampaignAchievementInput
 ): CampaignAchievement {

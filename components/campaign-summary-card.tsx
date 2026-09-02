@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ChevronDown, Search, CheckCircle2, AlertCircle, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { compareMonthlyProductionRank } from '@/lib/agent-goal-allocation';
 
 export interface Agent {
   id: string;
@@ -244,8 +245,7 @@ export function CampaignSummaryCard({
     return distribution;
   }, [agents, production, goal, entriesCount, acq, bdo, bdoSgm, mbpl, mbpa, dashboardImported, importedPerformance, bdoPerformance, mbPlPerformance, kpiMetric]);
 
-  // Top and bottom performers. ACQ ranks by NTB (Supplementary as tiebreaker),
-  // matching the collector-details table; others use their configured KPI.
+  // Imported monthly reports rank their top performer by actual production.
   const performerStats = useMemo(() => {
     if (entriesCount === 0) {
       return { topPerformer: undefined, bottomPerformer: undefined, reachedGoal: 0, belowTarget: 0, withProduction: 0, zeroProduction: 0 };
@@ -268,9 +268,14 @@ export function CampaignSummaryCard({
             : agentGoal > 0 ? (progressValue / agentGoal) * 100 : 0,
         };
       })
-      .sort((a, b) => mbpl
-        ? b.progress - a.progress
-        : (b.value !== a.value ? b.value - a.value : b.secondary - a.secondary));
+      .sort((a, b) => dashboardImported
+        ? compareMonthlyProductionRank(
+          { achievement: a.progress, actual: a.value, secondary: a.secondary, name: a.agent.name },
+          { achievement: b.progress, actual: b.value, secondary: b.secondary, name: b.agent.name },
+        )
+        : mbpl
+          ? b.progress - a.progress
+          : (b.value !== a.value ? b.value - a.value : b.secondary - a.secondary));
 
     return {
       topPerformer: performers[0],

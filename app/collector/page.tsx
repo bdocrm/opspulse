@@ -27,6 +27,7 @@ import {
   Clock3, Database, Upload, MoreHorizontal, ArrowRight, Minus
 } from 'lucide-react';
 import { dataCoverage, monthName, normalizeMonthSelection } from '@/lib/month-selection';
+import { compareMonthlyProductionRank } from '@/lib/agent-goal-allocation';
 
 interface Agent {
   id: string;
@@ -261,8 +262,18 @@ function compareCampaignAgents(campaign: CampaignBlock, a: Agent, b: Agent) {
     primaryDifference = Number(bPerformance?.achievement || 0) - Number(aPerformance?.achievement || 0);
     secondaryDifference = Number(bPerformance?.transactionActual || 0) - Number(aPerformance?.transactionActual || 0);
   } else if (campaign.importedPerformance) {
-    primaryDifference = Number(campaign.importedPerformance[b.id]?.actual || 0) - Number(campaign.importedPerformance[a.id]?.actual || 0);
-    secondaryDifference = Number(campaign.importedPerformance[b.id]?.achievement || 0) - Number(campaign.importedPerformance[a.id]?.achievement || 0);
+    return compareMonthlyProductionRank(
+      {
+        achievement: campaign.importedPerformance[a.id]?.achievement || 0,
+        actual: campaign.importedPerformance[a.id]?.actual || 0,
+        name: a.name,
+      },
+      {
+        achievement: campaign.importedPerformance[b.id]?.achievement || 0,
+        actual: campaign.importedPerformance[b.id]?.actual || 0,
+        name: b.name,
+      },
+    );
   } else {
     primaryDifference = kpiValueFor(campaign.kpiMetric, bProd) - kpiValueFor(campaign.kpiMetric, aProd);
   }
@@ -1760,7 +1771,7 @@ export default function CollectorDashboard() {
               <Trophy className="w-5 h-5 text-yellow-500" />
               Production Leaderboard
             </h2>
-            <p className="text-sm text-muted-foreground">Ranked by each campaign&apos;s KPI, grouped by campaign</p>
+            <p className="text-sm text-muted-foreground">Ranked by actual production for the selected reporting period</p>
           </div>
           <div className="flex items-center gap-2">
             {loadingDashboard && <RefreshCw className="w-4 h-4 animate-spin text-muted-foreground" />}
@@ -1773,7 +1784,7 @@ export default function CollectorDashboard() {
               onChange={(e) => setSortBy(e.target.value as 'seat' | 'booked' | 'name')}
               className="h-9 px-3 rounded-md border bg-background text-sm"
             >
-              <option value="booked">Sort by KPI</option>
+              <option value="booked">Highest Production</option>
               <option value="seat">Sort by Seat</option>
               <option value="name">Sort by Name</option>
             </select>

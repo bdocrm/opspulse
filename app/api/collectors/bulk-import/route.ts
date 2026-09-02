@@ -1208,7 +1208,7 @@ async function getAssignedCampaigns(userId: string, primaryCampaignId?: string |
 
 async function ensureBpiWorkbookCampaigns(userId: string) {
   const definitions = [
-    { campaignName: 'BPI SIP LOANS', goalType: 'dashboard_import', kpiMetric: 'volume' },
+    { campaignName: 'BPI PA OUTBOUND', goalType: 'dashboard_import', kpiMetric: 'volume' },
     { campaignName: 'BPI PL', goalType: 'volume', kpiMetric: 'volume' },
   ];
   return prisma.$transaction(async (tx) => {
@@ -2291,10 +2291,10 @@ function buildBdoPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCamp
 
 function buildBpiPreview(workbook: XLSX.WorkBook, reportDate: Date, selectedCampaigns: AssignedCampaign[], reportPeriodType: ReportPeriodType, sourceFileName = '') {
   const parsed = parseBpiDashboardWorkbook(workbook, reportDate, sourceFileName);
-  const sipCampaign = selectedCampaigns.find((campaign) => /^BPI SIP LOANS$/i.test(campaign.campaignName));
+  const paOutboundCampaign = selectedCampaigns.find((campaign) => /^BPI PA OUTBOUND$/i.test(campaign.campaignName));
   const plCampaign = selectedCampaigns.find((campaign) => /^BPI PL$/i.test(campaign.campaignName));
   const recordMappings = new Map(parsed.records.map((record) => {
-    const routedCampaign = /^PL\b/i.test(record.worksheetSource.trim()) ? plCampaign : sipCampaign;
+    const routedCampaign = /^PL\b/i.test(record.worksheetSource.trim()) ? plCampaign : paOutboundCampaign;
     return [record, routedCampaign
       ? { campaign: routedCampaign, source: 'sheet' as const, evidence: record.worksheetSource }
       : mapWorksheetCampaign(`${record.category || ''} ${record.product || ''} ${record.metric} ${record.worksheetSource}`, selectedCampaigns)];
@@ -3250,11 +3250,11 @@ export async function POST(req: NextRequest) {
         if (importMode === 'single') {
           return NextResponse.json({ error: 'BPI dashboard workbooks require Import All Data or Import Selected Worksheets.' }, { status: 400 });
         }
-        // Route SIP/PA worksheets to BPI SIP LOANS and Personal Loans
+        // Route SIP/PA worksheets to BPI PA OUTBOUND and Personal Loans
         // worksheets to BPI PL. Both destinations are detected automatically.
         const workbookCampaigns = await ensureBpiWorkbookCampaigns(user.id);
         const bpiCampaigns = workbookCampaigns.campaigns;
-        const sipCampaign = bpiCampaigns.find((campaign) => /^BPI SIP LOANS$/i.test(campaign.campaignName))!;
+        const paOutboundCampaign = bpiCampaigns.find((campaign) => /^BPI PA OUTBOUND$/i.test(campaign.campaignName))!;
         const bpiPreview = buildBpiPreview(workbook, reportDate, bpiCampaigns, reportPeriodType, file.name);
         await markExistingBdoRecords(bpiPreview as unknown as ReturnType<typeof buildBdoPreview>, bpiCampaigns.map((campaign) => campaign.id), reportPeriodType);
         if (bpiPreview.workbookSummary.worksheetsAccepted === 0 || bpiPreview.workbookSummary.totalValidRecords === 0) {
@@ -3275,7 +3275,7 @@ export async function POST(req: NextRequest) {
             metricType: 'all_metrics',
             reportDate: ymd(reportDate),
             reportPeriodType,
-            workbookCampaign: sipCampaign,
+            workbookCampaign: paOutboundCampaign,
             workbookCampaigns: bpiCampaigns,
             campaignCreated: workbookCampaigns.createdCampaignIds.length > 0,
             previewRecords: bpiPreview.previewRecords,
@@ -3325,10 +3325,10 @@ export async function POST(req: NextRequest) {
           selectedWorksheetKeys: selectedBpiSheets.map((sheet) => sheet.key),
           skipUnresolvedRecordMappings: true,
         });
-        return NextResponse.json({ ...result, bpiDashboard: true, workbookCampaign: sipCampaign, workbookCampaigns: bpiCampaigns, campaignCreated: workbookCampaigns.createdCampaignIds.length > 0, unmapped: bpiPreview.workbookSummary.totalUnmappedRecords, workbookSummary: bpiPreview.workbookSummary, worksheetPreviews: bpiPreview.worksheetPreviews, normalizedImported: result.inserted, normalizedDuplicates: result.skipped });
+        return NextResponse.json({ ...result, bpiDashboard: true, workbookCampaign: paOutboundCampaign, workbookCampaigns: bpiCampaigns, campaignCreated: workbookCampaigns.createdCampaignIds.length > 0, unmapped: bpiPreview.workbookSummary.totalUnmappedRecords, workbookSummary: bpiPreview.workbookSummary, worksheetPreviews: bpiPreview.worksheetPreviews, normalizedImported: result.inserted, normalizedDuplicates: result.skipped });
       }
 
-      // BPI Dashboard files create and select BPI SIP LOANS automatically.
+      // BPI Dashboard files create/select BPI PA OUTBOUND and BPI PL automatically.
       // Every other Excel format still requires an explicit destination.
       if (!selectedCampaigns.length) {
         return NextResponse.json({ error: 'This workbook is not a detected BPI Dashboard file. Select at least one campaign before previewing it.' }, { status: 400 });
