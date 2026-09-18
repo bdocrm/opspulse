@@ -57,7 +57,7 @@ export type BdoSheetResult = {
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const INVALID_NUMBER = /^#(?:div\/0!|value!|n\/a|ref!|num!|name\?|null!)$/i;
 const EMPTY_NUMBER_MARKER = /^(?:no\s+final\s+report.*|sl|sick\s+leave|on\s+leave|leave|n\/a|na|not\s+available|-|—|–)$/i;
-const SUMMARY_NAME = /^(?:total|grand total|average|avg|summary|ranking|rank|team total|overall)$/i;
+const SUMMARY_NAME = /^(?:.+\s+total|total|average|avg|summary|ranking|rank|overall)$/i;
 
 export function normalizeBdoText(value: unknown) {
   return String(value ?? '').normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -373,7 +373,7 @@ function parseTeamLeaders(rows: unknown[][], sheetName: string, detectedType: Bd
       const target = get('target'); const actual = get('actual'); const achievement = get('achievement');
       const declaredSeat = get('declared_seat'); const actualHeadCount = get('actual_head_count');
       if ([target, actual, achievement, declaredSeat, actualHeadCount].every((value) => value == null)) continue;
-      records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'team_leader', entityName: name, metric: 'Scorecard', declaredSeat, actualHeadCount, month: period.month, year: period.year, reportDate: new Date(period.year, period.month - 1, 1), target, actual, achievement });
+      records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'team_leader', entityName: name, metric: 'Scorecard', declaredSeat, actualHeadCount, month: period.month, year: period.year, reportDate: new Date(period.year, period.month - 1, 1), target, actual, achievement: calculatedAchievement(target, actual, achievement) });
     }
   }
   return { sheetName, detectedType, records, months: [...new Set(records.map((record) => monthLabel(record.year, record.month!)))], warnings, status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped' };
@@ -463,7 +463,7 @@ function parseYtd(rows: unknown[][], sheetName: string, detectedType: BdoWorkshe
         const target = read(targetHit); const actual = read(actualHit); const achievement = read(achievementHit, true);
         if (target == null && actual == null && achievement == null) continue;
         const recordYear = period.year || year;
-        records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'ytd', category: categoryHit ? normalizeBdoText(rows[rowIndex]?.[categoryHit.col]) : undefined, metric, month: period.month, year: recordYear, reportDate: new Date(recordYear, period.month - 1, 1), target, actual, achievement });
+        records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'ytd', category: categoryHit ? normalizeBdoText(rows[rowIndex]?.[categoryHit.col]) : undefined, metric, month: period.month, year: recordYear, reportDate: new Date(recordYear, period.month - 1, 1), target, actual, achievement: calculatedAchievement(target, actual, achievement) });
       }
       return { sheetName, detectedType, records, months: [...new Set(records.map((record) => monthLabel(record.year, record.month!)))], warnings, status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped' };
     }
@@ -493,7 +493,7 @@ function parseYtd(rows: unknown[][], sheetName: string, detectedType: BdoWorkshe
       };
       const target = get('target'); const actual = get('actual'); const achievement = get('achievement');
       if (target == null && actual == null && achievement == null) continue;
-      records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'ytd', category: activeCategory || category, metric, month: period.month, year: period.year, reportDate: new Date(period.year, period.month - 1, 1), target, actual, achievement });
+      records.push({ worksheetSource: sheetName, sourceRow: rowIndex + 1, recordKind: 'ytd', category: activeCategory || category, metric, month: period.month, year: period.year, reportDate: new Date(period.year, period.month - 1, 1), target, actual, achievement: calculatedAchievement(target, actual, achievement) });
     }
   }
   return { sheetName, detectedType, records, months: [...new Set(records.map((record) => monthLabel(record.year, record.month!)))], warnings, status: records.length ? (warnings.length ? 'Warning' : 'Ready') : 'Skipped' };

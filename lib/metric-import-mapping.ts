@@ -21,8 +21,24 @@ export function normalizeMetricHeader(value: unknown): string {
 export function matchMetricAlias(value: unknown): RecognizedMetric | null {
   const normalized = normalizeMetricHeader(value);
   if (!normalized) return null;
+
+  // Exact alias matches always win so a specific label such as "booked
+  // volume" maps to `volume` and never falls through to the substring match
+  // against the shorter "booked" alias in the `booked` group.
   for (const [metric, aliases] of Object.entries(METRIC_ALIASES) as Array<[RecognizedMetric, readonly string[]]>) {
-    if (aliases.some((alias) => normalized === alias || normalized.includes(alias))) return metric;
+    if (aliases.some((alias) => normalized === alias)) return metric;
   }
-  return null;
+
+  // Otherwise use the longest alias contained in the header. This keeps
+  // "Transmitted Volume" on the transmittals group while still letting
+  // "Booked Volume" resolve to `volume`.
+  let best: { metric: RecognizedMetric; length: number } | null = null;
+  for (const [metric, aliases] of Object.entries(METRIC_ALIASES) as Array<[RecognizedMetric, readonly string[]]>) {
+    for (const alias of aliases) {
+      if (normalized.includes(alias) && alias.length > (best?.length ?? 0)) {
+        best = { metric, length: alias.length };
+      }
+    }
+  }
+  return best?.metric ?? null;
 }

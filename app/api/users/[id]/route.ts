@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { setUserCampaigns } from "@/lib/user-campaigns";
 import { normalizeEmail } from "@/lib/normalize-email";
@@ -8,6 +10,14 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user || session.user.role !== "CEO") {
+      return NextResponse.json(
+        { error: "Unauthorized: CEO access required" },
+        { status: 403 }
+      );
+    }
+
     const { id } = params;
     const user = await prisma.user.findUnique({
       where: { id },
@@ -65,6 +75,14 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user || session.user.role !== "CEO") {
+      return NextResponse.json(
+        { error: "Unauthorized: CEO access required" },
+        { status: 403 }
+      );
+    }
+
     const body = await req.json();
     const { id } = params;
 

@@ -3,6 +3,25 @@ import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 
 export async function POST() {
+  // Only allow in development environment
+  if (process.env.NODE_ENV !== "development") {
+    return NextResponse.json(
+      { error: "This endpoint is only available in development" },
+      { status: 403 }
+    );
+  }
+
+  // Require authentication and admin role
+  const { getServerSession } = await import("next-auth/next");
+  const { authOptions } = await import("@/lib/auth");
+  const session = await getServerSession(authOptions);
+  if (!session?.user || session.user.role !== "CEO") {
+    return NextResponse.json(
+      { error: "Unauthorized: CEO access required" },
+      { status: 403 }
+    );
+  }
+
   try {
     const passwordHash = await bcrypt.hash("password123", 12);
 
@@ -56,8 +75,8 @@ export async function POST() {
       message: "Test users created successfully",
       count,
       users: [
-        { email: admin?.email || "admin@opsview.com", role: admin?.role || "CEO", password: "password123" },
-        { email: manager?.email || "manager@opsview.com", role: manager?.role || "OM", password: "password123" },
+        { email: admin?.email || "admin@opsview.com", role: admin?.role || "CEO" },
+        { email: manager?.email || "manager@opsview.com", role: manager?.role || "OM" },
       ],
     });
   } catch (error) {

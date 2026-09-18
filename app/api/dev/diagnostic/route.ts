@@ -4,6 +4,25 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  // Only allow in development environment
+  if (process.env.NODE_ENV !== "development") {
+    return NextResponse.json(
+      { error: "This endpoint is only available in development" },
+      { status: 403 }
+    );
+  }
+
+  // Require authentication and admin role
+  const { getServerSession } = await import("next-auth/next");
+  const { authOptions } = await import("@/lib/auth");
+  const session = await getServerSession(authOptions);
+  if (!session?.user || session.user.role !== "CEO") {
+    return NextResponse.json(
+      { error: "Unauthorized: CEO access required" },
+      { status: 403 }
+    );
+  }
+
   try {
     const userCount = await prisma.user.count();
 
@@ -13,7 +32,6 @@ export async function GET() {
         email: true,
         name: true,
         role: true,
-        password: true,
       },
     });
     const adminUser = await prisma.user.findUnique({
@@ -23,7 +41,6 @@ export async function GET() {
         email: true,
         name: true,
         role: true,
-        password: true,
       },
     });
     return NextResponse.json({

@@ -491,9 +491,10 @@ function parseScorecard(
       const actual = values.get('actual');
       const suppliedAchievement = values.get('achievement');
       if (target == null && actual == null && suppliedAchievement == null) continue;
-      const calculatedAchievement = target === 0
-        ? undefined
-        : achievement(target, actual, suppliedAchievement);
+      // `achievement()` already prefers an explicitly supplied achievement and
+      // only computes the fallback when a target is present, so a zero target
+      // must not discard legitimate supplied achievement data.
+      const calculatedAchievement = achievement(target, actual, suppliedAchievement);
       records.push({
         worksheetSource: sheetName,
         sourceRow: rowIndex + 1,
@@ -527,8 +528,10 @@ function parseScorecard(
   };
 }
 
-function inboundGoalsByMonth(rows: unknown[][]) {
-  const goals = new Map<number, number>();
+function inboundGoalsByMonth(rows: unknown[][], fallbackYear: number) {
+  // Key by full year+month so a MONTH/GOAL table spanning two years cannot
+  // overwrite goals for the same calendar month across different years.
+  const goals = new Map<string, { month: number; year: number; target: number }>();
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
     const row = rows[rowIndex] || [];
     const monthColumn = row.findIndex((cell) => /^month$/i.test(normalizeBpiText(cell)));
@@ -538,7 +541,10 @@ function inboundGoalsByMonth(rows: unknown[][]) {
       const period = monthFrom(rows[row]?.[monthColumn]);
       if (!period) continue;
       const parsed = parseNumeric(rows[row]?.[goalColumn]);
-      if (parsed.value != null && parsed.value > 0) goals.set(period.month, parsed.value);
+      if (parsed.value != null && parsed.value > 0) {
+        const goalYear = period.year || fallbackYear;
+        goals.set(`${goalYear}-${period.month}`, { month: period.month, year: goalYear, target: parsed.value });
+      }
     }
     break;
   }
@@ -566,7 +572,7 @@ function parsePaInboundProductivity(
     const metric = productivityMetric(headerRows.map((row) => row[col]));
     return period && metric ? { col, month: period.month, year: period.year || year, metric } : null;
   }).filter(Boolean) as Array<{ col: number; month: number; year: number; metric: string }>;
-  const goals = inboundGoalsByMonth(rows);
+  const goals = inboundGoalsByMonth(rows, year);
 
   if (!columns.length) {
     return { sheetName, detectedType, records, months: [], warnings: [{ worksheet: sheetName, message: 'Monthly Transmittal and Booked Volume columns were not found.' }], status: 'Skipped' };
@@ -600,7 +606,7 @@ function parsePaInboundProductivity(
   // The MONTH / GOAL table is a campaign-level target. Persist it once per
   // reporting period instead of copying it to every agent production row.
   // This prevents the campaign goal from being multiplied by agent count.
-  for (const [month, target] of goals) {
+  for (const { month, year: goalYear, target } of goals.values()) {
     records.push({
       worksheetSource: sheetName,
       sourceRow: 0,
@@ -610,8 +616,8 @@ function parsePaInboundProductivity(
       product: 'Volume',
       metric: 'Booked Volume',
       month,
-      year,
-      reportDate: new Date(year, month - 1, 1),
+      year: goalYear,
+      reportDate: new Date(goalYear, month - 1, 1),
       target,
       remark: 'Campaign goal from MONTH / GOAL table',
     });

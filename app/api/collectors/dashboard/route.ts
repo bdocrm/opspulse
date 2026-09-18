@@ -753,22 +753,6 @@ export async function GET(req: NextRequest) {
         (importedSummaryActualByCampaign.get(campaignId) ?? 0) + summary.actual
       );
     }
-    for (const record of usableDashboardAgentRecords) {
-      if (record.recordKind !== "ytd") continue;
-      const summaryName = `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
-      const identity = `${record.campaignId}|${normalizeImportedAgentName(summaryName)}`;
-      if (importedRosterSeen.has(identity)) continue;
-      importedRosterSeen.add(identity);
-      const list = importedRosterByCampaign.get(record.campaignId) ?? [];
-      list.push({
-        id: importedAgentId(record.campaignId, summaryName), name: summaryName, email: "", seatNumber: null,
-        monthlyTarget: null, monthlyTargetSupplementary: null, mbLevel: null,
-        disbursedTxnTarget: null, disbursedVolTarget: null, grossTurnInsTxnTarget: null, grossTurnInsVolTarget: null,
-        campaignId: record.campaignId, importedOnly: true,
-      });
-      importedRosterByCampaign.set(record.campaignId, list);
-    }
-
     // Per-category MB PL fields aggregated alongside the standard metrics.
     const CATEGORY_KEYS = [
       'bauPayrollTxn', 'bauPayrollVol', 'bauDepositorTxn', 'bauDepositorVol',
@@ -1152,12 +1136,8 @@ export async function GET(req: NextRequest) {
     }
 
     for (const record of preferredAgentDetailRecords.values()) {
-      if (record.recordKind === "ytd") {
-        // Keep one synthetic campaign-total row when the workbook has no
-        // agent-level monitoring. Registered agents remain visible, but the
-        // imported YTD total must not disappear from Production Entry.
-        if (campaignsWithSelectedImportedAgentMonitoring.has(record.campaignId)) continue;
-      }
+      // YTD rows are campaign summaries and must never become fake collectors.
+      if (record.recordKind === "ytd") continue;
       const entityName = record.entityName || `${campaignNameById.get(record.campaignId) || "Campaign"} Total`;
       const normalizedName = normalizeImportedAgentName(entityName);
       const agentId = actualAgentIdByCampaignAndName.get(`${record.campaignId}|${normalizedName}`) || importedAgentId(record.campaignId, entityName);
@@ -1185,10 +1165,7 @@ export async function GET(req: NextRequest) {
         importedMetric === "scorecard performance" &&
         primaryPerformancePeriodKeys.has(`${record.campaignId}|${normalizedName}|${record.year}|${record.month || 0}`)
       ) continue;
-      const isAgentPerformanceRow = record.recordKind === "agent_monitoring" || (
-        record.recordKind === "ytd" &&
-        !campaignsWithSelectedImportedAgentMonitoring.has(record.campaignId)
-      );
+      const isAgentPerformanceRow = record.recordKind === "agent_monitoring";
       if (isAgentPerformanceRow && isPrimaryImportedPerformanceRecord(record, campaignNameById.get(record.campaignId) || "")) {
         const byAgent = importedAgentPerformanceByCampaign.get(record.campaignId) ?? {};
         const performance = byAgent[agentId] ?? { importedTarget: 0, actual: 0 };
@@ -1440,7 +1417,6 @@ export async function GET(req: NextRequest) {
         || hasBdoCccImport;
       const rawImportedPerformance = importedAgentPerformanceByCampaign.get(c.id) ?? {};
       const rawBdoCccPerformance = bdoCccPerformanceByCampaign.get(c.id);
-      const syntheticTotalName = normalizeImportedAgentName(`${c.campaignName} Total`);
       const importedGoalForAgent = (agentId: string) => {
         const goals = normalizedGoalsByAgent[agentId] ?? {};
         if (isMbPlCampaign && hasMbPlImport) return mbPlPerformance[agentId]?.transactionGoal;
@@ -1480,11 +1456,7 @@ export async function GET(req: NextRequest) {
           importedGoals: normalizedGoalsByAgent[agent.id] ?? {},
           goalSource: hasCampaignAgentImport || importedGoalForAgent(agent.id) != null ? "bulk_import" : "configured",
         })),
-      ].filter((agent) => !(
-        hasDashboardAgentImport &&
-        agent.importedOnly &&
-        normalizeImportedAgentName(agent.name) === syntheticTotalName
-      )).filter((agent) => {
+      ].filter((agent) => {
         if (Object.keys(rawImportedPerformance).length > 0) {
           return shouldIncludeImportedReportAgent(hasCampaignAgentImport, [rawImportedPerformance[agent.id]?.actual]);
         }

@@ -26,10 +26,20 @@ export async function GET(req: NextRequest) {
     }
 
     const { searchParams } = new URL(req.url);
-    const campaignId = searchParams.get('campaignId');
     const now = new Date();
     const year = parseInt(searchParams.get('year') ?? String(now.getFullYear()));
     const month = parseInt(searchParams.get('month') ?? String(now.getMonth() + 1));
+
+    // Only allow the OM to open one of their assigned campaigns. An arbitrary
+    // campaignId query param must not bypass campaign scoping (IDOR).
+    const requestedCampaignId = searchParams.get('campaignId') || '';
+    const assignedCampaignIds = new Set<string>(user.campaignIds || []);
+    const campaignId = requestedCampaignId
+      ? (assignedCampaignIds.has(requestedCampaignId) ? requestedCampaignId : null)
+      : (user.campaignId || '');
+    if (!campaignId) {
+      return NextResponse.json({ error: 'Campaign not found' }, { status: 404 });
+    }
 
     const startDate = new Date(year, month - 1, 1);
     startDate.setHours(0, 0, 0, 0);
@@ -38,7 +48,7 @@ export async function GET(req: NextRequest) {
 
     // Fetch campaign
     const campaign = await prisma.campaign.findUnique({
-      where: { id: campaignId || user.campaignId || '' },
+      where: { id: campaignId },
       include: {
         users: {
           select: {

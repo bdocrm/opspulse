@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 import { setUserCampaigns } from "@/lib/user-campaigns";
@@ -6,6 +8,14 @@ import { normalizeEmail } from "@/lib/normalize-email";
 
 export async function GET(req: NextRequest) {
   try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user || session.user.role !== "CEO") {
+      return NextResponse.json(
+        { error: "Unauthorized: CEO access required" },
+        { status: 403 }
+      );
+    }
+
     const { searchParams } = new URL(req.url);
     const roleParam = searchParams.get("role");
 
@@ -73,6 +83,14 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: Request) {
   try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user || session.user.role !== "CEO") {
+      return NextResponse.json(
+        { error: "Unauthorized: CEO access required" },
+        { status: 403 }
+      );
+    }
+
     const body = await req.json();
     const email = normalizeEmail(body.email ?? "");
 

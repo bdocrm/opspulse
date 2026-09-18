@@ -58,6 +58,17 @@ function findHeaderAlias(rows: unknown[][], aliases: string[]) {
       }
     }
   }
+  // Some workbooks embed a multi-word alias inside a longer header (e.g.
+  // "Total Collected Amount" contains "collected amount"). Fall back to a
+  // contains match before declaring the header missing.
+  for (const alias of normalizedAliases) {
+    for (let row = 0; row < Math.min(rows.length, 20); row++) {
+      for (let column = 0; column < (rows[row] || []).length; column++) {
+        const value = normalizeHeader(rows[row][column]);
+        if (value && value.includes(alias)) return { row, column };
+      }
+    }
+  }
   return null;
 }
 

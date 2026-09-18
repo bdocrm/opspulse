@@ -37,7 +37,10 @@ function checkInMemory(key: string, now: number): { allowed: boolean; remaining:
   if (now - entry.firstAt > LOGIN_WINDOW_MS) {
     entry.count = 0;
     entry.firstAt = now;
-    entry.lockedUntil = 0;
+    // Note: the active lockout is intentionally preserved across a window
+    // reset. The lock is set on the 5th attempt (mid-window), so without this
+    // the 10-minute lockout would instantly expire whenever the 10-minute
+    // window measured from the *first* attempt rolled over.
   }
 
   if (entry.lockedUntil > now) {
