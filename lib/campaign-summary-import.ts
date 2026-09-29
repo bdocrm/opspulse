@@ -1,4 +1,5 @@
-import { mapWorksheetCampaign, type ImportCampaignOption } from "./campaign-import-selection";
+import { type ImportCampaignOption } from "./campaign-import-selection";
+import { resolveRecordCampaign } from "./campaign-import-mapping";
 import { parseImportNumber } from "./import-number";
 import { normalizeMetricHeader } from "./metric-import-mapping";
 
@@ -137,12 +138,12 @@ export function parseCampaignSummaryWorksheet(
     if (!rowHasAnyValue(row)) continue;
     const importedCampaignName = cellText(row[campaignHit.column]);
     if (!importedCampaignName || /^campaign(?: name)?$/i.test(importedCampaignName)) continue;
-    const mapping = mapWorksheetCampaign(importedCampaignName, selectedCampaigns);
-    if (mapping.source === "unresolved") {
+    const campaign = resolveRecordCampaign(importedCampaignName, selectedCampaigns);
+    if (!campaign) {
       if (!unresolvedCampaigns.has(importedCampaignName)) {
         unresolvedCampaigns.add(importedCampaignName);
         warnings.push(
-          `Row ${rowIndex + 1}: campaign "${importedCampaignName}" is not one of the selected authorized campaigns.`
+          `Row ${rowIndex + 1}: campaign "${importedCampaignName}" has no unique match in the selected campaigns. Select it above; if unavailable, ask an administrator to assign it to your account.`
         );
       }
       invalidRows++;
@@ -163,7 +164,7 @@ export function parseCampaignSummaryWorksheet(
     if (actual.value === 0 && goal.value === 0 && achievement.value === 0) continue;
 
     entries.push({
-      name: `${mapping.campaign.campaignName} Total`,
+      name: `${campaign.campaignName} Total`,
       count: 0,
       volume: 0,
       monthlyGoal: goalHit ? goal.value : undefined,
@@ -179,8 +180,8 @@ export function parseCampaignSummaryWorksheet(
       ],
       metricType: "actual",
       sourceSheet: sheetName,
-      campaignId: mapping.campaign.id,
-      campaignName: mapping.campaign.campaignName,
+      campaignId: campaign.id,
+      campaignName: campaign.campaignName,
       reportDate,
       rowIdx: rowIndex + 1,
     });

@@ -47,7 +47,25 @@ export interface CampaignImportCandidate {
   campaignName: string;
 }
 
+/** Explicit campaign cells must not use worksheet substring/fallback guesses. */
+export function resolveRecordCampaign(value: string, campaigns: CampaignImportCandidate[]) {
+  const normalized = normalizeCampaignImportText(value);
+  if (!normalized) return null;
+  const exact = campaigns.filter(campaign => normalizeCampaignImportText(campaign.campaignName) === normalized);
+  if (exact.length) return exact.length === 1 ? exact[0] : null;
+  const canonicalNames = Object.entries(CAMPAIGN_IMPORT_ALIASES)
+    .filter(([canonical, aliases]) => [canonical, ...aliases].some(alias => normalizeCampaignImportText(alias) === normalized))
+    .map(([canonical]) => normalizeCampaignImportText(canonical));
+  const matches = campaigns.filter(campaign => canonicalNames.includes(normalizeCampaignImportText(campaign.campaignName)));
+  return matches.length === 1 ? matches[0] : null;
+}
+
 export function resolveCampaignEvidence(evidence: string[], selectedCampaigns: CampaignImportCandidate[]) {
+  // Exact names take precedence over aliases shared with a shorter campaign.
+  for (const rawEvidence of evidence) {
+    const exact = selectedCampaigns.filter(campaign => normalizeCampaignImportText(campaign.campaignName) === normalizeCampaignImportText(rawEvidence));
+    if (exact.length === 1) return { campaign: exact[0], source: 'evidence' as const, evidence: rawEvidence };
+  }
   for (const rawEvidence of evidence) {
     const normalizedEvidence = normalizeCampaignImportText(rawEvidence);
     if (!normalizedEvidence) continue;

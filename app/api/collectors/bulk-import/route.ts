@@ -1942,7 +1942,7 @@ async function buildWorkbookPreview({
               : [],
             errors: [] as string[],
           }
-        : campaignSummary?.entries.length
+        : campaignSummary
           ? campaignSummary
           : parseDetectedRows(rows, detectedMetric, mapping.campaign.campaignName, sheetName, reportDate);
     const hasPerRecordCampaigns = parsed.format === 'Campaign Summary';
@@ -3466,6 +3466,10 @@ export async function POST(req: NextRequest) {
       const entries = selectedSheets.flatMap((sheet) => {
         const mappedCampaignIds = campaignMappings[sheet.key] || [];
         if (mappedCampaignIds.length === 0) return sheet.entries;
+        if (sheet.campaignMapping === 'record') {
+          const allowed = new Set(mappedCampaignIds);
+          return sheet.entries.filter((entry) => Boolean(entry.campaignId && allowed.has(entry.campaignId)));
+        }
         if (mappedCampaignIds.length === 1) {
           const mappedCampaign = selectedCampaigns.find((campaign) => campaign.id === mappedCampaignIds[0])!;
           return sheet.entries.map((entry) => ({ ...entry, campaignId: mappedCampaign.id, campaignName: mappedCampaign.campaignName }));
