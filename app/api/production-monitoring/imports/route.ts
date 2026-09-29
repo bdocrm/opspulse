@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   const [total, imports] = await prisma.$transaction([
     prisma.productionImport.count(),
     prisma.productionImport.findMany({
-      include: { importedBy: { select: { id: true, name: true } }, issues: { select: { id: true, level: true, code: true, message: true, sourceSheet: true, sourceRow: true } } },
+      select: { id: true, fileName: true, reportingPeriods: true, recordsDetected: true, recordsImported: true, recordsUpdated: true, recordsUnchanged: true, recordsSkipped: true, warningCount: true, errorCount: true, status: true, createdAt: true, completedAt: true, engine: true, importedBy: { select: { id: true, name: true } }, issues: { select: { id: true, level: true, code: true, message: true, sourceSheet: true, sourceRow: true } } },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * pageSize,
       take: pageSize,

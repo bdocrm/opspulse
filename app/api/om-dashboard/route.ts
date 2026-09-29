@@ -3,6 +3,8 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { prisma } from '@/lib/prisma';
+import { Prisma } from '@prisma/client';
+import { summarizeSmartDashboard } from '@/lib/smart-import/dashboard';
 import {
   achievementPct,
   runRate,
@@ -171,11 +173,18 @@ export async function GET(req: NextRequest) {
       };
     });
 
+    const [smartRecords, smartConfigs] = await Promise.all([
+      prisma.productionMonitoring.findMany({ where: { campaignId: campaign.id, reportYear: year, reportMonth: month, OR: [{ sourceType: 'SMART_IMPORT' }, { metricConfigSnapshot: { not: Prisma.DbNull } }] } }),
+      prisma.campaignMetricConfig.findMany({ where: { campaignId: campaign.id, isActive: true } }),
+    ]);
+    const smart = summarizeSmartDashboard(smartRecords, smartConfigs).get(campaign.id);
     return NextResponse.json({
       campaignId: campaign.id,
       campaignName: campaign.campaignName,
-      goal: campaign.monthlyGoal,
-      kpiMetric: campaign.kpiMetric,
+      goal: smart?.metrics.goal ?? campaign.monthlyGoal,
+      kpiMetric: smart?.metricType ?? campaign.kpiMetric,
+      performance: smart?.metrics ?? null,
+      importedKpis: smartRecords,
       goalType: campaign.goalType,
       agents,
     });

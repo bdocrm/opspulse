@@ -70,12 +70,19 @@ async function main() {
     { name: "AC MOBILITY", goal: 350, metric: "transmittals" },
     { name: "GAOC", goal: 350, metric: "transmittals" },
     { name: "BDO SUPPLE INVI", goal: 350, metric: "transmittals" },
+    // Append new campaigns so existing agent and collector indices stay stable.
+    // Targets were not supplied for these campaigns; configure them in Goals.
+    { name: "BPI ONLINE", goal: 0, metric: "transmittals" },
+    { name: "CBC ACQUI", goal: 0, metric: "transmittals" },
+    { name: "CBC PA", goal: 0, metric: "transmittals" },
+    { name: "CBC CCC", goal: 0, metric: "transmittals" },
+    { name: "BO", goal: 0, metric: "transmittals" },
   ];
 
   const campaigns = await Promise.all(
     campaignData.map(async (c) => {
       const existing = await prisma.campaign.findFirst({
-        where: { campaignName: c.name }
+        where: { campaignName: { equals: c.name, mode: "insensitive" } }
       });
       if (existing) return existing;
       return prisma.campaign.create({

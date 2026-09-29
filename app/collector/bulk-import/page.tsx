@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import useSWR from 'swr';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -1332,6 +1333,7 @@ export default function BulkImportPage() {
     return (
       <div className="space-y-6 p-6">
         <PageTitle title="Bulk Data Import" subtitle="Upload production dashboards, KPI workbooks, Excel files, or CSV data" />
+        <Card><CardContent className="flex flex-wrap items-center justify-between gap-3 pt-6"><div><p className="font-semibold">Monthly campaign productivity files</p><p className="text-sm text-muted-foreground">Use Smart Bulk Import to preserve every source value and review campaign/KPI changes before saving.</p></div><Link href="/production-monitoring/smart-import"><Button>Open Smart Bulk Import</Button></Link></CardContent></Card>
         <ImportProgressSteps step={step} />
 
         {error && (

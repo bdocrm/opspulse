@@ -5,6 +5,8 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { canAdminProduction, getProductionSessionUser } from "@/lib/production-access";
 import { calculateProductionAchievement } from "@/lib/production-metrics";
+import { calculate } from "@/lib/smart-import/calculation";
+import { NUMBER_FIELDS, type Config, type Numbers } from "@/lib/smart-import/types";
 
 const NUMERIC_FIELDS = ["target", "week1", "week2", "week3", "week4", "week5", "mtd", "achievement", "runRate"] as const;
 const INTEGER_FIELDS = ["workingDays", "daysLapse"] as const;
@@ -54,8 +56,10 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   const nextMtd = "mtd" in data ? data.mtd as number | null : existing.mtd;
   const nextMetricType = "metricType" in data ? data.metricType as string : existing.metricType;
   if (!("achievement" in body) && changes.some((change) => ["target", "mtd", "metricType"].includes(change.field))) {
-    const calculated = calculateProductionAchievement({ target: nextTarget, mtd: nextMtd, metricType: nextMetricType as "percentage" | "volume" | "count" | "currency" | "ratio" | "custom" });
-    setChange("achievement", existing.achievement, calculated);
+    const config = await prisma.campaignMetricConfig.findUnique({ where: { campaignId_goalType: { campaignId: existing.campaignId, goalType: nextMetricType } } });
+    const values = Object.fromEntries(NUMBER_FIELDS.map(field => [field, field in data ? data[field as keyof typeof data] : existing[field]])) as Numbers;
+    const achievement = config?.isActive ? calculate(values, config as unknown as Config).calculated.achievement ?? null : calculateProductionAchievement({ target: nextTarget, mtd: nextMtd, metricType: nextMetricType as "percentage" | "volume" | "count" | "currency" | "ratio" | "custom" });
+    setChange("achievement", existing.achievement, achievement);
   }
   try {
     const updated = await prisma.$transaction(async (tx) => {

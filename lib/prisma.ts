@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -17,3 +17,10 @@ function createPrismaClient() {
 export const prisma = globalForPrisma.prisma ?? createPrismaClient();
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+
+/** Schema-qualified identifiers for raw SQL on pooled PostgreSQL connections. */
+export function databaseTable(name: string) {
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) throw new Error('Invalid database table identifier.');
+  const schema = new URL(process.env.DATABASE_URL ?? 'postgresql://localhost/opsview').searchParams.get('schema') ?? 'public';
+  return Prisma.raw(`"${schema.replace(/"/g, '""')}"."${name}"`);
+}

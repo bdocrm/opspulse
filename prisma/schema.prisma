@@ -97,6 +97,7 @@ model Campaign {
   campaignMappings            CampaignMapping[]
   createdAt                   DateTime                 @default(now())
   updatedAt                   DateTime                 @default(now()) @updatedAt
+  metricConfigurations        CampaignMetricConfig[]
 }
 
 // Production Monitoring is deliberately campaign/business-unit centric. No
@@ -170,6 +171,14 @@ model ProductionMonitoring {
   sourceSheet        String?
   sourceRow          Int?
   sourceHash         String?
+  seat               Float?
+  rrAchievement      Float?
+  reportStatus       String?
+  sourceDateText     String?
+  sourceValues       Json?
+  calculatedValues   Json?
+  availability       Json?
+  metricConfigSnapshot Json?
   sourceAccount      String?
   sourceCampaign     String?
   campaignMappingId  String?
@@ -211,9 +220,63 @@ model ProductionImport {
   mappingAudits     CampaignMappingAudit[]
   createdAt         DateTime                @default(now())
   completedAt       DateTime?
+  engine            String?
+  fileHash          String?
+  fileType          String?
+  originalFile      Bytes?
+  inspection        Json?
+  reviewOptions     Json?
+  previewHash       String?
+  pendingCount      Int                     @default(0)
+  conflictCount     Int                     @default(0)
+  invalidCount      Int                     @default(0)
+  confirmedAt       DateTime?
+  lastError         String?
+  rawRows           ProductionImportRawRow[]
 
   @@index([importedById, createdAt])
   @@index([status, createdAt])
+  @@index([fileHash, status])
+}
+
+// Campaign-specific behavior extends the existing global metric labels.
+model CampaignMetricConfig {
+  id                String   @id @default(uuid())
+  campaignId        String
+  campaign          Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  goalType          String
+  label             String
+  unitType          String
+  calculationMethod String
+  aggregationMethod String
+  goalDirection     String   @default("HIGHER")
+  decimalPrecision  Int      @default(2)
+  tolerance         Float    @default(0.01)
+  isPercentage      Boolean  @default(false)
+  isCurrency        Boolean  @default(false)
+  isPrimary         Boolean  @default(false)
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([campaignId, goalType])
+}
+
+// Includes title/header/blank/unsupported rows, not just production candidates.
+model ProductionImportRawRow {
+  id                String           @id @default(uuid())
+  importId          String
+  import            ProductionImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  sourceSheet       String
+  sourceRow         Int
+  rawPayload        Json
+  normalizedPayload Json?
+  processingStatus  String           @default("CAPTURED")
+  validationIssues  Json?
+  createdAt         DateTime         @default(now())
+
+  @@unique([importId, sourceSheet, sourceRow])
+  @@index([importId, processingStatus])
 }
 
 // Account-scoped campaign resolution for Production Monitoring imports. The

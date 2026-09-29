@@ -1,7 +1,9 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { summarizeSmartDashboard } from "@/lib/smart-import/dashboard";
+import { databaseTable, prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import {
   aggregateRunRateMetrics,
   calculateRunRateMetrics,
@@ -92,18 +94,25 @@ export async function GET(req: NextRequest) {
       SELECT DISTINCT
         EXTRACT(YEAR FROM pe."date")::int  AS year,
         EXTRACT(MONTH FROM pe."date")::int AS month
-      FROM "ProductionEntry" pe
-      JOIN "ProductionDetail" pd ON pd."productionEntryId" = pe."id"
+      FROM ${databaseTable("ProductionEntry")} pe
+      JOIN ${databaseTable("ProductionDetail")} pd ON pd."productionEntryId" = pe."id"
       ORDER BY year DESC, month DESC
     `;
 
     // 2. workingDays / daysLapsed via raw SQL
     const cIds = campaigns.map((c) => c.id);
+    const [smartRecords, smartConfigs] = await Promise.all([
+      prisma.productionMonitoring.findMany({ where: { campaignId: { in: cIds }, OR: [{ sourceType: "SMART_IMPORT" }, { metricConfigSnapshot: { not: Prisma.DbNull } }], reportYear: year, ...(allMonths ? {} : { reportMonth: month }) } }),
+      prisma.campaignMetricConfig.findMany({ where: { campaignId: { in: cIds }, isActive: true } }),
+    ]);
+    const smartSummaries = summarizeSmartDashboard(smartRecords, smartConfigs);
+    const smartPeriods = await prisma.productionMonitoring.findMany({ where: { OR: [{ sourceType: "SMART_IMPORT" }, { metricConfigSnapshot: { not: Prisma.DbNull } }] }, select: { reportYear: true, reportMonth: true }, distinct: ["reportYear", "reportMonth"] });
+    availablePeriods = [...new Map([...availablePeriods, ...smartPeriods.map(row => ({ year: row.reportYear, month: row.reportMonth }))].map(period => [`${period.year}-${period.month}`, period])).values()];
     let extras: { id: string; workingDays: number; daysLapsed: number }[] = [];
     if (cIds.length > 0) {
       extras = await prisma.$queryRaw<any[]>`
         SELECT id, "workingDays", "daysLapsed"
-        FROM "Campaign"
+        FROM ${databaseTable("Campaign")}
         WHERE id = ANY(${cIds}::text[])
       `;
     }
@@ -235,7 +244,7 @@ export async function GET(req: NextRequest) {
       }
     }
     const dashboardPeriods = await prisma.$queryRaw<Array<{ year: number; month: number }>>`
-      SELECT DISTINCT "year", "month" FROM "DashboardImportRecord" WHERE "month" IS NOT NULL ORDER BY "year" DESC, "month" DESC
+      SELECT DISTINCT "year", "month" FROM ${databaseTable("DashboardImportRecord")} WHERE "month" IS NOT NULL ORDER BY "year" DESC, "month" DESC
     `.catch(() => []);
     availablePeriods = [...new Map([...availablePeriods, ...dashboardPeriods].map((period) => [`${period.year}-${period.month}`, period])).values()]
       .sort((a, b) => b.year - a.year || b.month - a.month);
@@ -315,18 +324,22 @@ export async function GET(req: NextRequest) {
           now,
         });
       });
-      const metrics = aggregateRunRateMetrics(periodMetrics, "team");
+      const smartSummary = smartSummaries.get(c.id);
+      const metrics = smartSummary?.metrics ?? aggregateRunRateMetrics(periodMetrics, "team");
 
       return {
         id: c.id,
         campaignName: c.campaignName,
-        hasData: details.length > 0 || imported.length > 0,
+        hasData: details.length > 0 || imported.length > 0 || Boolean(smartSummary),
         // Show the metric that actually drives MTD (NTB for acquisition campaigns).
-        kpiMetric: isAcqCampaign(c.campaignName) ? "ntb" : bpiCurrencyCampaigns.has(c.id) ? "volume" : c.kpiMetric,
+        kpiMetric: smartSummary?.metricType ?? (isAcqCampaign(c.campaignName) ? "ntb" : bpiCurrencyCampaigns.has(c.id) ? "volume" : c.kpiMetric),
+        unitType: smartSummary?.unitType,
+        reportDate: smartSummary?.reportDate,
+        reportStatus: smartSummary?.reportStatus,
         goal: metrics.goal,
-        mtd: metrics.mtdProduction == null ? null : Math.round(metrics.mtdProduction),
+        mtd: metrics.mtdProduction == null ? null : smartSummary ? metrics.mtdProduction : Math.round(metrics.mtdProduction),
         achievement: metrics.achievementPercentage,
-        runRate: metrics.projectedRunRate == null ? null : Math.round(metrics.projectedRunRate),
+        runRate: metrics.projectedRunRate == null ? null : smartSummary ? metrics.projectedRunRate : Math.round(metrics.projectedRunRate),
         rrAchievement: metrics.runRateAchievementPercentage,
         workingDays: metrics.totalWorkingDays,
         daysLapsed: metrics.elapsedWorkingDays,
@@ -344,7 +357,7 @@ export async function GET(req: NextRequest) {
 
     // 6. Aggregated KPI cards
     const combinedMetrics = aggregateRunRateMetrics(
-      campaignsWithData.map((campaign) => campaign.metrics),
+      campaignsWithData.filter(campaign => !["PERCENTAGE", "RATE", "SCORE"].includes(campaign.unitType ?? "")).map((campaign) => campaign.metrics),
       "team"
     );
     const totalMTD = combinedMetrics.mtdProduction;
@@ -376,7 +389,7 @@ export async function GET(req: NextRequest) {
 
     // 9. Distribution (each campaign's share of total MTD)
     const distribution = campaignsWithData
-      .filter((c) => Number(c.mtd ?? 0) > 0)
+      .filter((c) => Number(c.mtd ?? 0) > 0 && !["PERCENTAGE", "RATE", "SCORE"].includes(c.unitType ?? ""))
       .map((c) => ({ name: c.campaignName, value: Number(c.mtd) }));
 
     // 10. Agent leaderboard (top 10 by the per-campaign metric)
@@ -449,6 +462,7 @@ export async function GET(req: NextRequest) {
     const sourceTimestamps = [
       ...allDetails.map((detail) => detail.productionEntry.createdAt),
       ...dashboardRows.map((record) => record.updatedAt),
+      ...smartRecords.map(record => record.updatedAt),
     ];
     const lastUpdated = sourceTimestamps.length > 0
       ? new Date(Math.max(...sourceTimestamps.map((timestamp) => timestamp.getTime()))).toISOString()
@@ -470,6 +484,7 @@ export async function GET(req: NextRequest) {
       leaderboard,
       availablePeriods,
       lastUpdated,
+      importedKpis: smartRecords.map(row => ({ campaignId: row.campaignId, campaignName: campaignNameById.get(row.campaignId), metricType: row.metricType, month: row.reportMonth, year: row.reportYear, goal: row.target, actual: row.mtd, achievement: row.achievement, runRate: row.runRate, rrAchievement: row.rrAchievement, reportDate: row.dateUpdated, reportStatus: row.reportStatus, unitType: smartConfigs.find(config => config.campaignId === row.campaignId && config.goalType === row.metricType)?.unitType ?? row.metricUnit })),
     }, {
       headers: {
         "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",

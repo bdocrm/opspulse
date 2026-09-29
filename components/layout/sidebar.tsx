@@ -45,6 +45,7 @@ const defaultLinks: SidebarLink[] = [
   { href: "/reports/campaign-performance", label: "Agent Performance", icon: Zap, roles: ['CEO', 'OM'] },
   { href: "/performance/kpi", label: "KPI Monitoring", icon: Gauge, roles: ['CEO', 'SMT', 'OM', 'AGENT'] },
   { href: "/production-monitoring", label: "Production Monitoring", icon: Factory, roles: ['CEO', 'SMT', 'OM', 'COLLECTOR', 'AGENT'] },
+  { href: "/production-monitoring/smart-import", label: "Smart Bulk Import", icon: Zap, roles: ['CEO', 'OM', 'COLLECTOR'] },
   { href: "/om-dashboard", label: "OM Dashboard", icon: Gauge, roles: ['OM'] },
   { href: "/presentation", label: "OpsView Deck", icon: Projector, roles: ['CEO', 'OM'] },
   { href: "/my-account", label: "My Account", icon: UserCircle },
@@ -64,6 +65,7 @@ const collectorLinks: SidebarLink[] = [
   { href: "/collector/bulk-import", label: "Bulk Import", icon: Zap },
   { href: "/performance/kpi", label: "KPI Monitoring", icon: Gauge },
   { href: "/production-monitoring", label: "Production Monitoring", icon: Factory },
+  { href: "/production-monitoring/smart-import", label: "Smart Bulk Import", icon: Zap },
 ];
 
 const groupedLinkSections = [
@@ -78,6 +80,7 @@ const groupedLinkSections = [
       "/om-dashboard",
       "/performance/kpi",
       "/production-monitoring",
+      "/production-monitoring/smart-import",
     ],
   },
   {

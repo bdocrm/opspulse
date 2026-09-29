@@ -38,7 +38,9 @@ export async function GET() {
       }),
       prisma.productionMetricTypeConfig.findMany({ where: { isActive: true }, orderBy: { label: "asc" } }),
     ]);
-    return { campaigns, businessUnits, periods, metricTypes };
+    const smartMetrics = await prisma.campaignMetricConfig.findMany({ where: { isActive: true, ...(scope.campaignId ? { campaignId: scope.campaignId } : {}) }, select: { goalType: true, label: true, unitType: true } });
+    const combinedTypes = [...new Map([...metricTypes, ...smartMetrics.map(config => ({ metricType: config.goalType, label: config.label, defaultUnit: config.unitType }))].map(metric => [metric.metricType, metric])).values()];
+    return { campaigns, businessUnits, periods, metricTypes: combinedTypes };
   });
 
   return NextResponse.json({ ...data, canAdmin: canAdminProduction(user) });

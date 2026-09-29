@@ -72,7 +72,7 @@ export async function GET(request: NextRequest) {
       skip: (page - 1) * pageSize,
       take: pageSize,
     }),
-    prisma.productionMonitoring.findMany({ where, select: { campaignId: true, businessUnitId: true, metricType: true, target: true, mtd: true, achievement: true } }),
+    prisma.productionMonitoring.findMany({ where, select: { campaignId: true, businessUnitId: true, metricType: true, metricUnit: true, metricConfigSnapshot: true, target: true, mtd: true, achievement: true } }),
   ]);
   const metricGroups = new Map<string, typeof summaryRows>();
   for (const row of summaryRows) metricGroups.set(row.metricType, [...(metricGroups.get(row.metricType) ?? []), row]);
@@ -81,11 +81,14 @@ export async function GET(request: NextRequest) {
     const mtdValues = rows.map((row) => row.mtd).filter((value): value is number => value != null);
     const achievements = rows.map((row) => row.achievement).filter((value): value is number => value != null);
     const average = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+    const rate = type === "percentage" || type === "ratio" || rows.some(row => ["PERCENTAGE", "RATE", "SCORE"].includes(row.metricUnit ?? ""));
+    const additive = rows.every(row => !row.metricConfigSnapshot || (row.metricConfigSnapshot as { aggregationMethod?: string }).aggregationMethod === "SUM");
+    const total = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) : null;
     return {
       metricType: type,
       recordCount: rows.length,
-      target: type === "percentage" || type === "ratio" ? average(targets) : targets.reduce((sum, value) => sum + value, 0),
-      mtd: type === "percentage" || type === "ratio" ? average(mtdValues) : mtdValues.reduce((sum, value) => sum + value, 0),
+      target: rows.length === 1 ? rows[0].target : rate ? average(targets) : additive ? total(targets) : null,
+      mtd: rows.length === 1 ? rows[0].mtd : rate ? average(mtdValues) : additive ? total(mtdValues) : null,
       averageAchievement: average(achievements),
     };
   });

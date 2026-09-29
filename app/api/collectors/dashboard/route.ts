@@ -17,6 +17,7 @@ import {
 } from "@/lib/bdo-ccc-kpi";
 import { isSelectedPeriod, monthName, monthSelectionRange, normalizeMonthSelection } from "@/lib/month-selection";
 import { summarizeProductionMonitoringForDashboard } from "@/lib/production-monitoring-dashboard";
+import { summarizeSmartDashboard } from "@/lib/smart-import/dashboard";
 import {
   isPrimaryImportedPerformanceRecord,
   mostCommonImportedTarget,
@@ -377,6 +378,16 @@ export async function GET(req: NextRequest) {
           target: true,
           mtd: true,
           updatedAt: true,
+          sourceType: true,
+          metricConfigSnapshot: true,
+          achievement: true,
+          runRate: true,
+          rrAchievement: true,
+          workingDays: true,
+          daysLapse: true,
+          dateUpdated: true,
+          reportStatus: true,
+          campaign: { select: { metricConfigurations: { where: { isActive: true } } } },
         },
       }).catch(() => []),
       prisma.collectorKpiRecord.findMany({
@@ -575,7 +586,13 @@ export async function GET(req: NextRequest) {
     const monitoringRecords = rawMonitoringRecords.filter((record) =>
       periodSelected(record.reportYear, record.reportMonth)
     );
-    const monitoringSummaryByCampaign = summarizeProductionMonitoringForDashboard(monitoringRecords);
+    const isSmart = (row: typeof monitoringRecords[number]) => row.sourceType === "SMART_IMPORT" || row.metricConfigSnapshot != null;
+    const monitoringSummaryByCampaign = summarizeProductionMonitoringForDashboard(monitoringRecords.filter(row => !isSmart(row)));
+    const smartSummaries = summarizeSmartDashboard(monitoringRecords.filter(isSmart), monitoringRecords.flatMap(row => row.campaign.metricConfigurations));
+    for (const [campaignId, smart] of smartSummaries) {
+      const records = monitoringRecords.filter(row => row.campaignId === campaignId && isSmart(row));
+      monitoringSummaryByCampaign.set(campaignId, { campaignId, goal: smart.metrics.goal, actual: smart.metrics.mtdProduction, achievementPercent: smart.metrics.achievementPercentage, metricType: smart.metricType, recordCount: records.length, periodCount: new Set(records.map(row => `${row.reportYear}-${row.reportMonth}`)).size, lastUpdated: new Date(Math.max(...records.map(row => row.updatedAt.getTime()))) });
+    }
     const importedActual = (record: (typeof dashboardAgentRecords)[number]) => {
       if (record.actual != null) return Number(record.actual);
       if (record.target != null && record.achievement != null) return Math.round(Number(record.target) * Number(record.achievement));
@@ -1676,9 +1693,9 @@ export async function GET(req: NextRequest) {
         kpiMetric: resolvedKpiMetric,
         goal: campaignAchievement.goal,
         actual: resolvedActual,
-        achievement: campaignAchievement.achievementPercent,
+        achievement: smartSummaries.get(c.id)?.metrics.achievementPercentage ?? campaignAchievement.achievementPercent,
         campaignProduction: campaignAchievement.production,
-        achievementPercent: campaignAchievement.achievementPercent,
+        achievementPercent: smartSummaries.get(c.id)?.metrics.achievementPercentage ?? campaignAchievement.achievementPercent,
         goalStatus: campaignAchievement.goalStatus,
         dataStatus: campaignAchievement.dataStatus,
         agentCount: campaignAchievement.agentCount,

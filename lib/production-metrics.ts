@@ -31,14 +31,14 @@ export function formatProductionMetric(
   metricUnit?: string | null
 ) {
   if (value == null || !Number.isFinite(value)) return "—";
-  if (metricType === "percentage") {
+  if (metricType === "percentage" || metricUnit === "PERCENTAGE") {
     return new Intl.NumberFormat("en-US", {
       style: "percent",
       minimumFractionDigits: 1,
       maximumFractionDigits: 2,
     }).format(value);
   }
-  if (metricType === "currency") {
+  if (metricType === "currency" || metricUnit === "CURRENCY") {
     return new Intl.NumberFormat("en-PH", {
       style: "currency",
       currency: metricUnit === "USD" ? "USD" : "PHP",

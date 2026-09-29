@@ -18,6 +18,7 @@ export interface ExecutiveCampaignMetric {
   achievement: number | null;
   runRate: number | null;
   rrAchievement: number | null;
+  unitType?: string;
 }
 
 export interface CampaignInsight extends ExecutiveCampaignMetric {

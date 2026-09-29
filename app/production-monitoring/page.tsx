@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useSession } from "next-auth/react";
+import { canImport } from "@/lib/permissions";
 import useSWR from "swr";
 import { AlertTriangle, ArrowDown, ArrowUp, Building2, FileClock, Gauge, Search, Target, TrendingUp } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -46,6 +48,7 @@ const statusOptions = [
 ];
 
 export default function ProductionMonitoringPage() {
+  const { data: session } = useSession();
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [campaignId, setCampaignId] = useState("ALL");
@@ -91,6 +94,7 @@ export default function ProductionMonitoringPage() {
   return <div className="space-y-6">
     <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
       <PageTitle className="mb-0" title="Production Monitoring" subtitle="Campaign and business-unit production performance across reporting periods." />
+      {canImport(session?.user?.role) && <Link href="/production-monitoring/smart-import"><Button>Smart Bulk Import</Button></Link>}
       {options?.canAdmin && <div className="flex flex-wrap gap-2"><Link href="/production-monitoring/admin"><Button variant="outline">Configuration</Button></Link><Link href="/production-monitoring/imports"><Button variant="outline" className="gap-2"><FileClock className="h-4 w-4" />Import history</Button></Link><ProductionImportDialog onImported={refresh} /></div>}
     </div>
     <Card><CardContent className="grid gap-3 pt-6 sm:grid-cols-2 lg:grid-cols-6">

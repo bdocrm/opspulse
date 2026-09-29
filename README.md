@@ -96,6 +96,29 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Features
 
+### Smart Bulk Import
+
+Open **Production Monitoring → Smart Bulk Import**, or use its link on the Collector Bulk Import page. CEO, OM, and Collector users can upload Excel/CSV files; OM/Collector production writes remain limited to assigned campaigns. Raw source history is visible to the uploader and CEO.
+
+The importer stages the original file and every worksheet row, including unknown columns, blanks, formulas, evaluated values, errors, and metadata. Nothing is written to current production until the preview is confirmed. Review sheet/header/column mappings, campaign matches, new campaign/KPI configurations, reporting periods, and competing source rows; revalidate after changing any mapping. Percent text and native Excel percentages use fractions internally (85% = 0.85); unformatted numeric percentages must already use fractions.
+
+Current campaign/KPI/month values reuse `ProductionMonitoring`. Import history extends `ProductionImport`, with complete source rows in `ProductionImportRawRow` and field changes in `ProductionMonitoringAudit`. New campaign-specific KPI rules live in `CampaignMetricConfig`; stored configurations take precedence over suggestions. Confirmed campaign aliases and KPI rules are remembered. Choose a primary KPI when a campaign has several KPIs; percentages/rates are never added to campaign production totals.
+
+Older reporting dates are saved as historical snapshots. Blank/pending updates preserve existing valid values. Explicit zero remains zero. Re-imports skip identical data, stale previews require revalidation, and repeated confirmations of a batch do not write twice. A transaction failure rolls back all production/config/audit writes while retaining staged data and the failure reason. Sources and calculated figures are stored separately; partial weeks are not treated as a complete monthly total, and weighted/custom calculations require source values when weights/formulas are unavailable.
+
+Supported uploads: `.xlsx`, `.xls`, `.csv`, up to 10 MB. Inspection rejects files beyond 50,000 rows or 1,000 columns per sheet, 250,000 total cells, or 50 MB expanded XLSX content instead of truncating data. Macros and uploaded formulas are never executed. Original sources can be downloaded, and problematic rows can be exported as a formula-safe CSV.
+
+Deploy the additive migration `20260929010000_smart_bulk_import` and regenerate Prisma before running the updated app. Existing campaign completion migration `20260929000000_complete_campaign_list` remains separate. No reset or seed is needed.
+
+Validation:
+
+```bash
+npm test
+npm run test:smart-import:db
+```
+
+The second command needs `DATABASE_URL` and permission to create a temporary schema. It runs real PostgreSQL tests in a unique `opsview_smart_import_test_*` schema and removes only that schema afterwards. Neon testing uses a direct connection to keep test schema settings out of the application's transaction pool.
+
 - **Role-based access** — ADMIN, MANAGER, AGENT
 - **Dashboard** — KPI cards, bar/line/pie charts, leaderboard, campaign table
 - **Campaign Monitoring** — Per-campaign detail with weekly breakdown & agent drill-down
