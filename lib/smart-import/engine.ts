@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { matchImportCampaign } from "./campaign-mapping";
 import { calculate } from "./calculation";
 import { cellText, detectPeriod, nonEmpty, normalizeName, normalizeNumber, parseReportDate } from "./normalization";
 import { identifyHeader } from "./headers";
@@ -54,9 +55,9 @@ export function buildCandidates(rawRows: RawRow[], inspection: Inspection, optio
       if (!campaignSource && !goalLabel && !NUMBER_FIELDS.some(field => nonEmpty(get(field) ?? { address: "", type: null, value: null, formatted: null, formula: null, numberFormat: null }))) continue;
       const normalizedCampaign = normalizeName(campaignSource);
       const goalType = normalizeName(goalLabel);
-      const exact = context.campaigns.filter(campaign => normalizeName(campaign.name) === normalizedCampaign || campaign.aliases.includes(normalizedCampaign));
+      const automaticMatch = matchImportCampaign(campaignSource, context.campaigns);
       const mappedId = options.campaignMappings[normalizedCampaign];
-      const campaign = mappedId ? context.campaigns.find(item => item.id === mappedId) : exact.length === 1 ? exact[0] : null;
+      const campaign = mappedId ? context.campaigns.find(item => item.id === mappedId) : automaticMatch?.campaign ?? null;
       const id = rowKey(raw.sourceSheet, raw.sourceRow);
       const key = campaign && goalType ? configKey(campaign.id, goalType) : null;
       let config = key ? context.configs.find(item => item.campaignId === campaign?.id && item.goalType === goalType) ?? options.configs[key] ?? configs[key] : null;
@@ -65,6 +66,7 @@ export function buildCandidates(rawRows: RawRow[], inspection: Inspection, optio
       const source = Object.fromEntries(NUMBER_FIELDS.map(field => [field, null])) as Numbers;
       const availability: Candidate["availability"] = {};
       const issues: Candidate["issues"] = [];
+      if (!mappedId && campaign && automaticMatch?.automaticVariation) issues.push({ code: "CAMPAIGN_AUTO_MAPPED", level: "WARNING", message: `Automatically mapped "${campaignSource}" to "${campaign.name}" using a unique name or saved alias variation. Confirm the campaign in the preview before importing.` });
       if (!columns.has("campaign") || !campaignSource) issues.push({ code: "CAMPAIGN_REQUIRED", level: "ERROR", message: "Campaign is required. Map the campaign column." });
       if (!columns.has("goalType") || !goalType) issues.push({ code: "KPI_REQUIRED", level: "ERROR", message: "KPI / goal type is required. Map the KPI column." });
       if (get("campaign")?.type === "e" || /^#/.test(campaignSource)) issues.push({ code: "INVALID_CAMPAIGN", level: "ERROR", message: "An Excel error cannot identify a campaign. Correct the source campaign." });

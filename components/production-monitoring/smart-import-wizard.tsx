@@ -155,7 +155,7 @@ export function SmartImportWizard() {
   };
 
   return <div className="space-y-6">
-    <div className="flex flex-wrap items-start justify-between gap-3"><PageTitle className="mb-0" title="Smart Bulk Import" subtitle="Inspect, reconcile, and confirm campaign productivity files." /><div className="flex gap-2"><Button variant="outline" disabled={Boolean(busy)} onClick={() => showHistory()}><History className="mr-2 h-4 w-4" />Import history</Button><Link href="/production-monitoring"><Button variant="outline">View imported records</Button></Link></div></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><PageTitle className="mb-0" title="Smart Bulk Import" subtitle="Upload productivity files with automatic campaign matching, then review and confirm." /><div className="flex gap-2"><Button variant="outline" disabled={Boolean(busy)} onClick={() => showHistory()}><History className="mr-2 h-4 w-4" />Import history</Button><Link href="/production-monitoring"><Button variant="outline">View imported records</Button></Link></div></div>
     <ol className="flex flex-wrap gap-3 text-xs text-muted-foreground" aria-label="Import progress">{["Upload", "Inspect & map", "Validate & review", "Confirm", "Result"].map((step, index) => <li key={step} className={index === (result ? 4 : preview ? dirty ? 1 : 2 : 0) ? "font-semibold text-primary" : ""}>{index + 1}. {step}</li>)}</ol>
     {busy && <div role="status" className="flex items-center gap-2 rounded-lg border bg-muted/30 p-3 text-sm"><Loader2 className="h-4 w-4 animate-spin" />{busy}…</div>}
     {error && <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-400">{error}</div>}

@@ -1,3 +1,4 @@
+import { matchImportCampaign } from "./campaign-mapping";
 import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
 import { parseFile, readUpload } from "./parser";
@@ -131,6 +132,34 @@ describe("reconciliation and integrity", () => {
     expect(parse().candidates[0].campaignId).toBe("bpi");
     const changed = [...row]; changed[0] = "BPI PLL";
     expect(parse([headers, changed]).candidates[0].campaignId).toBeNull();
+  });
+  it.each(["BPIPL", "PL BPI", "BPI PL Campaign"])("automatically maps an unambiguous campaign variation: %s", name => {
+    const changed = [...row]; changed[0] = name;
+    const candidate = parse([headers, changed]).candidates[0];
+    expect(candidate.campaignId).toBe("bpi");
+    expect(candidate.action).toBe("INSERT");
+    expect(candidate.issues.some(issue => issue.code === "CAMPAIGN_AUTO_MAPPED")).toBe(true);
+  });
+  it("maps saved alias variations and keeps exact names ahead of variation matches", () => {
+    const campaigns = [{ id: "one", name: "BPI PA OUTBOUND", aliases: ["BPI OUT"] }, { id: "two", name: "OUT BPI", aliases: [] }];
+    expect(matchImportCampaign("BPIPAOUTBOUND", campaigns)?.campaign.id).toBe("one");
+    expect(matchImportCampaign("BPI OUT", campaigns)?.campaign.id).toBe("one");
+    expect(matchImportCampaign("OUT BPI", campaigns)?.campaign.id).toBe("two");
+    expect(matchImportCampaign("BPIOUT", campaigns)?.campaign.id).toBe("one");
+  });
+  it("requires manual mapping for ambiguous names, typos, broad groups and inaccessible campaigns", () => {
+    const campaigns = [{ id: "one", name: "BPI PL", aliases: [] }, { id: "two", name: "B PIPL", aliases: [] }];
+    expect(matchImportCampaign("BPIPL", campaigns)).toBeNull();
+    expect(matchImportCampaign("BPI PLL", campaigns)).toBeNull();
+    expect(matchImportCampaign("ALL BPI CAMPAIGN", campaigns)).toBeNull();
+    expect(matchImportCampaign("BPI PA OUTBOUND", campaigns)).toBeNull();
+    expect(matchImportCampaign("#REF!", campaigns)).toBeNull();
+  });
+  it("keeps explicit authorized mapping overrides", () => {
+    const result = parse();
+    const extra = { id: "other", name: "BPI PA", aliases: [] };
+    result.options.campaignMappings["BPI PL"] = extra.id;
+    expect(buildCandidates(result.rows, result.inspection, result.options, { ...context, campaigns: [...context.campaigns, extra] }).candidates[0].campaignId).toBe(extra.id);
   });
   it("identifies an exact existing duplicate", () => {
     expect(parse([headers, row], { ...context, existing: [current()] }).candidates[0]).toMatchObject({ status: "DUPLICATE", action: "SKIP", changes: [] });
