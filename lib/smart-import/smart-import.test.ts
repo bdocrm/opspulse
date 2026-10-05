@@ -5,7 +5,7 @@ import { buildCandidates, defaultOptions, type Context, type ExistingRecord } fr
 import { calculate } from "./calculation";
 import { identifyHeader } from "./headers";
 import { cellText, normalizeNumber, parseReportDate } from "./normalization";
-import { configKey, NUMBER_FIELDS, type Config, type Numbers, type RawCell } from "./types";
+import { configKey, SKIP_CONFLICT, NUMBER_FIELDS, type Config, type Numbers, type RawCell } from "./types";
 import { validateOptions } from "./review";
 import { csvCell } from "./export";
 import { summarizeSmartDashboard, type SmartDashboardRecord } from "./dashboard";
@@ -165,6 +165,26 @@ describe("reconciliation and integrity", () => {
     const resolved = buildCandidates(result.rows, result.inspection, result.options, context).candidates;
     expect(resolved[0].action).toBe("INSERT");
     expect(resolved[1].action).toBe("SKIP");
+  });
+  it("skips an invalid conflict group while leaving other valid records importable", () => {
+    const invalid = [...row]; invalid[15] = "#REF!";
+    const competing = [...invalid]; competing[3] = 50;
+    const result = parse([headers, row, invalid, competing]);
+    const key = result.candidates[0].key!;
+    result.options.conflictSelections[key] = SKIP_CONFLICT;
+    // Use a separate KPI/month for the valid row.
+    result.rows[1].cells[15].value = "September 1, 2026 final";
+    const resolved = buildCandidates(result.rows, result.inspection, result.options, context).candidates;
+    expect(resolved[0].action).toBe("INSERT");
+    for (const candidate of resolved.slice(1)) {
+      expect(candidate.action).toBe("SKIP");
+      expect(candidate.issues.some(issue => issue.code === "INVALID_REPORT_DATE")).toBe(true);
+      expect(candidate.issues.some(issue => issue.code === "CONFLICT_SKIPPED")).toBe(true);
+      expect(candidate.conflictRows).toHaveLength(1);
+    }
+    expect(result.rows[2].cells[15].value).toBe("#REF!");
+    result.options.conflictSelections[key] = "";
+    expect(buildCandidates(result.rows, result.inspection, result.options, context).candidates[1].action).toBe("BLOCK");
   });
   it("saves pending values as NULL and validates elapsed-day bounds", () => {
     const changed = [...row]; changed[9] = "not yet available"; changed[8] = "";

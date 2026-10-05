@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { calculate } from "./calculation";
 import { cellText, detectPeriod, nonEmpty, normalizeName, normalizeNumber, parseReportDate } from "./normalization";
 import { identifyHeader } from "./headers";
-import { configKey, NUMBER_FIELDS, rowKey, SUMMARY_UNIT, type Candidate, type Config, type Field, type Inspection, type Numbers, type RawCell, type RawRow, type ReviewOptions } from "./types";
+import { configKey, SKIP_CONFLICT, NUMBER_FIELDS, rowKey, SUMMARY_UNIT, type Candidate, type Config, type Field, type Inspection, type Numbers, type RawCell, type RawRow, type ReviewOptions } from "./types";
 
 export type ExistingRecord = Numbers & { id: string; campaignId: string; businessUnitId: string; reportYear: number; reportMonth: number; metricType: string; dateUpdated: Date | string | null; updatedAt: Date | string; reportStatus?: string | null; metricUnit?: string | null; sourceDateText?: string | null };
 export type Context = { campaigns: { id: string; name: string; aliases: string[] }[]; units: { id: string; campaignId: string; normalizedName: string }[]; configs: Config[]; existing: ExistingRecord[] };
@@ -133,7 +133,14 @@ export function buildCandidates(rawRows: RawRow[], inspection: Inspection, optio
   for (const group of groups.values()) if (group.length > 1) {
     const fingerprints = new Set(group.map(row => row.sourceHash));
     const chosen = group[0].key ? options.conflictSelections[group[0].key] : null;
-    if (chosen && group.some(row => row.rowKey === chosen)) {
+    // Keep the group visible after review so the skip decision can be changed.
+    if (fingerprints.size > 1 || chosen) for (const row of group) row.conflictRows = group.filter(other => other !== row).map(other => other.rowKey);
+    if (chosen === SKIP_CONFLICT) {
+      for (const row of group) {
+        row.action = "SKIP";
+        row.issues.push({ code: "CONFLICT_SKIPPED", level: "WARNING", message: "This campaign/KPI/month was skipped during conflict review. Other valid records can be imported; original values and validation errors remain in history." });
+      }
+    } else if (chosen && group.some(row => row.rowKey === chosen)) {
       for (const row of group) if (row.rowKey !== chosen) {
         row.action = "SKIP";
         row.issues.push({ code: "CONFLICT_NOT_SELECTED", level: "WARNING", message: "A different source row was selected during conflict review. This row is retained in history." });

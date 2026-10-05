@@ -1,3 +1,4 @@
+export const SKIP_CONFLICT = "SKIP_CONFLICT";
 export const FIELDS = ["campaign", "goalType", "seat", "target", "week1", "week2", "week3", "week4", "week5", "mtd", "achievement", "runRate", "rrAchievement", "workingDays", "daysLapse", "dateUpdated"] as const;
 export type Field = typeof FIELDS[number];
 export const NUMBER_FIELDS = FIELDS.filter(field => !["campaign", "goalType", "dateUpdated"].includes(field)) as Exclude<Field, "campaign" | "goalType" | "dateUpdated">[];
