@@ -128,6 +128,16 @@ describe("reconciliation and integrity", () => {
     expect(candidate.status).toBe("INVALID");
     expect(candidate.issues.some(issue => issue.code === "KPI_CONFIGURATION_REQUIRED")).toBe(true);
   });
+  it("does not classify production amounts as percentages because achievement columns contain percent values", () => {
+    const result = parse(); result.options.configs = {};
+    const suggested = buildCandidates(result.rows, result.inspection, result.options, context).candidates[0];
+    expect(suggested.config?.unitType).toBe("CURRENCY");
+    result.options.configs[configKey("bpi", "BOOKED VOLUME")] = { ...suggested.config!, reviewed: true };
+    const confirmed = buildCandidates(result.rows, result.inspection, result.options, context).candidates[0];
+    expect(confirmed.action).toBe("INSERT");
+    expect(confirmed.values.target).toBe(100);
+    expect(confirmed.issues.some(issue => issue.code === "KPI_CONFIGURATION_REQUIRED")).toBe(false);
+  });
   it("matches campaign whitespace/case without fuzzy-merging separate names", () => {
     expect(parse().candidates[0].campaignId).toBe("bpi");
     const changed = [...row]; changed[0] = "BPI PLL";

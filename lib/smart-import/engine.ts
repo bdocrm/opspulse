@@ -61,7 +61,7 @@ export function buildCandidates(rawRows: RawRow[], inspection: Inspection, optio
       const id = rowKey(raw.sourceSheet, raw.sourceRow);
       const key = campaign && goalType ? configKey(campaign.id, goalType) : null;
       let config = key ? context.configs.find(item => item.campaignId === campaign?.id && item.goalType === goalType) ?? options.configs[key] ?? configs[key] : null;
-      if (!config && campaign && goalType) config = suggestConfig(campaign.id, goalType, goalLabel, raw.cells);
+      if (!config && campaign && goalType) config = suggestConfig(campaign.id, goalType, goalLabel, NUMBER_FIELDS.filter(field => !["achievement", "rrAchievement"].includes(field)).map(get).filter((cell): cell is RawCell => Boolean(cell)));
       if (key && config) configs[key] = config;
       const source = Object.fromEntries(NUMBER_FIELDS.map(field => [field, null])) as Numbers;
       const availability: Candidate["availability"] = {};
