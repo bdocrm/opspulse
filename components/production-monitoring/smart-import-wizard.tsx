@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
 import { useRouter } from "next/navigation";
 import { Upload, Loader2, History, Download, AlertTriangle, CheckCircle2 } from "lucide-react";
@@ -39,6 +39,7 @@ export function SmartImportWizard() {
   const [confirm, setConfirm] = useState(false);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [filter, setFilter] = useState("ALL");
+  const [campaignFilter, setCampaignFilter] = useState("");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("sourceRow");
   const [ascending, setAscending] = useState(true);
@@ -46,6 +47,7 @@ export function SmartImportWizard() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [raw, setRaw] = useState<Record<string, unknown> | null>(null);
   const rawRequest = useRef(0);
+  const receivedBatchId = useRef<string | null>(null);
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
   const [historyPage, setHistoryPage] = useState(1);
   const [historyPages, setHistoryPages] = useState(1);
@@ -55,12 +57,14 @@ export function SmartImportWizard() {
   const readOnly = Boolean(preview && !["STAGED", "READY", "FAILED"].includes(preview.status));
   const duplicatesOnly = Boolean(preview && preview.summary.duplicates > 0 && preview.summary.ready === 0);
 
-  function receive(data: Preview) {
+  const receive = useCallback((data: Preview) => {
+    if (data.id !== receivedBatchId.current) setCampaignFilter("");
+    receivedBatchId.current = data.id;
     setPreview(data); setOptions({ ...data.options, configs: data.configs }); setSelected(new Set(data.records.filter(row => row.action !== "BLOCK" && row.action !== "SKIP").map(row => row.rowKey)));
     setDirty(false); setPage(1); setExpanded(null); setRaw(null); setResult(data.result ?? null); setHistory(null);
     setSourceSheet(data.inspection.sheets[0]?.name ?? ""); setSourceRow(1); setSourceData(null);
     window.history.replaceState(null, "", `${window.location.pathname}?batch=${encodeURIComponent(data.id)}`);
-  }
+  }, []);
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get("batch");
     if (!id) return;
@@ -68,7 +72,7 @@ export function SmartImportWizard() {
     setBusy("Loading saved preview");
     request<Preview>(`${endpoint}/${encodeURIComponent(id)}`).then(data => { if (active) receive(data); }).catch(error => { if (active) setError(error.message); }).finally(() => { if (active) setBusy(""); });
     return () => { active = false; };
-  }, []);
+  }, [receive]);
   function change(next: ReviewOptions) { setOptions(next); setDirty(true); setResult(null); }
   async function analyze() {
     if (!file || busy) return;
@@ -122,14 +126,15 @@ export function SmartImportWizard() {
     try { setSourceData(await request<Record<string, unknown>>(`${endpoint}/${preview.id}?format=raw&sheet=${encodeURIComponent(sourceSheet)}&row=${sourceRow}`)); }
     catch (error) { setError((error as Error).message); } finally { setBusy(""); }
   }
+  const campaignOptions = useMemo(() => [...new Set((preview?.records ?? []).map(row => row.campaignName ?? row.campaignSource).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [preview]);
   const filtered = useMemo(() => {
-    const rows = (preview?.records ?? []).filter(row => (filter === "ALL" || row.status === filter || (filter === "WARNING" && row.issues.some(issue => issue.level === "WARNING"))) && `${row.campaignSource} ${row.goalLabel} ${row.sourceSheet} ${row.issues.map(issue => issue.message).join(" ")}`.toLowerCase().includes(search.toLowerCase()));
+    const rows = (preview?.records ?? []).filter(row => (!campaignFilter || (row.campaignName ?? row.campaignSource) === campaignFilter) && (filter === "ALL" || row.status === filter || (filter === "WARNING" && row.issues.some(issue => issue.level === "WARNING"))) && `${row.campaignSource} ${row.goalLabel} ${row.sourceSheet} ${row.issues.map(issue => issue.message).join(" ")}`.toLowerCase().includes(search.toLowerCase()));
     return rows.sort((a, b) => {
       const av = sort === "mtd" ? a.values.mtd : a[sort as "sourceRow" | "campaignSource" | "goalLabel" | "status"];
       const bv = sort === "mtd" ? b.values.mtd : b[sort as "sourceRow" | "campaignSource" | "goalLabel" | "status"];
       return (typeof av === "number" && typeof bv === "number" ? av - bv : String(av ?? "").localeCompare(String(bv ?? ""), undefined, { numeric: true })) * (ascending ? 1 : -1);
     });
-  }, [preview, filter, search, sort, ascending]);
+  }, [preview, campaignFilter, filter, search, sort, ascending]);
   const visible = filtered.slice((page - 1) * 50, page * 50);
   const configEntries = Object.entries(options?.configs ?? {});
   const toggle = (row: Candidate) => setSelected(current => { const next = new Set(current); next.has(row.rowKey) ? next.delete(row.rowKey) : next.add(row.rowKey); return next; });
@@ -160,7 +165,7 @@ export function SmartImportWizard() {
       {!readOnly && <Button disabled={Boolean(busy)} onClick={revalidate}>{dirty ? "Apply mappings & revalidate" : "Revalidate against current data"}</Button>}
       </fieldset>}</CardContent></Card>
       <div className="grid grid-cols-3 gap-2 md:grid-cols-9">{["total", "ready", "new", "updates", "duplicates", "pending", "warnings", "conflicts", "invalid"].map(key => <div key={key} className="rounded-lg border p-3"><p className="text-xl font-semibold">{preview.summary[key]}</p><p className="text-xs capitalize text-muted-foreground">{key}</p></div>)}</div>
-      <Card><CardHeader><CardTitle>Bulk Import Preview</CardTitle><div className="flex flex-wrap gap-2"><Input aria-label="Search import rows" className="max-w-xs" placeholder="Search campaign, KPI, sheet, or issues" value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} /><select aria-label="Status filter" className={`${selectClass} max-w-40`} value={filter} onChange={event => { setFilter(event.target.value); setPage(1); }}>{["ALL", "NEW", "UPDATE", "DUPLICATE", "PENDING", "WARNING", "CONFLICT", "INVALID"].map(value => <option key={value}>{value}</option>)}</select><select aria-label="Sort rows" className={`${selectClass} max-w-40`} value={sort} onChange={event => setSort(event.target.value)}>{[["sourceRow", "Source row"], ["campaignSource", "Campaign"], ["goalLabel", "KPI"], ["mtd", "MTD"], ["status", "Status"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><Button variant="outline" size="sm" onClick={() => setAscending(current => !current)}>{ascending ? "Ascending" : "Descending"}</Button><a href={`${endpoint}/${preview.id}?format=errors`}><Button variant="outline" size="sm"><Download className="mr-2 h-4 w-4" />Export issues CSV</Button></a></div></CardHeader><CardContent>
+      <Card><CardHeader><CardTitle>Bulk Import Preview</CardTitle><div className="flex flex-wrap gap-2"><Input aria-label="Search import rows" className="max-w-xs" placeholder="Search campaign, KPI, sheet, or issues" value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} /><select aria-label="Campaign filter" className={`${selectClass} max-w-56`} value={campaignFilter} onChange={event => { setCampaignFilter(event.target.value); setPage(1); }}><option value="">All campaigns</option>{campaignOptions.map(campaign => <option key={campaign} value={campaign}>{campaign}</option>)}</select><select aria-label="Status filter" className={`${selectClass} max-w-40`} value={filter} onChange={event => { setFilter(event.target.value); setPage(1); }}>{["ALL", "NEW", "UPDATE", "DUPLICATE", "PENDING", "WARNING", "CONFLICT", "INVALID"].map(value => <option key={value}>{value}</option>)}</select><select aria-label="Sort rows" className={`${selectClass} max-w-40`} value={sort} onChange={event => setSort(event.target.value)}>{[["sourceRow", "Source row"], ["campaignSource", "Campaign"], ["goalLabel", "KPI"], ["mtd", "MTD"], ["status", "Status"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><Button variant="outline" size="sm" onClick={() => setAscending(current => !current)}>{ascending ? "Ascending" : "Descending"}</Button><a href={`${endpoint}/${preview.id}?format=errors`}><Button variant="outline" size="sm"><Download className="mr-2 h-4 w-4" />Export issues CSV</Button></a></div></CardHeader><CardContent>
       <div className="max-h-[65vh] overflow-auto rounded-lg border"><table className="w-full min-w-[1700px] text-left text-xs"><thead className="sticky top-0 z-10 bg-muted"><tr>{["Select", "Row", "Campaign", "KPI", "Seat", "Goal", "W1", "W2", "W3", "W4", "W5", "MTD", "Achievement", "RR", "RR Achievement", "Report Date", "Status", "Action", "Issues", "Details"].map(label => <th key={label} className="p-2">{label}</th>)}</tr></thead><tbody>{visible.map(row => <SmartRow key={row.rowKey} row={row} selected={selected.has(row.rowKey)} disabled={readOnly || Boolean(busy) || dirty} onSelect={() => toggle(row)} expanded={expanded === row.rowKey} raw={expanded === row.rowKey ? raw : null} onExpand={() => viewRaw(row)} />)}</tbody></table>{!filtered.length && <p className="p-6 text-sm text-muted-foreground">No rows match. Check sheet selection and column mappings.</p>}</div>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{filtered.length} matching rows · {selected.size} selected</span><div className="flex items-center gap-3"><Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</Button><span className="text-sm">{page} / {Math.max(1, Math.ceil(filtered.length / 50))}</span><Button variant="outline" size="sm" disabled={page * 50 >= filtered.length} onClick={() => setPage(page + 1)}>Next</Button></div></div>
       {!readOnly && <div className="mt-5 flex flex-wrap items-center justify-between gap-3"><div className="flex gap-2"><Button variant="outline" disabled={Boolean(busy) || dirty} onClick={() => setSelected(new Set(preview.records.filter(row => row.action !== "BLOCK" && row.action !== "SKIP").map(row => row.rowKey)))}>Select valid records</Button><Button variant="outline" disabled={Boolean(busy)} onClick={() => setSelected(new Set())}>Clear selection</Button></div><div className="flex gap-2"><Button variant="outline" disabled={Boolean(busy)} onClick={cancel}>Cancel import</Button><Button disabled={Boolean(busy) || dirty || (!selected.size && !duplicatesOnly)} onClick={() => setConfirm(true)}>{duplicatesOnly ? "Complete import — skip duplicates" : `Import selected records (${selected.size})`}</Button></div></div>}
