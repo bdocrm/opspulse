@@ -84,6 +84,14 @@ blocked if either raw preservation or stored preview integrity fails.
 
 ## Structure and mapping
 
+Extracted Excel Preview is available immediately after successful extraction,
+even when no campaign/KPI table is detected. It reads owner-authorized saved
+source rows through the existing paginated API, supports all sheets (including
+hidden sheets), 50-row pages, row jumps, 25-column windows, cached display values
+and formula expressions. Selecting a source header also selects that sheet for
+mapping; applying mappings/revalidation is still an explicit action. The business
+preview describes unmapped records separately from empty search results.
+
 Recognizable campaign headers are detected anywhere in a worksheet, including
 below report titles and within merged header bands. Repeated/reordered headers
 create independent vertical operational regions with stable region IDs. Titles

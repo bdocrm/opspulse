@@ -122,3 +122,37 @@ test("unassigned collector retains source but cannot normalize inaccessible camp
   expect(commit.status()).toBe(422);
   expect((await (await page.request.get(`${endpoint}/${preview.id}`)).json()).reconciliation.passed).toBe(true);
 });
+
+test("unmapped workbooks display paginated Excel cells, hidden sheets, formulas and header selection", async ({ page, context }) => {
+  await login(context);
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([]), "HOME");
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["Agent", "Value", "Region"], ...Array.from({ length: 65 }, (_, index) => [`Agent ${index + 1}`, index, "Fixture region"])]), "Data");
+  const notes = XLSX.utils.aoa_to_sheet([["Supporting formula", 42]]);
+  notes.B1 = { t: "n", v: 42, f: "6*7" };
+  XLSX.utils.book_append_sheet(book, notes, "Hidden notes");
+  book.Workbook = { Sheets: [{ name: "HOME", Hidden: 0 }, { name: "Data", Hidden: 0 }, { name: "Hidden notes", Hidden: 1 }] };
+  const staged = await (await page.request.post(endpoint, { multipart: { file: { name: "unmapped-dashboard.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: XLSX.write(book, { type: "buffer", bookType: "xlsx" }) } } })).json();
+  expect(staged.records).toHaveLength(0);
+  expect(staged.stages.business).toBe("READY_FOR_VALIDATION");
+  await page.goto(`/production-monitoring/smart-import?batch=${staged.id}`);
+  await expect(page.getByRole("heading", { name: "Extracted Excel Preview" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Bulk Import Preview", exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Preview worksheet", { exact: true })).toHaveValue("Data");
+  const table = page.getByRole("table", { name: "Extracted worksheet rows" });
+  await expect(table).toContainText("Agent 1");
+  await expect(table.locator("tbody tr")).toHaveCount(50);
+  await page.getByLabel("Go to worksheet row", { exact: true }).fill("61");
+  await page.getByRole("button", { name: "Go to row", exact: true }).click();
+  await expect(table).toContainText("Agent 60");
+  await expect(table.locator("tbody tr")).toHaveCount(16);
+  await page.getByLabel("Preview worksheet", { exact: true }).selectOption("Hidden notes");
+  await expect(table).toContainText("Supporting formula");
+  await page.getByRole("checkbox", { name: "Show formula expressions" }).check();
+  await expect(table).toContainText("=6*7");
+  await page.getByLabel("Preview worksheet", { exact: true }).selectOption("Data");
+  await page.getByRole("button", { name: "Use worksheet row 1 as header", exact: true }).click();
+  await expect(page.getByText(/Selected header: row 1/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Apply mappings & revalidate", exact: true })).toBeVisible();
+  expect((await (await page.request.get(`${endpoint}/${staged.id}`)).json()).result).toBeNull();
+});

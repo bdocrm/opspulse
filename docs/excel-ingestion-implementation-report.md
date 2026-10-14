@@ -32,6 +32,7 @@ caches are not recalculated or represented as freshly verified Excel results.
 | `lib/smart-import/encryption.test.ts`, `test-fixtures/` | Real encryption tests and independent MIT-licensed msoffcrypto reference fixture |
 | `lib/smart-import/raw-storage.ts`, `raw-storage.test.ts` | Lossless compressed structured rows, implicit blank recovery, inflated-range and large-row regressions |
 | `components/production-monitoring/encrypted-workbook-unlock.tsx` | Password/show-hide/error/cancel/progress controls |
+| `components/production-monitoring/extracted-workbook-preview.tsx` | Saved Excel cell preview before business mapping, hidden sheets, row/column pagination and header selection |
 | `app/api/production-monitoring/smart-import/[id]/unlock/route.ts` | Bounded owner-only unlock request |
 | `scripts/build-smart-import-test.cjs` | Production test build isolated from the running development server |
 | `lib/smart-import/fixtures.ts` | Labeled synthetic August and encrypted-container fixtures |
@@ -100,7 +101,7 @@ Final command results are recorded below after execution:
 | Prisma validation | Passed |
 | Production build | Passed |
 | Isolated PostgreSQL suite | 19 passed, including compressed large-source reconciliation and tamper blocking; actual additive migration applied in scratch schema |
-| Production-build Chromium suite | 5 passed: password unlock, independent multi-file passwords, explicit commit and existing import/provenance regressions |
+| Production-build Chromium suite | 6 passed: password unlock, independent multi-file passwords, explicit commit, existing import/provenance regressions and unmapped Excel preview with pagination/hidden sheets/formulas/header selection |
 
 Database tests cover transactional rollback, stale previews, concurrent
 confirmation, source retention, permissions, immutable templates, source
