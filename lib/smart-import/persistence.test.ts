@@ -199,4 +199,79 @@ describe.skipIf(!url)("smart import PostgreSQL persistence", () => {
     expect(await client.importMappingTemplate.count({ where: { ownerId: user.id } })).toBe(2);
   });
 
+  it("unlocks in place, reconciles full source, and never persists the password or decrypted archive", async () => {
+    const { unlockBatch } = await import("./unlock");
+    const secret = "unique-fixture-password-2026";
+    const plain = Buffer.from(await upload(56).arrayBuffer());
+    const encrypted = encryptedFixture(secret, plain);
+    const staged = await service.stageFile(new File([new Uint8Array(encrypted)], "encrypted-source.xlsx"), user);
+    expect(staged.reconciliation).toMatchObject({ sourceRows: null, sourceNonEmptyCells: null, discoveredSheets: null });
+    await expect(unlockBatch(staged.id, "incorrect-fixture-secret", user)).rejects.toMatchObject({ code: "INVALID_PASSWORD" });
+    expect((await service.getPreview(staged.id, user)).status).toBe("INVALID_PASSWORD");
+    const currentBefore = (await client.productionMonitoring.findFirstOrThrow()).mtd;
+    const preview = await unlockBatch(staged.id, secret, user);
+    expect(preview.id).toBe(staged.id);
+    expect(preview.stages).toMatchObject({ access: "DECRYPTED", extraction: "EXTRACTION_COMPLETED", business: "READY_FOR_IMPORT" });
+    expect(preview.reconciliation?.passed).toBe(true);
+    expect(preview.inspection.sheets).toHaveLength(2);
+    expect((await client.productionMonitoring.findFirstOrThrow()).mtd).toBe(currentBefore);
+    const archive = await client.productionImport.findUniqueOrThrow({ where: { id: staged.id } });
+    expect(Buffer.from(archive.originalFile!).equals(Buffer.from(encrypted))).toBe(true);
+    expect(archive.originalFile).not.toEqual(plain);
+    const issues = await client.productionImportIssue.findMany({ where: { importId: staged.id } });
+    const source = await client.productionImportRawRow.findMany({ where: { importId: staged.id } });
+    expect(JSON.stringify({ archive, issues, source })).not.toContain(secret);
+    expect(issues.map(issue => issue.code)).toEqual(expect.arrayContaining(["UNLOCK_ATTEMPT", "INVALID_PASSWORD", "DECRYPTED", "EXTRACTION_COMPLETED"]));
+    const again = await unlockBatch(staged.id, secret, user);
+    expect(again.reconciliation).toEqual(preview.reconciliation);
+    expect(await client.productionImportRawRow.count({ where: { importId: staged.id } })).toBe(4);
+    expect((await commit(preview)).updated).toBe(1);
+  });
+  it("allows only the exact uploader to unlock, including admin sessions", async () => {
+    const { unlockBatch } = await import("./unlock");
+    const preview = await service.stageFile(new File([new Uint8Array(encryptedFixture())], "private-encrypted.xlsx"), user);
+    await expect(unlockBatch(preview.id, "fixture-only-password", { ...user, id: "another-admin" })).rejects.toThrow(/Only the uploader/);
+    await expect(unlockBatch(preview.id, "fixture-only-password", { id: "another-collector", role: "COLLECTOR" })).rejects.toThrow(/access/);
+    await expect(unlockBatch(preview.id, "", user)).rejects.toThrow(/Enter a password/);
+    expect(await client.productionImportIssue.count({ where: { importId: preview.id } })).toBe(0);
+  });
+  it("limits attempts durably per file and prevents concurrent duplicate unlocks", async () => {
+    const { unlockBatch } = await import("./unlock");
+    const preview = await service.stageFile(new File([new Uint8Array(encryptedFixture())], "limited.xlsx"), user);
+    for (let attempt = 0; attempt < 5; attempt++) await expect(unlockBatch(preview.id, "wrong-fixture-value", user)).rejects.toMatchObject({ code: "INVALID_PASSWORD" });
+    await expect(unlockBatch(preview.id, "fixture-only-password", user)).rejects.toMatchObject({ code: "RATE_LIMITED", status: 429 });
+    expect(await client.productionImportIssue.count({ where: { importId: preview.id, code: "UNLOCK_ATTEMPT" } })).toBe(5);
+    const concurrent = await service.stageFile(new File([new Uint8Array(encryptedFixture())], "concurrent.xlsx"), user);
+    const results = await Promise.allSettled([unlockBatch(concurrent.id, "fixture-only-password", user), unlockBatch(concurrent.id, "fixture-only-password", user)]);
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.find(result => result.status === "rejected")).toMatchObject({ reason: { status: 409 } });
+    expect(await client.productionImportRawRow.count({ where: { importId: concurrent.id } })).toBe(34);
+  });
+  it("resumes interrupted unlocks and keeps independent files and passwords separate", async () => {
+    const { unlockBatch } = await import("./unlock");
+    const first = await service.stageFile(new File([new Uint8Array(encryptedFixture("first-fixture-key"))], "first.xlsx"), user);
+    const second = await service.stageFile(new File([new Uint8Array(encryptedFixture("second-fixture-key"))], "second.xlsx"), user);
+    const controller = new AbortController(); controller.abort();
+    await expect(unlockBatch(first.id, "first-fixture-key", user, controller.signal)).rejects.toMatchObject({ code: "REQUEST_INTERRUPTED" });
+    expect((await service.getPreview(first.id, user)).status).toBe("PASSWORD_REQUIRED");
+    expect((await service.getPreview(second.id, user)).status).toBe("PASSWORD_REQUIRED");
+    expect((await unlockBatch(first.id, "first-fixture-key", user)).reconciliation?.passed).toBe(true);
+    expect((await service.getPreview(second.id, user)).status).toBe("PASSWORD_REQUIRED");
+    expect((await unlockBatch(second.id, "second-fixture-key", user)).reconciliation?.passed).toBe(true);
+  });
+  it("blocks malformed extraction atomically and enforces a user-wide attempt limit", async () => {
+    const { unlockBatch } = await import("./unlock");
+    const { encrypt } = await import("officecrypto-tool");
+    const malformed = encrypt(Buffer.from("not a valid workbook zip"), { password: "fixture-only-key" });
+    const preview = await service.stageFile(new File([new Uint8Array(malformed)], "corrupt-payload.xlsx"), user);
+    await expect(unlockBatch(preview.id, "fixture-only-key", user)).rejects.toMatchObject({ code: "CORRUPTED_WORKBOOK" });
+    expect(await client.productionImportRawRow.count({ where: { importId: preview.id } })).toBe(0);
+    expect(Buffer.from((await client.productionImport.findUniqueOrThrow({ where: { id: preview.id } })).originalFile!).equals(Buffer.from(malformed))).toBe(true);
+    const limited = await client.user.create({ data: { email: "unlock-rate@example.invalid", name: "Rate test", password: "unusable", role: "CEO" } });
+    const limitedUser = { id: limited.id, role: "CEO" };
+    const locked = await service.stageFile(new File([new Uint8Array(encryptedFixture())], "rate-new-file.xlsx"), limitedUser);
+    await client.productionImportIssue.createMany({ data: Array.from({ length: 15 }, () => ({ importId: locked.id, level: "INFORMATIONAL", code: "UNLOCK_ATTEMPT", message: "Fixture attempt", rawData: { actorId: limited.id } })) });
+    await expect(unlockBatch(locked.id, "fixture-only-password", limitedUser)).rejects.toMatchObject({ code: "RATE_LIMITED" });
+  });
+
 });

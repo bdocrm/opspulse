@@ -6,6 +6,7 @@ import { isExecutiveRole } from "../permissions";
 import { hasProductionCampaignAccess, productionCampaignIds, type ProductionSessionUser } from "../production-access";
 import { buildCandidates, defaultOptions, hash, summary, type Context, type ExistingRecord } from "./engine";
 import { nonEmpty, normalizeName } from "./normalization";
+import { inspectEncryption } from "./encryption";
 import { parseFile, readUpload } from "./parser";
 import { reconcile } from "./reconciliation";
 import { validateOptions } from "./review";
@@ -57,7 +58,11 @@ export async function getPreview(id: string, user: ProductionSessionUser): Promi
   const records = rows.map(row => row.normalizedPayload as unknown as Candidate);
   const sourceRows = await rawRows(id);
   const reconciliation = reconcile(batch.inspection as unknown as Inspection, sourceRows, records, batch.recordsImported + batch.recordsUpdated, batch.status);
-  return { reconciliation, parentImportId: batch.parentImportId, id, status: batch.status, inspection: batch.inspection as unknown as Inspection, options: batch.reviewOptions as unknown as ReviewOptions, records, configs: Object.fromEntries(records.filter(row => row.config && row.campaignId).map(row => [configKey(row.campaignId!, row.goalType), row.config!])), campaigns: context.campaigns.map(row => ({ id: row.id, name: row.name })), summary: summary(records), previewHash: batch.previewHash ?? "", previousImports: await previousImports(batch, user), result: completed(batch.status) ? result(batch) : null, lastError: batch.lastError };
+  const inspection = batch.inspection as unknown as Inspection;
+  const stages = { access: String(inspection.metadata?.accessStatus ?? "NOT_ENCRYPTED"), extraction: String(inspection.metadata?.extractionStatus ?? (inspection.coveragePassed ? "EXTRACTION_COMPLETED" : "PENDING")), business: completed(batch.status) ? "IMPORT_COMPLETED" : batch.status === "READY" ? records.some(row => row.action === "BLOCK") ? "READY_FOR_VALIDATION" : "READY_FOR_IMPORT" : "NOT_IMPORTED" };
+  const eventRows = await prisma.productionImportIssue.findMany({ where: { importId: id, code: { in: ["UNLOCK_ATTEMPT", "INVALID_PASSWORD", "DECRYPTED", "EXTRACTING", "EXTRACTION_COMPLETED", "EXTRACTION_FAILED", "UNSUPPORTED_ENCRYPTION", "PROCESSING_TIMEOUT", "REQUEST_INTERRUPTED", "CORRUPTED_WORKBOOK"] } }, orderBy: { createdAt: "asc" }, take: 100 });
+  const events = eventRows.map(event => ({ code: event.code, message: event.message, createdAt: event.createdAt.toISOString(), actorId: (event.rawData as { actorId?: string } | null)?.actorId ?? null }));
+  return { events, stages, reconciliation, parentImportId: batch.parentImportId, id, status: batch.status, inspection: batch.inspection as unknown as Inspection, options: batch.reviewOptions as unknown as ReviewOptions, records, configs: Object.fromEntries(records.filter(row => row.config && row.campaignId).map(row => [configKey(row.campaignId!, row.goalType), row.config!])), campaigns: context.campaigns.map(row => ({ id: row.id, name: row.name })), summary: summary(records), previewHash: batch.previewHash ?? "", previousImports: await previousImports(batch, user), result: completed(batch.status) ? result(batch) : null, lastError: batch.lastError };
 }
 export async function stageFile(file: File, user: ProductionSessionUser, parentImportId?: string) {
   const upload = await readUpload(file);
@@ -66,26 +71,39 @@ export async function stageFile(file: File, user: ProductionSessionUser, parentI
     if (parent.status !== "PASSWORD_REQUIRED") throw new ImportError("Only an encrypted source can be resumed with a decrypted copy.", 409);
     if (upload.encrypted) throw new ImportError("The supplied copy is still encrypted. Decrypt it with your authorized password in Excel first.", 422);
   }
-  const initial: Inspection = { fileName: upload.fileName, fileType: upload.extension, fileHash: hashFile(upload.buffer), fileSize: upload.buffer.length, sheets: [], nonEmptyCells: 0, capturedCells: 0, coveragePassed: false, warnings: [], reportingPeriods: [], encryptionStatus: upload.encrypted ? "PASSWORD_REQUIRED" : "NONE" };
+  const encryption = inspectEncryption(upload.buffer);
+  const initial: Inspection = { fileName: upload.fileName, fileType: upload.extension, fileHash: hashFile(upload.buffer), fileSize: upload.buffer.length, sheets: [], nonEmptyCells: 0, capturedCells: 0, coveragePassed: false, warnings: encryption.reason ? [encryption.reason] : [], metadata: { encryptionKind: encryption.kind, accessStatus: upload.encrypted ? encryption.supported ? "PASSWORD_REQUIRED" : "UNSUPPORTED_ENCRYPTION" : "NOT_ENCRYPTED", extractionStatus: "PENDING" }, reportingPeriods: [], encryptionStatus: upload.encrypted ? "PASSWORD_REQUIRED" : "NONE" };
   // Retain the original before parsing; parser and business failures never erase it.
-  const batch = await prisma.productionImport.create({ data: { fileName: upload.fileName, fileHash: initial.fileHash, fileType: upload.extension, originalFile: upload.buffer, engine: ENGINE, status: upload.encrypted ? "PASSWORD_REQUIRED" : "ANALYZING", importedById: user.id!, parentImportId, inspection: json(initial), reviewOptions: json(defaultOptions(initial)), reportingPeriods: json([]) } });
+  const batch = await prisma.productionImport.create({ data: { fileName: upload.fileName, fileHash: initial.fileHash, fileType: upload.extension, originalFile: upload.buffer, engine: ENGINE, status: upload.encrypted ? encryption.supported ? "PASSWORD_REQUIRED" : "UNSUPPORTED_ENCRYPTION" : "ANALYZING", importedById: user.id!, parentImportId, inspection: json(initial), reviewOptions: json(defaultOptions(initial)), reportingPeriods: json([]) } });
   if (upload.encrypted) return getPreview(batch.id, user);
   try {
-    const parsed = parseFile(upload.buffer, upload.fileName, upload.extension);
-    const options = defaultOptions(parsed.inspection);
-    await prisma.$transaction(async tx => {
-      for (let offset = 0; offset < parsed.rows.length; offset += 250) await tx.productionImportRawRow.createMany({ data: parsed.rows.slice(offset, offset + 250).map(row => ({ importId: batch.id, sourceSheet: row.sourceSheet, sourceRow: row.sourceRow, rawPayload: json(row) })) });
-      const persisted = await rawRows(batch.id, tx);
-      const reconciliation = reconcile(parsed.inspection, persisted);
-      if (!reconciliation.passed) throw new ImportError("Persisted source preservation failed. Normalization is blocked.", 422);
-      await tx.productionImport.update({ where: { id: batch.id }, data: { status: "STAGED", inspection: json(parsed.inspection), reconciliation: json(reconciliation), reviewOptions: json(options), reportingPeriods: json(parsed.inspection.reportingPeriods) } });
-    }, { timeout: 60000 });
-    await reviewBatch(batch.id, options, user);
+    await extractBatch(batch.id, upload.buffer, user);
   } catch {
     // Do not persist parser exception text: it can include confidential cell data.
     await prisma.productionImport.update({ where: { id: batch.id }, data: { status: "FAILED", lastError: "Workbook extraction or validation failed. Original source retained. Review supported limits and file integrity before retrying." } });
   }
   return getPreview(batch.id, user);
+}
+export async function extractBatch(id: string, buffer: Buffer, user: ProductionSessionUser, lease?: string) {
+  const batch = await accessibleBatch(id, user);
+  const original = batch.inspection as unknown as Inspection;
+  const parsed = parseFile(buffer, batch.fileName, batch.fileType!);
+  parsed.inspection.fileHash = batch.fileHash!;
+  parsed.inspection.fileSize = batch.originalFile?.length ?? buffer.length;
+  parsed.inspection.metadata = { ...parsed.inspection.metadata, ...(original.metadata ?? {}), accessStatus: lease ? "DECRYPTED" : "NOT_ENCRYPTED", extractionStatus: "EXTRACTION_COMPLETED", unlockLease: null };
+  const options = defaultOptions(parsed.inspection);
+  await prisma.$transaction(async tx => {
+    await tx.$queryRaw`SELECT "id" FROM ${batchTable} WHERE "id" = ${id} FOR UPDATE`;
+    const current = await accessibleBatch(id, user, tx);
+    const currentInspection = current.inspection as unknown as Inspection;
+    if (lease ? current.status !== "DECRYPTING" || currentInspection.metadata?.unlockLease !== lease : current.status !== "ANALYZING") throw new ImportError("The extraction request is no longer active.", 409);
+    for (let offset = 0; offset < parsed.rows.length; offset += 250) await tx.productionImportRawRow.createMany({ data: parsed.rows.slice(offset, offset + 250).map(row => ({ importId: id, sourceSheet: row.sourceSheet, sourceRow: row.sourceRow, rawPayload: json(row) })) });
+    const persisted = await rawRows(id, tx);
+    const reconciliation = reconcile(parsed.inspection, persisted);
+    if (!reconciliation.passed) throw new ImportError("Persisted source preservation failed. Normalization is blocked.", 422);
+    await tx.productionImport.update({ where: { id }, data: { status: "STAGED", inspection: json(parsed.inspection), reconciliation: json(reconciliation), reviewOptions: json(options), reportingPeriods: json(parsed.inspection.reportingPeriods), lastError: null } });
+  }, { timeout: 60000 });
+  await reviewBatch(id, options, user);
 }
 const hashFile = (buffer: Buffer) => createHash("sha256").update(buffer).digest("hex");
 
@@ -232,6 +250,6 @@ export async function commitBatch(id: string, expectedHash: string, selectedRows
 }
 export async function cancelBatch(id: string, user: ProductionSessionUser) {
   await accessibleBatch(id, user);
-  const changed = await prisma.productionImport.updateMany({ where: { id, status: { in: ["READY", "STAGED", "FAILED", "PASSWORD_REQUIRED"] } }, data: { status: "CANCELLED" } });
+  const changed = await prisma.productionImport.updateMany({ where: { id, status: { in: ["READY", "STAGED", "FAILED", "PASSWORD_REQUIRED", "INVALID_PASSWORD", "UNSUPPORTED_ENCRYPTION", "DECRYPTING", "EXTRACTION_FAILED"] } }, data: { status: "CANCELLED" } });
   if (!changed.count) throw new ImportError("A completed/importing batch cannot be cancelled.", 409);
 }

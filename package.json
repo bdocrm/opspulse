@@ -21,7 +21,8 @@
     "test:coverage": "vitest run --coverage",
     "vercel-env": "echo \"Checking environment...\" && node -e \"console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'SET (length: ' + process.env.DATABASE_URL.length + ')' : 'NOT SET'); console.log('NEXTAUTH_URL:', process.env.NEXTAUTH_URL || 'NOT SET'); console.log('NEXTAUTH_SECRET:', process.env.NEXTAUTH_SECRET ? 'SET' : 'NOT SET');\"",
     "test:smart-import:e2e": "node scripts/test-smart-import-db.cjs --e2e",
-    "verify:workbook": "node scripts/verify-workbook.cjs"
+    "verify:workbook": "node scripts/verify-workbook.cjs",
+    "build:smart-import:test": "node scripts/build-smart-import-test.cjs"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -42,6 +43,7 @@
     "next": "14.1.0",
     "next-auth": "^4.24.5",
     "next-themes": "^0.2.1",
+    "officecrypto-tool": "0.0.19",
     "papaparse": "^5.4.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

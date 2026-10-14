@@ -13,10 +13,7 @@ export function augustFixture() {
   XLSX.utils.book_append_sheet(workbook, sheet, "Sheet1");
   return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
 }
-export function encryptedFixture() {
-  // Container markers exercise detection only. No assertion of real decryption.
-  const container = XLSX.CFB.utils.cfb_new();
-  XLSX.CFB.utils.cfb_add(container, "EncryptionInfo", Buffer.from("representative encryption metadata"));
-  XLSX.CFB.utils.cfb_add(container, "EncryptedPackage", Buffer.from("inaccessible representative payload"));
-  return Buffer.from(XLSX.CFB.write(container, { type: "buffer" }));
+export function encryptedFixture(password = "fixture-only-password", source = augustFixture(), type?: "standard") {
+  const officeCrypto = require("officecrypto-tool") as typeof import("officecrypto-tool");
+  return officeCrypto.encrypt(source, { password, ...(type ? { type } : {}) });
 }

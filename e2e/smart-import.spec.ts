@@ -62,21 +62,53 @@ test("browser discovers all August rows and exposes audit, mapping and raw remar
   expect(repeated.status()).toBe(200);
   expect(await repeated.json()).toMatchObject({ inserted: 0, updated: 0, duplicates: 31 });
 });
-test("encrypted upload requires authorized decrypted copy and retains the original", async ({ page, context }) => {
+test("in-app password unlock validates errors, preserves the encrypted source, and resumes review", async ({ page, context }) => {
   await login(context);
   await page.goto("/production-monitoring/smart-import");
-  await page.getByLabel("Productivity file").setInputFiles({ name: "BPI PA DASHBOARD SEPTEMBER.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: encryptedFixture() });
+  const source = encryptedFixture();
+  await page.getByLabel("Productivity file").setInputFiles({ name: "encrypted-fixture.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: source });
   await page.getByRole("button", { name: "Inspect file", exact: true }).click();
-  await expect(page.getByLabel("Authorized decrypted workbook")).toBeVisible();
-  const parent = new URL(page.url()).searchParams.get("batch");
-  const before = await (await page.request.get(`${endpoint}/${parent}`)).json();
-  expect(before.status).toBe("PASSWORD_REQUIRED");
-  expect(before.records).toHaveLength(0);
-  await page.getByLabel("Authorized decrypted workbook").setInputFiles({ name: "authorized-copy.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: augustFixture() });
-  await expect(page.getByText("View retained encrypted original")).toBeVisible();
-  const resumed = await (await page.request.get(`${endpoint}/${new URL(page.url()).searchParams.get("batch")}`)).json();
-  expect(resumed.parentImportId).toBe(parent);
-  expect(resumed.reconciliation.passed).toBe(true);
+  await expect(page.getByLabel("Workbook password", { exact: true })).toBeVisible();
+  await expect(page.getByText("Worksheets, rows, columns, and source-cell counts: Pending until extraction succeeds.")).toBeVisible();
+  const id = new URL(page.url()).searchParams.get("batch");
+  await page.getByLabel("Workbook password", { exact: true }).fill("incorrect-fixture-password");
+  await page.getByRole("button", { name: "Show password", exact: true }).click();
+  await expect(page.getByLabel("Workbook password", { exact: true })).toHaveAttribute("type", "text");
+  await page.getByRole("button", { name: "Unlock & Process Workbook", exact: true }).click();
+  await expect(page.getByRole("alert").first()).toContainText("That password did not unlock");
+  await expect(page.getByLabel("Workbook password", { exact: true })).toHaveValue("");
+  await page.getByLabel("Workbook password", { exact: true }).fill("fixture-only-password");
+  await page.getByRole("button", { name: "Unlock & Process Workbook", exact: true }).click();
+  await expect(page.getByText("Raw extraction:")).toContainText("VERIFIED");
+  const preview = await (await page.request.get(`${endpoint}/${id}`)).json();
+  expect(preview.stages).toMatchObject({ access: "DECRYPTED", extraction: "EXTRACTION_COMPLETED" });
+  expect(preview.reconciliation).toMatchObject({ passed: true, sourceNonEmptyCells: 514, persistedRawNonEmptyCells: 514 });
+  expect((await (await page.request.get(`${endpoint}/${id}?format=source`)).body()).equals(source)).toBe(true);
+  expect(preview.result).toBeNull();
+  await page.getByRole("button", { name: /Complete import.*skip duplicates/ }).click();
+  await page.getByRole("button", { name: "Confirm import", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Import Completed", exact: true })).toBeVisible();
+  const completed = await (await page.request.get(`${endpoint}/${id}`)).json();
+  expect(completed.stages.business).toBe("IMPORT_COMPLETED");
+  expect(completed.result).toMatchObject({ inserted: 0, updated: 0, duplicates: 31 });
+});
+test("multi-file upload unlocks independent workbooks with different passwords", async ({ page, context }) => {
+  await login(context);
+  await page.goto("/production-monitoring/smart-import");
+  await page.getByLabel("Productivity file").setInputFiles([
+    { name: "first-locked.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: encryptedFixture("first-fixture-key") },
+    { name: "second-locked.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: encryptedFixture("second-fixture-key") },
+  ]);
+  await page.getByRole("button", { name: "Inspect file", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Uploaded workbooks" })).toBeVisible();
+  await page.getByLabel("Workbook password", { exact: true }).fill("second-fixture-key");
+  await page.getByRole("button", { name: "Unlock & Process Workbook", exact: true }).click();
+  await expect(page.getByText("Raw extraction:")).toContainText("VERIFIED");
+  await page.getByRole("button", { name: "Open workbook", exact: true }).first().click();
+  await expect(page.getByLabel("Workbook password", { exact: true })).toBeVisible();
+  await page.getByLabel("Workbook password", { exact: true }).fill("first-fixture-key");
+  await page.getByRole("button", { name: "Unlock & Process Workbook", exact: true }).click();
+  await expect(page.getByText("Raw extraction:")).toContainText("VERIFIED");
 });
 test("unassigned collector retains source but cannot normalize inaccessible campaigns", async ({ page, context }) => {
   await login(context, "browser-collector@example.invalid");

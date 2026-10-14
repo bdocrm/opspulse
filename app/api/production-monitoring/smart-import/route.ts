@@ -32,8 +32,8 @@ export async function GET(request: NextRequest) {
     const where = { engine: ENGINE, ...(user.role === "CEO" ? {} : { importedById: user.id }) };
     const [total, batches] = await Promise.all([
       prisma.productionImport.count({ where }),
-      prisma.productionImport.findMany({ where, select: { id: true, fileName: true, fileType: true, reportingPeriods: true, status: true, createdAt: true, completedAt: true, recordsDetected: true, recordsImported: true, recordsUpdated: true, recordsUnchanged: true, pendingCount: true, warningCount: true, conflictCount: true, invalidCount: true, lastError: true, importedBy: { select: { name: true } } }, orderBy: { createdAt: "desc" }, skip: (page - 1) * 25, take: 25 }),
+      prisma.productionImport.findMany({ where, select: { id: true, fileName: true, fileType: true, reportingPeriods: true, status: true, createdAt: true, completedAt: true, recordsDetected: true, recordsImported: true, recordsUpdated: true, recordsUnchanged: true, pendingCount: true, warningCount: true, conflictCount: true, invalidCount: true, lastError: true, inspection: true, importedBy: { select: { name: true } } }, orderBy: { createdAt: "desc" }, skip: (page - 1) * 25, take: 25 }),
     ]);
-    return NextResponse.json({ batches, total, page, totalPages: Math.max(1, Math.ceil(total / 25)) });
+    return NextResponse.json({ batches: batches.map(({ inspection, ...batch }) => ({ ...batch, recordsDetected: (inspection as { coveragePassed?: boolean } | null)?.coveragePassed ? batch.recordsDetected : null })), total, page, totalPages: Math.max(1, Math.ceil(total / 25)) });
   } catch (error) { return apiError(error); }
 }

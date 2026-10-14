@@ -9,10 +9,43 @@ review workflow. It does not create a second campaign or performance system.
 `ProductionImport.originalFile` retains the exact uploaded bytes. The SHA-256
 file hash identifies that archive. Original sources are accessible only to the
 uploader and CEO through the authenticated download endpoint. An encrypted source
-remains `PASSWORD_REQUIRED`; its decrypted copy creates a separate batch linked
-by `parentImportId`. The parent archive is never overwritten. Passwords are not
-collected by OpsView. Decrypt in Excel using an authorized password, then upload
-the decrypted copy using the resume control.
+remains `PASSWORD_REQUIRED` until its uploader supplies the authorized password
+inside OpsView. Unlocking resumes extraction in the same batch. The original
+encrypted archive is never overwritten. The legacy `parentImportId` API remains
+compatible with previously uploaded decrypted copies.
+
+## Password unlock
+
+The dedicated `POST /api/production-monitoring/smart-import/:id/unlock` endpoint
+accepts a JSON password over HTTPS, requires the uploader's authenticated session,
+and rejects cross-origin requests. Even a CEO cannot unlock another uploader's
+workbook. Source download retains the established uploader/CEO audit permission.
+
+Supported file encryption is XLSX Agile AES-128/AES-256 CBC with supported SHA
+profiles, or Standard AES-128/SHA-1. Legacy encrypted XLS and other encryption
+profiles return `UNSUPPORTED_ENCRYPTION`. Worksheet protection and passwords to
+modify a workbook do not trigger file unlock. The implementation uses
+[officecrypto-tool](https://github.com/zurmokeeper/officecrypto-tool) in an isolated
+Node worker and checks Agile package HMAC integrity before extraction.
+
+Passwords are transient request/worker data, never stored in database rows,
+URLs, import history or logs. Decrypted workbook bytes stay in memory and are
+wiped after extraction; only the existing structured source rows are persisted.
+JavaScript strings cannot be reliably overwritten; references and UI input are
+cleared as far as the runtime permits. No decrypted temporary file is created.
+Workers have a 15-second timeout and a 128 MB old-generation heap limit.
+
+Durable database attempts limit each file to five and each uploader to fifteen
+requests per ten minutes. Advisory locks prevent concurrent attempt races;
+duplicate active requests are rejected. A 90-second lease permits recovery from
+an interrupted process. Cancellation preserves the encrypted audit source.
+The UI accepts up to ten files, each with independent unlock and review state.
+
+Access, extraction and business stages are reported separately, with safe audit
+events. Locked workbook counts display Pending rather than zero. Successful
+unlock/extraction still requires mapping, validation and explicit confirmation
+before business records are committed. This feature reuses existing database
+models and needs no additional migration.
 
 Extraction includes every discovered sheet in original order, hidden/very hidden
 state, dimensions, coordinates, title/header/detail/blank rows, unknown columns,
@@ -112,6 +145,7 @@ to each selected campaign. Writes reject cross-origin requests.
 | `POST /api/production-monitoring/smart-import` | Multipart `file`, optional `parentImportId` for authorized decrypted-source resume |
 | `GET /api/production-monitoring/smart-import?page=1` | Scoped, paginated import history |
 | `GET /api/production-monitoring/smart-import/:id` | Preview plus live raw reconciliation |
+| `POST /api/production-monitoring/smart-import/:id/unlock` | Owner-only JSON password; unlock and extract the existing encrypted batch |
 | `GET …/:id?format=source` | Authenticated original archive download, private/no-store |
 | `GET …/:id?format=raw&sheet=Sheet1&row=4` | Exact raw source row |
 | `GET …/:id?format=rows&sheet=Sheet1&page=1` | Raw source rows, 50 per page |
@@ -151,7 +185,7 @@ npm test
 npx tsc --noEmit
 npm run lint
 npx prisma validate
-npm run build
+npm run build:smart-import:test
 npm run test:smart-import:db
 npx playwright install chromium
 npm run test:smart-import:e2e
@@ -163,7 +197,9 @@ Database and browser commands create a uniquely named
 `opsview_smart_import_test_*` schema, apply the actual additive migration to the
 previous schema shape, and remove only that isolated schema afterward. They do
 not import customer data into the application schema. Browser tests use a
-production build at port 3197. Do not regenerate Prisma while database/server
+isolated production build in `.next-import-test` at port 3197, leaving a running
+development server's `.next` directory available. Normal releases use `npm run build`.
+Do not regenerate Prisma while database/server
 tests hold its Windows native engine DLL open; run build and DB suites in
 sequence.
 
@@ -172,8 +208,8 @@ persistence. To verify actual persistence, upload the real workbook through the
 UI and download its reconciliation report. Verify all 31 August source records,
 17 columns, exact Q values, both RBSC records and P14/L32/M32/L34/M34 error cells.
 Confirm source, extracted and persisted nonempty-cell counts on the actual file.
-For September, verify `PASSWORD_REQUIRED`, resume using the authorized decrypted
-copy, inspect every sheet and region, confirm its own mappings/KPIs/periods, then
+For September, verify `PASSWORD_REQUIRED`, enter the authorized workbook password
+inside OpsView, inspect every sheet and region, confirm its own mappings/KPIs/periods, then
 reconcile its actual committed data. Never reuse August fixture counts as proof
 of real September or August ingestion.
 
@@ -181,8 +217,9 @@ of real September or August ingestion.
 
 - Customer August and September workbooks are not available in the checkout or
   attachments. Their actual reconciliation and real encrypted-content import
-  remain unverified. Synthetic Office container tests exercise access gating,
-  not cryptographic decryption or the September schema.
+  remain unverified. Tests exercise real Agile/Standard encryption and decryption,
+  including an independent msoffcrypto fixture, but do not establish the actual
+  September workbook's schema or reconciliation.
 - Files are limited to 10 MB, 50 MB actual ZIP expansion, 10,000 ZIP entries,
   50,000 rows/1,000 columns per sheet and 250,000 total rectangle cells. Files
   beyond these limits are rejected, never truncated. Processing and preview

@@ -23,7 +23,9 @@ export async function readUpload(file: File) {
   const buffer = Buffer.from(await file.arrayBuffer());
   const zip = buffer[0] === 0x50 && buffer[1] === 0x4b;
   const ole = buffer.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]));
-  const encrypted = ole && encryptedOffice(buffer);
+  let encrypted = false;
+  try { encrypted = ole && encryptedOffice(buffer); }
+  catch { throw new Error("Corrupted workbook container. Ask the owner for a fresh copy."); }
   if ((extension === "xlsx" && !zip && !encrypted) || (extension === "xls" && !ole) || (extension === "csv" && (zip || ole || buffer.includes(0)))) throw new Error("File contents do not match its extension.");
   if (extension === "xlsx" && !encrypted) inspectZip(buffer);
   return { buffer, extension, encrypted, fileName: file.name.split(/[\\/]/).pop()!.replace(/[\x00-\x1f]/g, "_").slice(0, 255) };

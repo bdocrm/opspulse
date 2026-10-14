@@ -19,14 +19,16 @@ export function reconcile(inspection: Inspection, rows: RawRow[], records: Candi
   const knownSheets = new Set(inspection.sheets.map(sheet => sheet.name));
   const traceable = records.every(record => rows.some(row => row.sourceSheet === record.sourceSheet && row.sourceRow === record.sourceRow));
   const passed = inspection.coveragePassed && sheets.every(sheet => sheet.passed) && rows.every(row => knownSheets.has(row.sourceSheet)) && traceable;
+  const metricsKnown = inspection.coveragePassed;
+  const metric = (value: number) => metricsKnown ? value : null;
   return {
-    discoveredSheets: inspection.sheets.length, sourceColumns: inspection.sheets.reduce((sum, sheet) => sum + sheet.columns, 0), extractedNonEmptyCells: inspection.capturedCells,
-    passed, sourceNonEmptyCells: inspection.nonEmptyCells, persistedRawNonEmptyCells: sheets.reduce((sum, sheet) => sum + sheet.persistedCells, 0),
-    sourceRows: sheets.reduce((sum, sheet) => sum + sheet.sourceRows, 0), persistedRows: rows.length, regions: sheets.reduce((sum, sheet) => sum + sheet.regions, 0),
-    parsedRecords: records.length, mappedRecords: records.filter(record => record.campaignId && record.config).length,
-    unmappedFields: records.reduce((sum, record) => sum + Object.keys(record.extensions ?? {}).length, 0), normalizedRecords: records.filter(record => record.action !== "BLOCK").length,
-    validationErrors: records.reduce((sum, record) => sum + record.issues.filter(issue => issue.level === "ERROR").length, 0), duplicateCandidates: records.filter(record => record.status === "DUPLICATE" || record.conflictRows.length > 0).length,
-    committedRecords: committed, rejectedRecords: records.filter(record => record.action === "BLOCK").length,
+    discoveredSheets: metric(inspection.sheets.length), sourceColumns: metric(inspection.sheets.reduce((sum, sheet) => sum + sheet.columns, 0)), extractedNonEmptyCells: metric(inspection.capturedCells),
+    passed, sourceNonEmptyCells: metric(inspection.nonEmptyCells), persistedRawNonEmptyCells: metric(sheets.reduce((sum, sheet) => sum + sheet.persistedCells, 0)),
+    sourceRows: metric(sheets.reduce((sum, sheet) => sum + sheet.sourceRows, 0)), persistedRows: metric(rows.length), regions: metric(sheets.reduce((sum, sheet) => sum + sheet.regions, 0)),
+    parsedRecords: metric(records.length), mappedRecords: metric(records.filter(record => record.campaignId && record.config).length),
+    unmappedFields: metric(records.reduce((sum, record) => sum + Object.keys(record.extensions ?? {}).length, 0)), normalizedRecords: metric(records.filter(record => record.action !== "BLOCK").length),
+    validationErrors: metric(records.reduce((sum, record) => sum + record.issues.filter(issue => issue.level === "ERROR").length, 0)), duplicateCandidates: metric(records.filter(record => record.status === "DUPLICATE" || record.conflictRows.length > 0).length),
+    committedRecords: committed, rejectedRecords: metric(records.filter(record => record.action === "BLOCK").length),
     rawStatus: inspection.encryptionStatus === "PASSWORD_REQUIRED" ? "PASSWORD_REQUIRED" : passed ? "VERIFIED" : "FAILED", businessStatus, sheets,
   };
 }

@@ -21,7 +21,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     }
     if (format === "report") {
       const preview = await getPreview(params.id, user);
-      return new NextResponse(JSON.stringify({ batch: { id: preview.id, status: preview.status, parentImportId: preview.parentImportId }, inspection: preview.inspection, reconciliation: preview.reconciliation, records: preview.records, result: preview.result }, null, 2), { headers: { "Content-Type": "application/json", "Content-Disposition": 'attachment; filename="import-reconciliation.json"', "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store" } });
+      return new NextResponse(JSON.stringify({ batch: { id: preview.id, status: preview.status, parentImportId: preview.parentImportId }, events: preview.events, stages: preview.stages, inspection: preview.inspection, reconciliation: preview.reconciliation, records: preview.records, result: preview.result }, null, 2), { headers: { "Content-Type": "application/json", "Content-Disposition": 'attachment; filename="import-reconciliation.json"', "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store" } });
     }
     if (format === "rows") {
       const sheet = request.nextUrl.searchParams.get("sheet");

@@ -108,7 +108,7 @@ Older reporting dates are saved as historical snapshots. Blank/pending updates p
 
 Supported uploads: `.xlsx`, `.xls`, `.csv`, up to 10 MB. Inspection rejects files beyond 50,000 rows or 1,000 columns per sheet, 250,000 total cells, or 50 MB expanded XLSX content instead of truncating data. Macros and uploaded formulas are never executed. Original sources can be downloaded, and problematic rows can be exported as a formula-safe CSV.
 
-Deploy the additive migrations `20260929010000_smart_bulk_import` and `20261014000000_workbook_preservation` and regenerate Prisma before running the updated app. See [Excel ingestion implementation and verification](docs/excel-ingestion.md) for migration baselining, encrypted-source resume, region mappings, template versions, reconciliation and supported extraction limits. Existing campaign completion migration `20260929000000_complete_campaign_list` remains separate. No reset or seed is needed.
+Deploy the additive migrations `20260929010000_smart_bulk_import` and `20261014000000_workbook_preservation` and regenerate Prisma before running the updated app. See [Excel ingestion implementation and verification](docs/excel-ingestion.md) for migration baselining, in-app password unlock, region mappings, template versions, reconciliation and supported extraction limits. Password unlock reuses existing storage and needs no additional migration. Existing campaign completion migration `20260929000000_complete_campaign_list` remains separate. No reset or seed is needed.
 
 Validation:
 

@@ -6,8 +6,8 @@ The production migration was applied on October 14, 2026 after a before-backup. 
 
 ## Result
 
-Smart Bulk Import now retains encrypted sources, resumes from linked authorized
-decrypted copies, inventories workbook objects, discovers independent vertical
+Smart Bulk Import now retains encrypted sources, unlocks supported encrypted XLSX
+inside OpsView in the existing batch, inventories workbook objects, discovers independent vertical
 regions, supports region mappings and immutable saved mapping versions, checks
 canonical source and preview integrity, and blocks incomplete preservation.
 New KPIs preserve source values until calculation rules are explicitly reviewed.
@@ -28,6 +28,11 @@ caches are not recalculated or represented as freshly verified Excel results.
 | `lib/smart-import/discovery.ts` | Header/region discovery, merged header handling, independent OOXML census and canonical hashing |
 | `lib/smart-import/reconciliation.ts` | Persisted source/content/coordinate/row/traceability reconciliation |
 | `lib/smart-import/templates.ts` | Creator-owned immutable layout template versions |
+| `lib/smart-import/encryption.ts`, `decryption.ts`, `unlock.ts` | Supported encryption inspection, isolated in-memory decryption, owner authorization, durable rate limits and recovery |
+| `lib/smart-import/encryption.test.ts`, `test-fixtures/` | Real encryption tests and independent MIT-licensed msoffcrypto reference fixture |
+| `components/production-monitoring/encrypted-workbook-unlock.tsx` | Password/show-hide/error/cancel/progress controls |
+| `app/api/production-monitoring/smart-import/[id]/unlock/route.ts` | Bounded owner-only unlock request |
+| `scripts/build-smart-import-test.cjs` | Production test build isolated from the running development server |
 | `lib/smart-import/fixtures.ts` | Labeled synthetic August and encrypted-container fixtures |
 | `lib/smart-import/workbook-preservation.test.ts` | Workbook preservation and edge-case regressions |
 | `components/production-monitoring/workbook-audit-panel.tsx` | Reconciliation, encryption resume, inventory, regions and templates UI |
@@ -88,13 +93,13 @@ Final command results are recorded below after execution:
 
 | Check | Result |
 | --- | --- |
-| Unit suite (`npm test`) | 151 passed; database-only cases run separately |
+| Unit suite (`npm test`) | 164 passed; database-only cases run separately |
 | Type check (`npx tsc --noEmit`) | Passed |
 | Lint (`npm run lint`) | Passed |
 | Prisma validation | Passed |
 | Production build | Passed |
-| Isolated PostgreSQL suite | 13 passed; actual additive migration applied in scratch schema |
-| Production-build Chromium suite | 4 passed, including 31-row duplicate re-upload and dashboard cell provenance |
+| Isolated PostgreSQL suite | 18 passed; actual additive migration applied in scratch schema |
+| Production-build Chromium suite | 5 passed: password unlock, independent multi-file passwords, explicit commit and existing import/provenance regressions |
 
 Database tests cover transactional rollback, stale previews, concurrent
 confirmation, source retention, permissions, immutable templates, source
@@ -109,13 +114,13 @@ repeat upload, encrypted-source resume and inaccessible campaign writes.
 | --- | --- | --- |
 | Synthetic August fixture | Extraction and isolated browser/database commit | 1 sheet, A1:Q34, row 3 headers, 17 columns, 31 detail records, 514 source and 514 persisted raw nonempty cells |
 | Synthetic August error/identity tests | Raw extraction, validation and traceability | Q remarks retained; both RBSC source rows retained; P14 `#REF!` and L32/M32/L34/M34 `#DIV/0!` retained |
-| Synthetic encrypted Office container | Access gating and original retention | `PASSWORD_REQUIRED`; no contents claimed; authorized decrypted-copy workflow creates a linked batch |
+| Real encrypted synthetic XLSX | Password unlock, source retention and reconciliation | Agile and Standard decryption; wrong password/retry; exact encrypted original retained; 514 source cells reconciled after unlock |
+| Independent public msoffcrypto fixture | Cryptographic compatibility | Decrypted bytes match upstream plaintext SHA-256 |
 | Actual `AUGUST PROD(1).xlsx` | Unavailable | No actual-file reconciliation claim |
 | Actual `BPI PA DASHBOARD SEPTEMBER.xlsx` | Unavailable | No actual encryption/decryption/content-ingestion claim |
 
 The number 514 describes the synthetic fixture, not the customer's August file.
-The encrypted synthetic container tests detection only; it is not a real
-cryptographic decryption fixture. Customer files must be tested using the
+Encrypted fixtures now contain actual encrypted workbook data. Customer files must be tested using the
 documented fixture-specific verification workflow when available.
 
 ## Remaining limitations and security
@@ -126,8 +131,9 @@ require manual mapping or a future adapter; raw content remains retained and
 ambiguity blocks normalization. Huge files beyond configured limits are rejected
 without truncation. Parsing is bounded in-process, rather than a streaming job
 service. Workbook chart/pivot/image/macros/connections are archive-only or marked
-for special handling. Legacy XLS object inventory is limited. There is no server
-password decryption or post-commit undo UI. Atomic failure rollback, source
+for special handling. Legacy XLS object inventory is limited. There is no
+post-commit undo UI. Server password decryption supports selected Agile/Standard
+XLSX profiles; legacy encrypted XLS is explicitly unsupported. Atomic failure rollback, source
 archives, field audit and compensating operator recovery remain available.
 
 Uploaded formula/macros/links are not executed. Expanded archive limits, CRC,
