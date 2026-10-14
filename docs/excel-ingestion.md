@@ -37,9 +37,18 @@ Workers have a 15-second timeout and a 128 MB old-generation heap limit.
 
 Durable database attempts limit each file to five and each uploader to fifteen
 requests per ten minutes. Advisory locks prevent concurrent attempt races;
-duplicate active requests are rejected. A 90-second lease permits recovery from
+duplicate active requests are rejected. A 330-second lease permits recovery from
 an interrupted process. Cancellation preserves the encrypted audit source.
 The UI accepts up to ten files, each with independent unlock and review state.
+Extraction endpoints allow up to 300 seconds, consistent with
+[Vercel function duration limits](https://vercel.com/docs/functions/configuring-functions/duration).
+Large sources use compressed structured rows with exact implicit-blank recovery,
+bulk insertion and chunked source reconciliation. Canonical hashes retain the
+previous byte format but stream row by row. Immediate post-extraction review
+reuses the just-verified source report; subsequent previews and commits verify
+stored source again. Original Excel dimension declarations remain in metadata;
+the extracted grid covers actual serialized cells, XML cells and merge extents,
+so formatting-only dimensions do not inflate the grid to thousands of columns.
 
 Access, extraction and business stages are reported separately, with safe audit
 events. Locked workbook counts display Pending rather than zero. Successful
@@ -215,13 +224,19 @@ of real September or August ingestion.
 
 ## Limits and remaining work
 
-- Customer August and September workbooks are not available in the checkout or
-  attachments. Their actual reconciliation and real encrypted-content import
-  remain unverified. Tests exercise real Agile/Standard encryption and decryption,
+- The September workbook in the user's Downloads was verified using an authorized
+  password entered in a local hidden-input prompt: 22 sheets, 104,488 raw rows,
+  786,133 source and stored nonempty cells; exact encrypted archive retained.
+  The full isolated unlock/extraction/review test completed in 131 seconds with
+  peak RSS about 1.2 GB, zero business writes, and scratch-schema cleanup.
+  This workbook needs manual campaign/KPI mapping; extraction does not establish
+  automatic business normalization. The actual August workbook remains unverified.
+  Tests exercise real Agile/Standard encryption and decryption,
   including an independent msoffcrypto fixture, but do not establish the actual
-  September workbook's schema or reconciliation.
+  automatic conversion of arbitrary business layouts.
 - Files are limited to 10 MB, 50 MB actual ZIP expansion, 10,000 ZIP entries,
-  50,000 rows/1,000 columns per sheet and 250,000 total rectangle cells. Files
+  100,000 rows/1,000 columns per sheet, 4,000,000 total grid cells and 1,200,000
+  serialized XML cells. Files
   beyond these limits are rejected, never truncated. Processing and preview
   memory are bounded but not streaming or a background-job service.
 - Side-by-side tables sharing source rows, arbitrarily nested multirow headers,

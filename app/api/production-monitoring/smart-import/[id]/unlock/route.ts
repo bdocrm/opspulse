@@ -4,7 +4,7 @@ import { getPreview, ImportError } from "@/lib/smart-import/service";
 import { unlockBatch, UnlockError } from "@/lib/smart-import/unlock";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300;
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
   let body: { password?: unknown } | undefined;
   try {

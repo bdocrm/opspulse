@@ -30,6 +30,7 @@ caches are not recalculated or represented as freshly verified Excel results.
 | `lib/smart-import/templates.ts` | Creator-owned immutable layout template versions |
 | `lib/smart-import/encryption.ts`, `decryption.ts`, `unlock.ts` | Supported encryption inspection, isolated in-memory decryption, owner authorization, durable rate limits and recovery |
 | `lib/smart-import/encryption.test.ts`, `test-fixtures/` | Real encryption tests and independent MIT-licensed msoffcrypto reference fixture |
+| `lib/smart-import/raw-storage.ts`, `raw-storage.test.ts` | Lossless compressed structured rows, implicit blank recovery, inflated-range and large-row regressions |
 | `components/production-monitoring/encrypted-workbook-unlock.tsx` | Password/show-hide/error/cancel/progress controls |
 | `app/api/production-monitoring/smart-import/[id]/unlock/route.ts` | Bounded owner-only unlock request |
 | `scripts/build-smart-import-test.cjs` | Production test build isolated from the running development server |
@@ -93,12 +94,12 @@ Final command results are recorded below after execution:
 
 | Check | Result |
 | --- | --- |
-| Unit suite (`npm test`) | 164 passed; database-only cases run separately |
+| Unit suite (`npm test`) | 167 passed; database-only cases run separately |
 | Type check (`npx tsc --noEmit`) | Passed |
 | Lint (`npm run lint`) | Passed |
 | Prisma validation | Passed |
 | Production build | Passed |
-| Isolated PostgreSQL suite | 18 passed; actual additive migration applied in scratch schema |
+| Isolated PostgreSQL suite | 19 passed, including compressed large-source reconciliation and tamper blocking; actual additive migration applied in scratch schema |
 | Production-build Chromium suite | 5 passed: password unlock, independent multi-file passwords, explicit commit and existing import/provenance regressions |
 
 Database tests cover transactional rollback, stale previews, concurrent
@@ -117,7 +118,7 @@ repeat upload, encrypted-source resume and inaccessible campaign writes.
 | Real encrypted synthetic XLSX | Password unlock, source retention and reconciliation | Agile and Standard decryption; wrong password/retry; exact encrypted original retained; 514 source cells reconciled after unlock |
 | Independent public msoffcrypto fixture | Cryptographic compatibility | Decrypted bytes match upstream plaintext SHA-256 |
 | Actual `AUGUST PROD(1).xlsx` | Unavailable | No actual-file reconciliation claim |
-| Actual `BPI PA DASHBOARD SEPTEMBER.xlsx` | Unavailable | No actual encryption/decryption/content-ingestion claim |
+| Actual `BPI PA DASHBOARD SEPTEMBER.xlsx` | Isolated authenticated unlock/extraction/review with authorized password | 22 sheets, 104,488 rows and 786,133 nonempty cells reconciled; encrypted archive exact; 131 seconds; no business writes; scratch schema removed |
 
 The number 514 describes the synthetic fixture, not the customer's August file.
 Encrypted fixtures now contain actual encrypted workbook data. Customer files must be tested using the
@@ -146,8 +147,8 @@ graph; a supported Next.js/SheetJS upgrade remains separate work. Consequently,
 this report does not certify every enterprise requirement or all future workbook
 layouts as production-verified.
 
-Recommended follow-ups: verify both actual customer workbooks; apply the reviewed
-migration before release; upgrade vulnerable dependencies; add adapters for any
+Recommended follow-ups: review the September campaign/KPI mapping and verify the
+actual August workbook; upgrade vulnerable dependencies; add adapters for any
 unfamiliar layouts discovered in those files; move very large workloads to
 workers/object storage; configure weighted KPI denominators and a reviewed
 post-commit recovery workflow.

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Prisma, PrismaClient } from "@prisma/client";
 import * as XLSX from "xlsx";
 import { encryptedFixture } from "./fixtures";
+import { compressRawRow, unpackRawRow } from "./raw-storage";
 import { configKey, type Preview } from "./types";
 
 // Opt in with a dedicated scratch schema. Never run fixture writes in the live
@@ -273,5 +274,21 @@ describe.skipIf(!url)("smart import PostgreSQL persistence", () => {
     await client.productionImportIssue.createMany({ data: Array.from({ length: 15 }, () => ({ importId: locked.id, level: "INFORMATIONAL", code: "UNLOCK_ATTEMPT", message: "Fixture attempt", rawData: { actorId: limited.id } })) });
     await expect(unlockBatch(locked.id, "fixture-only-password", limitedUser)).rejects.toMatchObject({ code: "RATE_LIMITED" });
   });
+
+  it("reconciles compact large sources and blocks tampering before business writes", async () => {
+    const book = XLSX.read(Buffer.from(await upload(67).arrayBuffer()), { type: "buffer" });
+    book.Sheets.Notes.A10001 = { t: "s", v: "Last supporting source row" };
+    book.Sheets.Notes["!ref"] = "A1:B10001";
+    const preview = await reviewed(new File([new Uint8Array(XLSX.write(book, { type: "buffer", bookType: "xlsx" }))], "large-source.xlsx"));
+    expect(preview.inspection.metadata?.largeWorkbook).toBe(true);
+    expect(preview.reconciliation).toMatchObject({ passed: true, sourceRows: 10003, persistedRows: 10003 });
+    const stored = await client.productionImportRawRow.findUniqueOrThrow({ where: { importId_sourceSheet_sourceRow: { importId: preview.id, sourceSheet: "Notes", sourceRow: 10001 } } });
+    expect((stored.rawPayload as { encoding: string }).encoding).toBe("DEFLATE_RAW_ROW_V1");
+    const payload = unpackRawRow(stored.rawPayload);
+    payload.cells[0].value = "Tampered supporting data";
+    await client.productionImportRawRow.update({ where: { id: stored.id }, data: { rawPayload: compressRawRow(payload) } });
+    expect((await service.getPreview(preview.id, user)).reconciliation?.passed).toBe(false);
+    await expect(commit(preview)).rejects.toThrow(/Source capture is incomplete/);
+  }, 120000);
 
 });

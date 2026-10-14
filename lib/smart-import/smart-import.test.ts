@@ -82,6 +82,7 @@ describe("complete source capture", () => {
     const book = XLSX.utils.book_new();
     const sheet = XLSX.utils.aoa_to_sheet([["Campaign", "MTD"]]);
     sheet["!ref"] = "A1:ALM1";
+    sheet.ALM1 = { t: "s", v: "Actual out-of-bounds source value" };
     XLSX.utils.book_append_sheet(book, sheet, "Huge");
     const buffer = XLSX.write(book, { type: "buffer", bookType: "xlsx" });
     expect(() => parseFile(buffer, "huge.xlsx", "xlsx")).toThrow(/No data was truncated/);

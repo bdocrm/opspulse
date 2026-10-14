@@ -10,7 +10,14 @@ export function canonical(value: unknown): unknown {
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry)]));
   return value;
 }
-export const sourceDigest = (rows: RawRow[]) => createHash("sha256").update(JSON.stringify(canonical(rows))).digest("hex");
+export function sourceHasher() {
+  const digest = createHash("sha256").update("[");
+  let first = true;
+  return { add(row: RawRow) { if (!first) digest.update(","); first = false; digest.update(JSON.stringify(canonical(row))); }, finish() { return digest.update("]").digest("hex"); } };
+}
+// Preserve the existing digest format without allocating a canonical copy and
+// one giant JSON string for the whole worksheet.
+export function sourceDigest(rows: RawRow[]) { const digest = sourceHasher(); rows.forEach(row => digest.add(row)); return digest.finish(); }
 export function discoverRegions(rows: RawRow[], columns: number, sheetName: string, merges: XLSX.Range[] = []): Region[] {
   const headerCandidates: { row: number; headers: Column[]; multi: boolean; ambiguous: boolean }[] = [];
   const getText = (row: number, column: number) => {
@@ -74,11 +81,11 @@ export function xmlCells(files: Map<string, Buffer>): Map<string, Map<string, st
     if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new Error("Unsafe XML declarations in workbook.");
     const cells = new Map<string, string>();
     for (const cell of xml.matchAll(/<(?:\w+:)?c\b[^>]*(?:\/>|>[\s\S]*?<\/(?:\w+:)?c\s*>)/g)) {
-      if (++serializedCells > 250000) throw new Error("Workbook exceeds the 250,000 serialized cell inspection limit. No data was truncated.");
+      if (++serializedCells > 1200000) throw new Error("Workbook exceeds the 1,200,000 serialized cell inspection limit. No data was truncated.");
       const address = attrs(cell[0].slice(0, cell[0].indexOf(">") + 1)).r;
       if (!address || !/^[A-Z]+[1-9]\d*$/.test(address) || cells.has(address)) throw new Error("Ambiguous or duplicate worksheet cell coordinate.");
       const position = XLSX.utils.decode_cell(address);
-      if (position.r >= 50000 || position.c >= 1000) throw new Error("Workbook exceeds coordinate inspection limits. No data was truncated.");
+      if (position.r >= 100000 || position.c >= 1000) throw new Error("Workbook exceeds coordinate inspection limits (100,000 rows or 1,000 columns). No data was truncated.");
       if (/<(?:\w+:)?(?:f|v|is)\b/.test(cell[0])) cells.set(address, cell[0]);
     }
     result.set(values.name, cells);

@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { Prisma, type CampaignMetricConfig, type ProductionImport } from "@prisma/client";
 import { databaseTable, prisma } from "../prisma";
 import { cacheClear } from "../cache";
@@ -9,8 +9,10 @@ import { nonEmpty, normalizeName } from "./normalization";
 import { inspectEncryption } from "./encryption";
 import { parseFile, readUpload } from "./parser";
 import { reconcile } from "./reconciliation";
+import { sourceHasher } from "./discovery";
+import { compressRawRow, unpackRawRow } from "./raw-storage";
 import { validateOptions } from "./review";
-import { configKey, NUMBER_FIELDS, SUMMARY_UNIT, type Candidate, type Config, type Inspection, type Preview, type RawRow, type ReviewOptions } from "./types";
+import { configKey, NUMBER_FIELDS, SUMMARY_UNIT, type Candidate, type Config, type Inspection, type Preview, type RawRow, type ReviewOptions, type Reconciliation } from "./types";
 
 export const ENGINE = "SMART_V1";
 // Prisma model queries qualify their schema. Raw SQL must do the same because
@@ -42,24 +44,52 @@ export async function accessibleBatch(id: string, user: ProductionSessionUser, d
   if (batch.importedById !== user.id && user.role !== "CEO") throw new ImportError("You do not have access to this import batch.", 403);
   return batch;
 }
-async function rawRows(id: string, db: Db = prisma) {
-  const rows = await db.productionImportRawRow.findMany({ where: { importId: id }, orderBy: [{ sourceSheet: "asc" }, { sourceRow: "asc" }] });
-  return rows.map(row => ({ ...(row.rawPayload as unknown as RawRow), id: row.id }));
+async function rawRows(id: string, db: Db = prisma, sheets?: string[]) {
+  const rows = await db.productionImportRawRow.findMany({ where: { importId: id, ...(sheets ? { sourceSheet: { in: sheets } } : {}) }, select: { id: true, rawPayload: true }, orderBy: [{ sourceSheet: "asc" }, { sourceRow: "asc" }] });
+  return rows.map(row => ({ ...unpackRawRow(row.rawPayload), id: row.id }));
+}
+async function storedReconciliation(id: string, inspection: Inspection, db: Db = prisma, records: Candidate[] = [], committed = 0, status = "NOT_COMMITTED") {
+  if (!inspection.metadata?.largeWorkbook) return reconcile(inspection, await rawRows(id, db), records, committed, status);
+  const report = reconcile(inspection, [], records, committed, status);
+  const pending = new Set(records.map(row => JSON.stringify([row.sourceSheet, row.sourceRow])));
+  let totalRows = 0, totalCells = 0;
+  const sheets = [];
+  for (const sheet of inspection.sheets) {
+    let count = 0, cells = 0, after = 0, coordinates = true;
+    const digest = sourceHasher();
+    while (true) {
+      const page = await db.productionImportRawRow.findMany({ where: { importId: id, sourceSheet: sheet.name, sourceRow: { gt: after } }, orderBy: { sourceRow: "asc" }, take: 1000, select: { sourceRow: true, rawPayload: true } });
+      if (!page.length) break;
+      for (const entry of page) {
+        const row = unpackRawRow(entry.rawPayload);
+        count++; coordinates &&= entry.sourceRow === count && row.sourceRow === count && row.sourceSheet === sheet.name && row.cells.length === sheet.columns && row.cells.every((cell, column) => {
+          const match = cell.address.match(/^([A-Z]+)(\d+)$/); let col = 0;
+          for (const character of match?.[1] ?? "") col = col * 26 + character.charCodeAt(0) - 64;
+          return Number(match?.[2]) === count && col === column + 1;
+        });
+        cells += row.cells.filter(nonEmpty).length; digest.add(row); pending.delete(JSON.stringify([sheet.name, row.sourceRow]));
+      }
+      after = page[page.length - 1].sourceRow;
+    }
+    sheets.push({ name: sheet.name, passed: coordinates && count === sheet.rows && cells === sheet.nonEmptyCells && (!sheet.sourceDigest || digest.finish() === sheet.sourceDigest), sourceCells: sheet.nonEmptyCells, persistedCells: cells, sourceRows: sheet.rows, persistedRows: count, regions: sheet.regions?.length ?? 1 });
+    totalRows += count; totalCells += cells;
+  }
+  const storedCount = await db.productionImportRawRow.count({ where: { importId: id } });
+  return { ...report, passed: inspection.coveragePassed && sheets.every(sheet => sheet.passed) && totalRows === storedCount && pending.size === 0, rawStatus: sheets.every(sheet => sheet.passed) && totalRows === storedCount && pending.size === 0 ? "VERIFIED" : "FAILED", persistedRows: totalRows, persistedRawNonEmptyCells: totalCells, sheets };
 }
 function result(batch: ProductionImport) { return { inserted: batch.recordsImported, updated: batch.recordsUpdated, duplicates: batch.recordsUnchanged, skipped: batch.recordsSkipped, pending: batch.pendingCount, warnings: batch.warningCount, conflicts: batch.conflictCount, invalid: batch.invalidCount }; }
 async function previousImports(batch: ProductionImport, user: ProductionSessionUser) {
   const rows = await prisma.productionImport.findMany({ where: { engine: ENGINE, id: { not: batch.id }, fileHash: batch.fileHash, ...(user.role === "CEO" ? {} : { importedById: batch.importedById }), status: { in: ["COMPLETED", "COMPLETED_WITH_WARNINGS", "PARTIALLY_IMPORTED"] } }, select: { id: true, fileName: true, createdAt: true, importedBy: { select: { name: true } }, status: true }, orderBy: { createdAt: "desc" }, take: 5 });
   return rows.map(row => ({ ...row, createdAt: row.createdAt.toISOString() }));
 }
-export async function getPreview(id: string, user: ProductionSessionUser): Promise<Preview> {
+export async function getPreview(id: string, user: ProductionSessionUser, verifiedSource?: Reconciliation): Promise<Preview> {
   const batch = await accessibleBatch(id, user);
   const context = await loadContext(user);
   const rows = await prisma.productionImportRawRow.findMany({ where: { importId: id, normalizedPayload: { not: Prisma.DbNull } }, orderBy: [{ sourceSheet: "asc" }, { sourceRow: "asc" }] });
   const records = rows.map(row => row.normalizedPayload as unknown as Candidate);
-  const sourceRows = await rawRows(id);
-  const reconciliation = reconcile(batch.inspection as unknown as Inspection, sourceRows, records, batch.recordsImported + batch.recordsUpdated, batch.status);
+  const reconciliation = verifiedSource ? { ...verifiedSource, businessStatus: batch.status } : await storedReconciliation(id, batch.inspection as unknown as Inspection, prisma, records, batch.recordsImported + batch.recordsUpdated, batch.status);
   const inspection = batch.inspection as unknown as Inspection;
-  const stages = { access: String(inspection.metadata?.accessStatus ?? "NOT_ENCRYPTED"), extraction: String(inspection.metadata?.extractionStatus ?? (inspection.coveragePassed ? "EXTRACTION_COMPLETED" : "PENDING")), business: completed(batch.status) ? "IMPORT_COMPLETED" : batch.status === "READY" ? records.some(row => row.action === "BLOCK") ? "READY_FOR_VALIDATION" : "READY_FOR_IMPORT" : "NOT_IMPORTED" };
+  const stages = { access: String(inspection.metadata?.accessStatus ?? "NOT_ENCRYPTED"), extraction: String(inspection.metadata?.extractionStatus ?? (inspection.coveragePassed ? "EXTRACTION_COMPLETED" : "PENDING")), business: completed(batch.status) ? "IMPORT_COMPLETED" : batch.status === "READY" ? !records.length || records.some(row => row.action === "BLOCK") ? "READY_FOR_VALIDATION" : "READY_FOR_IMPORT" : "NOT_IMPORTED" };
   const eventRows = await prisma.productionImportIssue.findMany({ where: { importId: id, code: { in: ["UNLOCK_ATTEMPT", "INVALID_PASSWORD", "DECRYPTED", "EXTRACTING", "EXTRACTION_COMPLETED", "EXTRACTION_FAILED", "UNSUPPORTED_ENCRYPTION", "PROCESSING_TIMEOUT", "REQUEST_INTERRUPTED", "CORRUPTED_WORKBOOK"] } }, orderBy: { createdAt: "asc" }, take: 100 });
   const events = eventRows.map(event => ({ code: event.code, message: event.message, createdAt: event.createdAt.toISOString(), actorId: (event.rawData as { actorId?: string } | null)?.actorId ?? null }));
   return { events, stages, reconciliation, parentImportId: batch.parentImportId, id, status: batch.status, inspection: batch.inspection as unknown as Inspection, options: batch.reviewOptions as unknown as ReviewOptions, records, configs: Object.fromEntries(records.filter(row => row.config && row.campaignId).map(row => [configKey(row.campaignId!, row.goalType), row.config!])), campaigns: context.campaigns.map(row => ({ id: row.id, name: row.name })), summary: summary(records), previewHash: batch.previewHash ?? "", previousImports: await previousImports(batch, user), result: completed(batch.status) ? result(batch) : null, lastError: batch.lastError };
@@ -88,37 +118,46 @@ export async function extractBatch(id: string, buffer: Buffer, user: ProductionS
   const batch = await accessibleBatch(id, user);
   const original = batch.inspection as unknown as Inspection;
   const parsed = parseFile(buffer, batch.fileName, batch.fileType!);
+  const large = parsed.rows.length > 10000;
   parsed.inspection.fileHash = batch.fileHash!;
   parsed.inspection.fileSize = batch.originalFile?.length ?? buffer.length;
-  parsed.inspection.metadata = { ...parsed.inspection.metadata, ...(original.metadata ?? {}), accessStatus: lease ? "DECRYPTED" : "NOT_ENCRYPTED", extractionStatus: "EXTRACTION_COMPLETED", unlockLease: null };
+  parsed.inspection.metadata = { ...parsed.inspection.metadata, ...(original.metadata ?? {}), largeWorkbook: large, accessStatus: lease ? "DECRYPTED" : "NOT_ENCRYPTED", extractionStatus: "EXTRACTION_COMPLETED", unlockLease: null };
   const options = defaultOptions(parsed.inspection);
-  await prisma.$transaction(async tx => {
+  const verifiedSource = await prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT "id" FROM ${batchTable} WHERE "id" = ${id} FOR UPDATE`;
     const current = await accessibleBatch(id, user, tx);
     const currentInspection = current.inspection as unknown as Inspection;
     if (lease ? current.status !== "DECRYPTING" || currentInspection.metadata?.unlockLease !== lease : current.status !== "ANALYZING") throw new ImportError("The extraction request is no longer active.", 409);
-    for (let offset = 0; offset < parsed.rows.length; offset += 250) await tx.productionImportRawRow.createMany({ data: parsed.rows.slice(offset, offset + 250).map(row => ({ importId: id, sourceSheet: row.sourceSheet, sourceRow: row.sourceRow, rawPayload: json(row) })) });
-    const persisted = await rawRows(id, tx);
-    const reconciliation = reconcile(parsed.inspection, persisted);
+    for (let offset = 0; offset < parsed.rows.length; offset += 1000) {
+      const data = parsed.rows.slice(offset, offset + 1000).map(row => ({ id: randomUUID(), sourceSheet: row.sourceSheet, sourceRow: row.sourceRow, rawPayload: large ? compressRawRow(row) : row }));
+      if (large) {
+        const payload = JSON.stringify(data);
+        await tx.$executeRaw`INSERT INTO ${rawRowTable} ("id", "importId", "sourceSheet", "sourceRow", "rawPayload", "processingStatus", "createdAt") SELECT source.id, ${id}, source."sourceSheet", source."sourceRow", source."rawPayload", 'CAPTURED', now() FROM jsonb_to_recordset(${payload}::jsonb) AS source(id text, "sourceSheet" text, "sourceRow" integer, "rawPayload" jsonb)`;
+      } else await tx.productionImportRawRow.createMany({ data: data.map(row => ({ ...row, importId: id, rawPayload: json(row.rawPayload) })) });
+    }
+    // Release the dense extraction matrix before checking stored chunks.
+    parsed.rows.length = 0;
+    const reconciliation = await storedReconciliation(id, parsed.inspection, tx);
     if (!reconciliation.passed) throw new ImportError("Persisted source preservation failed. Normalization is blocked.", 422);
     await tx.productionImport.update({ where: { id }, data: { status: "STAGED", inspection: json(parsed.inspection), reconciliation: json(reconciliation), reviewOptions: json(options), reportingPeriods: json(parsed.inspection.reportingPeriods), lastError: null } });
-  }, { timeout: 60000 });
-  await reviewBatch(id, options, user);
+    return reconciliation;
+  }, { timeout: 180000, maxWait: 10000 });
+  return reviewBatch(id, options, user, verifiedSource);
 }
 const hashFile = (buffer: Buffer) => createHash("sha256").update(buffer).digest("hex");
 
-export async function reviewBatch(id: string, input: unknown, user: ProductionSessionUser) {
+export async function reviewBatch(id: string, input: unknown, user: ProductionSessionUser, verifiedSource?: Reconciliation) {
   await accessibleBatch(id, user);
-  await prisma.$transaction(async tx => {
+  return prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT "id" FROM ${batchTable} WHERE "id" = ${id} FOR UPDATE`;
     const batch = await accessibleBatch(id, user, tx);
     if (!["STAGED", "READY", "FAILED"].includes(batch.status)) throw new ImportError("This import can no longer be edited.", 409);
     const context = await loadContext(user, tx);
     const inspection = batch.inspection as unknown as Inspection;
     const options = validateOptions(input, inspection, new Set(context.campaigns.map(row => row.id)));
-    const rows = await rawRows(id, tx);
-    const captured = rows.reduce((total, row) => total + row.cells.filter(nonEmpty).length, 0);
-    if (captured !== inspection.nonEmptyCells || !reconcile(inspection, rows).passed) throw new ImportError("Stored source data failed coverage verification. Commit is blocked.", 422);
+    const sourceReport = verifiedSource ?? await storedReconciliation(id, inspection, tx);
+    if (!sourceReport.passed) throw new ImportError("Stored source data failed coverage verification. Commit is blocked.", 422);
+    const rows = await rawRows(id, tx, inspection.metadata?.largeWorkbook ? options.selectedSheets : undefined);
     const { candidates } = buildCandidates(rows, inspection, options, context);
     const stats = summary(candidates);
     await tx.productionImportRawRow.updateMany({ where: { importId: id }, data: { normalizedPayload: Prisma.DbNull, validationIssues: Prisma.DbNull, processingStatus: "CAPTURED" } });
@@ -127,8 +166,11 @@ export async function reviewBatch(id: string, input: unknown, user: ProductionSe
       const payload = JSON.stringify(candidates.slice(offset, offset + 250).map(candidate => ({ id: rowIds.get(candidate.rowKey), payload: candidate, issues: candidate.issues, status: candidate.status })));
       await tx.$executeRaw`UPDATE ${rawRowTable} AS target SET "normalizedPayload" = source.payload, "validationIssues" = source.issues, "processingStatus" = source.status FROM jsonb_to_recordset(${payload}::jsonb) AS source(id text, payload jsonb, issues jsonb, status text) WHERE target.id = source.id AND target."importId" = ${id}`;
     }
-    await tx.productionImport.update({ where: { id }, data: { status: "READY", reconciliation: json(reconcile(inspection, rows, candidates)), reviewOptions: json(options), previewHash: hash({ candidates: [...candidates].sort((a, b) => a.rowKey.localeCompare(b.rowKey)), options }), recordsDetected: stats.total, warningCount: stats.warnings, errorCount: stats.invalid + stats.conflicts, pendingCount: stats.pending, conflictCount: stats.conflicts, invalidCount: stats.invalid, lastError: null, reportingPeriods: json([...new Map(candidates.filter(row => row.reportYear && row.reportMonth).map(row => [`${row.reportYear}-${row.reportMonth}`, { year: row.reportYear, month: row.reportMonth }])).values()]) } });
-  }, { timeout: 60000 });
+    const candidateReport = reconcile(inspection, [], candidates);
+    const reconciliation = { ...candidateReport, passed: sourceReport.passed && candidates.every(candidate => rows.some(row => row.sourceSheet === candidate.sourceSheet && row.sourceRow === candidate.sourceRow)), rawStatus: sourceReport.rawStatus, sheets: sourceReport.sheets, persistedRows: sourceReport.persistedRows, persistedRawNonEmptyCells: sourceReport.persistedRawNonEmptyCells };
+    await tx.productionImport.update({ where: { id }, data: { status: "READY", reconciliation: json(reconciliation), reviewOptions: json(options), previewHash: hash({ candidates: [...candidates].sort((a, b) => a.rowKey.localeCompare(b.rowKey)), options }), recordsDetected: stats.total, warningCount: stats.warnings, errorCount: stats.invalid + stats.conflicts, pendingCount: stats.pending, conflictCount: stats.conflicts, invalidCount: stats.invalid, lastError: null, reportingPeriods: json([...new Map(candidates.filter(row => row.reportYear && row.reportMonth).map(row => [`${row.reportYear}-${row.reportMonth}`, { year: row.reportYear, month: row.reportMonth }])).values()]) } });
+    return reconciliation;
+  }, { timeout: 180000, maxWait: 10000 });
 }
 
 function configData(config: Config) {
@@ -153,9 +195,10 @@ export async function commitBatch(id: string, expectedHash: string, selectedRows
       const batch = await accessibleBatch(id, user, tx);
       if (completed(batch.status)) return batch; // Same batch is committed at most once.
       if (batch.status !== "READY" || batch.previewHash !== expectedHash) throw new ImportError("Preview changed. Revalidate and confirm the latest preview.", 409);
-      const raw = await rawRows(id, tx);
       const inspection = batch.inspection as unknown as Inspection;
-      if (!reconcile(inspection, raw).passed) throw new ImportError("Source capture is incomplete. Import blocked.", 422);
+      const sourceReport = await storedReconciliation(id, inspection, tx);
+      if (!sourceReport.passed) throw new ImportError("Source capture is incomplete. Import blocked.", 422);
+      const raw = await rawRows(id, tx, inspection.metadata?.largeWorkbook ? (batch.reviewOptions as unknown as ReviewOptions).selectedSheets : undefined);
       const persisted = await tx.productionImportRawRow.findMany({ where: { importId: id, normalizedPayload: { not: Prisma.DbNull } } });
       const all = persisted.map(row => row.normalizedPayload as unknown as Candidate);
       if (hash({ candidates: [...all].sort((a, b) => a.rowKey.localeCompare(b.rowKey)), options: batch.reviewOptions }) !== expectedHash) throw new ImportError("Stored preview integrity check failed. Revalidate before committing.", 409);
@@ -235,7 +278,7 @@ export async function commitBatch(id: string, expectedHash: string, selectedRows
       for (const row of all) await tx.productionImportRawRow.update({ where: { importId_sourceSheet_sourceRow: { importId: id, sourceSheet: row.sourceSheet, sourceRow: row.sourceRow } }, data: { normalizedPayload: json(row), processingStatus: !selected.has(row.rowKey) && row.status !== "DUPLICATE" ? "NOT_SELECTED" : row.action === "SKIP" ? row.status === "DUPLICATE" ? "DUPLICATE" : "SKIPPED" : row.action === "HISTORY_ONLY" ? "HISTORY_ONLY" : "COMMITTED" } });
       const stats = summary(all);
       const partial = all.some(row => !rows.some(selected => selected.rowKey === row.rowKey) || (row.action === "SKIP" && row.status !== "DUPLICATE"));
-      const reconciliation = reconcile(inspection, raw, all, inserted + updated, partial ? "PARTIALLY_IMPORTED" : "COMPLETED");
+      const reconciliation = { ...reconcile(inspection, raw, all, inserted + updated, partial ? "PARTIALLY_IMPORTED" : "COMPLETED"), passed: sourceReport.passed, rawStatus: sourceReport.rawStatus, sheets: sourceReport.sheets, persistedRows: sourceReport.persistedRows, persistedRawNonEmptyCells: sourceReport.persistedRawNonEmptyCells };
       if (!reconciliation.passed) throw new ImportError("Final reconciliation failed. Business writes rolled back.", 422);
       const skipped = all.length - inserted - updated;
       return tx.productionImport.update({ where: { id }, data: { reconciliation: json(reconciliation), status: partial ? "PARTIALLY_IMPORTED" : stats.warnings || stats.invalid || stats.conflicts || historyOnly || skipped > duplicates ? "COMPLETED_WITH_WARNINGS" : "COMPLETED", completedAt: new Date(), recordsImported: inserted, recordsUpdated: updated, recordsUnchanged: duplicates, recordsSkipped: skipped, lastError: null } });

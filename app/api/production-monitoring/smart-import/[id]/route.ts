@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import { apiError, importUser, sameOrigin } from "@/lib/smart-import/api";
 import { accessibleBatch, cancelBatch, commitBatch, getPreview, ImportError, reviewBatch } from "@/lib/smart-import/service";
 import { csvCell } from "@/lib/smart-import/export";
 import type { Candidate } from "@/lib/smart-import/types";
 import { applyTemplate } from "@/lib/smart-import/templates";
+import { unpackRawRow } from "@/lib/smart-import/raw-storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   try {
@@ -28,7 +30,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       const page = Math.max(1, Math.floor(Number(request.nextUrl.searchParams.get("page")) || 1));
       const where = { importId: params.id, ...(sheet ? { sourceSheet: sheet } : {}) };
       const [total, rows] = await Promise.all([prisma.productionImportRawRow.count({ where }), prisma.productionImportRawRow.findMany({ where, orderBy: [{ sourceSheet: "asc" }, { sourceRow: "asc" }], skip: (page - 1) * 50, take: 50 })]);
-      return NextResponse.json({ total, page, rows });
+      return NextResponse.json({ total, page, rows: rows.map(row => ({ ...row, rawPayload: unpackRawRow(row.rawPayload) })) });
     }
     if (format === "raw") {
       const sheet = request.nextUrl.searchParams.get("sheet");
@@ -36,15 +38,15 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       if (!sheet || !Number.isInteger(row) || row < 1) throw new ImportError("Choose a valid source row.");
       const raw = await prisma.productionImportRawRow.findUnique({ where: { importId_sourceSheet_sourceRow: { importId: params.id, sourceSheet: sheet, sourceRow: row } } });
       if (!raw) throw new ImportError("Source row not found.", 404);
-      return NextResponse.json(raw);
+      return NextResponse.json({ ...raw, rawPayload: unpackRawRow(raw.rawPayload) });
     }
     if (format === "errors") {
-      const rows = await prisma.productionImportRawRow.findMany({ where: { importId: params.id }, orderBy: [{ sourceSheet: "asc" }, { sourceRow: "asc" }] });
+      const rows = await prisma.productionImportRawRow.findMany({ where: { importId: params.id, normalizedPayload: { not: Prisma.DbNull } }, select: { sourceSheet: true, sourceRow: true, normalizedPayload: true, rawPayload: true }, orderBy: [{ sourceSheet: "asc" }, { sourceRow: "asc" }] });
       const report: unknown[][] = [["Sheet", "Source row", "Campaign", "KPI", "Status", "Source values", "Issues", "Recommended correction"]];
       for (const row of rows) {
         const candidate = row.normalizedPayload as unknown as Candidate | null;
         if (!candidate?.issues.length) continue;
-        report.push([row.sourceSheet, row.sourceRow, candidate.campaignSource, candidate.goalLabel, candidate.status, row.rawPayload, candidate.issues.map(issue => `${issue.code}: ${issue.message}`).join(" | "), "Review the reported fields or mapping, correct the source if needed, and revalidate."]);
+        report.push([row.sourceSheet, row.sourceRow, candidate.campaignSource, candidate.goalLabel, candidate.status, unpackRawRow(row.rawPayload), candidate.issues.map(issue => `${issue.code}: ${issue.message}`).join(" | "), "Review the reported fields or mapping, correct the source if needed, and revalidate."]);
       }
       return new NextResponse("\uFEFF" + report.map(row => row.map(csvCell).join(",")).join("\r\n"), { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="import-issues.csv"', "X-Content-Type-Options": "nosniff" } });
     }

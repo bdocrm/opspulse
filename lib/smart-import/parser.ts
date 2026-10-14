@@ -7,8 +7,8 @@ import { encryptedOffice, featureInventory, inspectZip } from "./archive";
 import { discoverRegions, sourceDigest, xmlCells } from "./discovery";
 
 export const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const MAX_CELLS = 250_000;
-const MAX_ROWS = 50_000;
+const MAX_CELLS = 4_000_000;
+const MAX_ROWS = 100_000;
 const MAX_COLUMNS = 1_000;
 const MIME: Record<string, Set<string>> = {
   xlsx: new Set(["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/zip", "application/octet-stream", ""]),
@@ -53,7 +53,15 @@ export function parseFile(buffer: Buffer, fileName: string, fileType: string): {
   for (const [sheetIndex, name] of workbook.SheetNames.entries()) {
     const sheet = workbook.Sheets[name];
     const addresses = Object.keys(sheet).filter(key => /^[A-Z]+\d+$/.test(key));
-    let end = sheet["!ref"] ? XLSX.utils.decode_range(sheet["!ref"]).e : { r: -1, c: -1 };
+    // Excel's declared dimension can extend to XFD after formatting a column.
+    // Preserve that declaration as metadata, but bound extraction by actual
+    // serialized cells, independently detected XML cells, and merged ranges.
+    let end = { r: -1, c: -1 };
+    for (const merge of sheet["!merges"] ?? []) end = { r: Math.max(end.r, merge.e.r), c: Math.max(end.c, merge.e.c) };
+    for (const address of sourceXml.get(name)?.keys() ?? []) {
+      const pos = XLSX.utils.decode_cell(address);
+      end = { r: Math.max(end.r, pos.r), c: Math.max(end.c, pos.c) };
+    }
     for (const address of addresses) {
       const pos = XLSX.utils.decode_cell(address);
       end = { r: Math.max(end.r, pos.r), c: Math.max(end.c, pos.c) };
@@ -61,7 +69,7 @@ export function parseFile(buffer: Buffer, fileName: string, fileType: string): {
     const rowCount = end.r + 1;
     const columnCount = end.c + 1;
     inspectedCells += rowCount * columnCount;
-    if (rowCount > MAX_ROWS || columnCount > MAX_COLUMNS || inspectedCells > MAX_CELLS) throw new Error("Workbook exceeds the safe inspection limit (50,000 rows, 1,000 columns per sheet, or 250,000 total cells). No data was truncated. Split the workbook and try again.");
+    if (rowCount > MAX_ROWS || columnCount > MAX_COLUMNS || inspectedCells > MAX_CELLS) throw new Error("Workbook exceeds the safe inspection limit (100,000 rows, 1,000 columns per sheet, or 4,000,000 total cells). No data was truncated. Split the workbook and try again.");
     const sheetRows: RawRow[] = [];
     let count = 0;
     let headerIndex: number | null = null;
@@ -69,9 +77,8 @@ export function parseFile(buffer: Buffer, fileName: string, fileType: string): {
     for (let row = 0; row < rowCount; row++) {
       const cells = Array.from({ length: columnCount }, (_, column) => rawCell(sheet, row, column));
       for (const cell of cells) {
-        cell.metadata = { ...cell.metadata, date1904: Boolean(workbook.Workbook?.WBProps?.date1904) };
         const xml = sourceXml.get(name)?.get(cell.address);
-        if (xml) cell.metadata.sourceXml = xml;
+        if (nonEmpty(cell) || cell.metadata || xml) cell.metadata = { ...cell.metadata, date1904: Boolean(workbook.Workbook?.WBProps?.date1904), ...(xml ? { sourceXml: xml } : {}) };
       }
       count += cells.filter(nonEmpty).length;
       const fields = new Set(cells.map(cell => identifyHeader(cellText(cell))).filter(Boolean));
@@ -112,6 +119,10 @@ export function parseFile(buffer: Buffer, fileName: string, fileType: string): {
       if (!cell?.metadata?.sourceXml) throw new Error(`OOXML source coverage verification failed at ${name}!${address}.`);
     }
     nonEmptyCells += sourceCount;
+    // Values and metadata are now retained in raw rows/inspection. Release the
+    // parser's duplicate sheet and coordinate map before the next large sheet.
+    delete workbook.Sheets[name];
+    sourceXml.delete(name);
   }
   // Filename suggestions are never accepted as verified reporting periods.
   for (const row of rows) for (const cell of row.cells) {

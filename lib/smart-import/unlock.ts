@@ -35,7 +35,7 @@ export async function unlockBatch(id: string, password: unknown, user: Productio
     if (current.importedById !== user.id) throw new ImportError("Only the uploader can unlock this workbook.", 403);
     const inspection = current.inspection as unknown as Inspection;
     if (["STAGED", "READY", "COMPLETED", "COMPLETED_WITH_WARNINGS", "PARTIALLY_IMPORTED"].includes(current.status) && inspection.metadata?.accessStatus === "DECRYPTED") return null;
-    if (current.status === "DECRYPTING" && Date.now() - Number(inspection.metadata?.unlockStartedAt ?? 0) < 90000) throw new ImportError("This workbook is already unlocking. Wait for the current request to finish.", 409);
+    if (current.status === "DECRYPTING" && Date.now() - Number(inspection.metadata?.unlockStartedAt ?? 0) < 330000) throw new ImportError("This workbook is already unlocking. Wait for the current request to finish.", 409);
     if (!["PASSWORD_REQUIRED", "INVALID_PASSWORD", "UNSUPPORTED_ENCRYPTION", "EXTRACTION_FAILED", "DECRYPTING"].includes(current.status)) throw new ImportError("This workbook cannot be unlocked in its current state.", 409);
     if (!current.originalFile) throw new ImportError("The encrypted source is unavailable.", 404);
     const profile = inspectEncryption(Buffer.from(current.originalFile));
@@ -65,9 +65,9 @@ export async function unlockBatch(id: string, password: unknown, user: Productio
       { importId: id, level: "INFORMATIONAL", code: "EXTRACTING", message: "Complete workbook extraction started." },
     ] });
     if (signal?.aborted) throw new DecryptionError("REQUEST_INTERRUPTED");
-    await extractBatch(id, decrypted, user, lease);
+    const reconciliation = await extractBatch(id, decrypted, user, lease);
     await prisma.productionImportIssue.create({ data: { importId: id, level: "INFORMATIONAL", code: "EXTRACTION_COMPLETED", message: "Stored source reconciliation passed. Business import still requires review and confirmation." } });
-    return getPreview(id, user);
+    return getPreview(id, user, reconciliation);
   } catch (error) {
     const code = error instanceof DecryptionError ? error.code : "EXTRACTION_FAILED";
     const status = code === "INVALID_PASSWORD" ? "INVALID_PASSWORD" : code === "UNSUPPORTED_ENCRYPTION" ? "UNSUPPORTED_ENCRYPTION" : ["REQUEST_INTERRUPTED", "PROCESSING_TIMEOUT", "PROCESSING_FAILED"].includes(code) ? "PASSWORD_REQUIRED" : "EXTRACTION_FAILED";
@@ -79,7 +79,7 @@ export async function unlockBatch(id: string, password: unknown, user: Productio
         await tx.productionImport.update({ where: { id }, data: { status, lastError: MESSAGES[code], inspection: json({ ...inspection, metadata: { ...inspection.metadata, accessStatus: code, extractionStatus: code === "EXTRACTION_FAILED" ? "EXTRACTION_FAILED" : "PENDING", unlockLease: null } }) } });
       }
       await tx.productionImportIssue.create({ data: { importId: id, level: "WARNING", code, message: MESSAGES[code], rawData: json({ actorId: user.id }) } });
-    });
+    }, { timeout: 30000, maxWait: 10000 });
     throw new UnlockError(code, code === "PROCESSING_TIMEOUT" ? 504 : code === "PROCESSING_FAILED" ? 503 : 422, id);
   } finally { secret = undefined; decrypted?.fill(0); }
 }
