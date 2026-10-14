@@ -4,6 +4,7 @@ import { apiError, importUser, sameOrigin } from "@/lib/smart-import/api";
 import { accessibleBatch, cancelBatch, commitBatch, getPreview, ImportError, reviewBatch } from "@/lib/smart-import/service";
 import { csvCell } from "@/lib/smart-import/export";
 import type { Candidate } from "@/lib/smart-import/types";
+import { applyTemplate } from "@/lib/smart-import/templates";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,7 +17,18 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     const format = request.nextUrl.searchParams.get("format");
     if (format === "source") {
       if (!batch.originalFile) throw new ImportError("Source file is unavailable.", 404);
-      return new NextResponse(new Uint8Array(batch.originalFile), { headers: { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(batch.fileName)}`, "X-Content-Type-Options": "nosniff" } });
+      return new NextResponse(new Uint8Array(batch.originalFile), { headers: { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(batch.fileName)}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store" } });
+    }
+    if (format === "report") {
+      const preview = await getPreview(params.id, user);
+      return new NextResponse(JSON.stringify({ batch: { id: preview.id, status: preview.status, parentImportId: preview.parentImportId }, inspection: preview.inspection, reconciliation: preview.reconciliation, records: preview.records, result: preview.result }, null, 2), { headers: { "Content-Type": "application/json", "Content-Disposition": 'attachment; filename="import-reconciliation.json"', "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store" } });
+    }
+    if (format === "rows") {
+      const sheet = request.nextUrl.searchParams.get("sheet");
+      const page = Math.max(1, Math.floor(Number(request.nextUrl.searchParams.get("page")) || 1));
+      const where = { importId: params.id, ...(sheet ? { sourceSheet: sheet } : {}) };
+      const [total, rows] = await Promise.all([prisma.productionImportRawRow.count({ where }), prisma.productionImportRawRow.findMany({ where, orderBy: [{ sourceSheet: "asc" }, { sourceRow: "asc" }], skip: (page - 1) * 50, take: 50 })]);
+      return NextResponse.json({ total, page, rows });
     }
     if (format === "raw") {
       const sheet = request.nextUrl.searchParams.get("sheet");
@@ -44,6 +56,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     sameOrigin(request);
     const user = await importUser();
     const body = await request.json();
+    if (body.action === "template") { await applyTemplate(params.id, body.templateId, user); return NextResponse.json(await getPreview(params.id, user)); }
     if (body.action === "review") {
       try { await reviewBatch(params.id, body.options, user); }
       catch (error) { if (!(error instanceof ImportError) && error instanceof Error && /^Invalid|^Choose|^Select|^Rate|^Campaign mapping/.test(error.message)) throw new ImportError(error.message, 422); throw error; }

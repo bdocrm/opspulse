@@ -45,7 +45,7 @@ export function parseReportDate(cell?: RawCell) {
   if (cell?.type === "e" || /^#/.test(text)) return { date, reportStatus, text, invalid: true };
   if (cell?.type === "d") date = validDate(Number(text.slice(0, 4)), Number(text.slice(5, 7)), Number(text.slice(8, 10)));
   else if (typeof cell?.value === "number") {
-    const parsed = XLSX.SSF.parse_date_code(cell.value);
+    const parsed = XLSX.SSF.parse_date_code(cell.value, { date1904: cell.metadata?.date1904 === true });
     if (parsed) date = validDate(parsed.y, parsed.m, parsed.d);
   } else {
     const named = text.match(/\b([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(20\d{2}|2100)\b/i);
@@ -53,7 +53,12 @@ export function parseReportDate(cell?: RawCell) {
     const us = text.match(/\b(\d{1,2})\/(\d{1,2})\/(20\d{2}|2100)\b/);
     if (named) date = validDate(Number(named[3]), months.findIndex(month => month.startsWith(named[1].toLowerCase())) + 1, Number(named[2]));
     else if (iso) date = validDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
-    else if (us) date = validDate(Number(us[3]), Number(us[1]), Number(us[2]));
+    else if (us) {
+      const first = Number(us[1]), second = Number(us[2]);
+      // Ambiguous slash dates need review; do not silently select a locale.
+      if (first > 12) date = validDate(Number(us[3]), second, first);
+      else if (second > 12) date = validDate(Number(us[3]), first, second);
+    }
   }
   return { date, reportStatus, text, invalid: Boolean(text) && !date && !/^(?:pending|n\/?a|not (?:yet )?available)$/i.test(text) };
 }

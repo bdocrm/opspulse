@@ -66,6 +66,7 @@ export interface ProductionWorkbookResult {
 }
 
 export interface ProductionRecordDto {
+  source?: { batchId: string | null; type: string; file: string | null; sheet: string | null; row: number | null; provenance?: Record<string, Record<string, unknown>> | null };
   id: string;
   campaignId: string;
   campaignName: string;

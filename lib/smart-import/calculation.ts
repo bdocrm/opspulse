@@ -1,20 +1,22 @@
 import type { Config, Issue, Numbers } from "./types";
 
 export function calculate(source: Numbers, config: Config) {
+  if (config.calculationRules === null) return { calculated: {}, issues: [], values: { ...source } };
+  const rules = config.calculationRules;
   const calculated: Partial<Numbers> = {};
   const issues: Issue[] = [];
   const weeks = [source.week1, source.week2, source.week3, source.week4, source.week5];
   const presentWeeks = weeks.filter((value): value is number => value != null);
   // Partial weeks are not enough to reconstruct a complete MTD value.
-  if (config.calculationMethod === "SUM" && !["PERCENTAGE", "RATE", "SCORE"].includes(config.unitType) && presentWeeks.length === 5) calculated.mtd = presentWeeks.reduce((a, b) => a + b, 0);
-  if (config.calculationMethod === "AVERAGE" && presentWeeks.length === 5) calculated.mtd = presentWeeks.reduce((a, b) => a + b, 0) / 5;
+  if ((!rules || rules.weeklySemantics === "INCREMENTAL") && config.calculationMethod === "SUM" && !["PERCENTAGE", "RATE", "SCORE"].includes(config.unitType) && presentWeeks.length === 5) calculated.mtd = presentWeeks.reduce((a, b) => a + b, 0);
+  if ((!rules || rules.weeklySemantics === "OBSERVATIONS") && config.calculationMethod === "AVERAGE" && presentWeeks.length === 5) calculated.mtd = presentWeeks.reduce((a, b) => a + b, 0) / 5;
   const mtd = source.mtd ?? calculated.mtd ?? null;
-  if (config.calculationMethod !== "CUSTOM" && mtd != null && source.target != null && source.target > 0) {
+  if ((!rules || rules.achievement) && config.calculationMethod !== "CUSTOM" && mtd != null && source.target != null && source.target > 0) {
     if (config.goalDirection === "HIGHER") calculated.achievement = mtd / source.target;
     else if (mtd > 0) calculated.achievement = source.target / mtd;
   }
   const additive = config.calculationMethod === "SUM" && ["COUNT", "CURRENCY", "CUSTOM"].includes(config.unitType);
-  if (additive && mtd != null && source.daysLapse != null && source.daysLapse > 0 && source.workingDays != null && source.workingDays > 0) {
+  if ((!rules || rules.runRate) && additive && mtd != null && source.daysLapse != null && source.daysLapse > 0 && source.workingDays != null && source.workingDays > 0) {
     calculated.runRate = mtd / source.daysLapse * source.workingDays;
     if (source.target != null && source.target > 0) calculated.rrAchievement = config.goalDirection === "LOWER" ? calculated.runRate > 0 ? source.target / calculated.runRate : null : calculated.runRate / source.target;
   }

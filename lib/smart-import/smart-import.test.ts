@@ -24,7 +24,7 @@ function workbook(rows: unknown[][], type: "xlsx" | "xls" = "xlsx", second?: unk
 }
 function parse(rows: unknown[][] = [headers, row], ctx = context) {
   const parsed = parseFile(workbook(rows), "AUGUST PROD 2026.xlsx", "xlsx");
-  const options = defaultOptions(parsed.inspection);
+  const options = { ...defaultOptions(parsed.inspection), fallbackMonth: 8, fallbackYear: 2026 };
   options.configs[configKey(config.campaignId, config.goalType)] = config;
   return { ...parsed, options, ...buildCandidates(parsed.rows, parsed.inspection, options, ctx) };
 }
@@ -38,7 +38,7 @@ describe("complete source capture", () => {
     expect(parsed.inspection.coveragePassed).toBe(true);
     expect(parsed.inspection.capturedCells).toBe(parsed.inspection.nonEmptyCells);
     expect(parsed.rows.flatMap(row => row.cells).some(cell => cell.value === "Unknown source data")).toBe(true);
-    expect(parsed.inspection.sheets[0].headers.at(-1)?.field).toBeNull();
+    expect(parsed.inspection.sheets[0].headers.at(-1)?.field).toBe("sourceRemarks");
   });
   it("reads CSV without losing zero, blanks, future columns, or text", () => {
     const parsed = parseFile(Buffer.from('Campaign,GOAL TYPE,MTD,Future Column\r\nBPI PL,Booked Volume,0,custom\r\nBPI PL,Quality,,pending'), "August 2026.csv", "csv");

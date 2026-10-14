@@ -176,6 +176,7 @@ model ProductionMonitoring {
   reportStatus       String?
   sourceDateText     String?
   sourceValues       Json?
+  sourceProvenance   Json?
   calculatedValues   Json?
   availability       Json?
   metricConfigSnapshot Json?
@@ -232,11 +233,16 @@ model ProductionImport {
   invalidCount      Int                     @default(0)
   confirmedAt       DateTime?
   lastError         String?
+  parentImportId    String?
+  parentImport      ProductionImport? @relation("DecryptedSource", fields: [parentImportId], references: [id])
+  resumedImports    ProductionImport[] @relation("DecryptedSource")
+  reconciliation   Json?
   rawRows           ProductionImportRawRow[]
 
   @@index([importedById, createdAt])
   @@index([status, createdAt])
   @@index([fileHash, status])
+  @@index([parentImportId])
 }
 
 // Campaign-specific behavior extends the existing global metric labels.
@@ -248,6 +254,7 @@ model CampaignMetricConfig {
   label             String
   unitType          String
   calculationMethod String
+  calculationRules  Json?
   aggregationMethod String
   goalDirection     String   @default("HIGHER")
   decimalPrecision  Int      @default(2)
@@ -260,6 +267,20 @@ model CampaignMetricConfig {
   updatedAt         DateTime @updatedAt
 
   @@unique([campaignId, goalType])
+}
+
+// Immutable versions, scoped to the creator. No workbook cell data is stored.
+model ImportMappingTemplate {
+  id        String   @id @default(uuid())
+  ownerId   String
+  name      String
+  version   Int
+  signature String
+  options   Json
+  createdAt DateTime @default(now())
+
+  @@unique([ownerId, name, version])
+  @@index([ownerId, createdAt])
 }
 
 // Includes title/header/blank/unsupported rows, not just production candidates.

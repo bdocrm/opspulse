@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Prisma, PrismaClient } from "@prisma/client";
 import * as XLSX from "xlsx";
+import { encryptedFixture } from "./fixtures";
 import { configKey, type Preview } from "./types";
 
 // Opt in with a dedicated scratch schema. Never run fixture writes in the live
@@ -27,7 +28,7 @@ describe.skipIf(!url)("smart import PostgreSQL persistence", () => {
   async function reviewed(file = upload()): Promise<Preview> {
     let preview = await service.stageFile(file, user);
     expect(preview.records.length, `Initial staging returned no rows: ${JSON.stringify(preview.inspection)}`).toBeGreaterThan(0);
-    const options = { ...preview.options, configs: Object.fromEntries(Object.entries(preview.configs).map(([key, config]) => [key, { ...config, reviewed: true, unitType: "CURRENCY", calculationMethod: "SUM", aggregationMethod: "SUM", isPrimary: true }])) };
+    const options = { ...preview.options, configs: Object.fromEntries(Object.entries(preview.configs).map(([key, config]) => [key, { ...config, reviewed: true, unitType: "CURRENCY", calculationMethod: "SUM", aggregationMethod: "SUM", isPrimary: config.goalType === "BOOKED VOLUME" }])) };
     await service.reviewBatch(preview.id, options, user);
     preview = await service.getPreview(preview.id, user);
     expect(preview.records.length, `Review returned no rows: ${JSON.stringify(preview.options)}`).toBeGreaterThan(0);
@@ -70,6 +71,9 @@ describe.skipIf(!url)("smart import PostgreSQL persistence", () => {
     expect(result.updated).toBe(1);
     const current = await client.productionMonitoring.findFirstOrThrow();
     expect(current.mtd).toBe(25); expect(current.target).toBe(100);
+    const provenance = current.sourceProvenance as Record<string, { batchId: string; address: string }>;
+    expect(provenance.mtd).toMatchObject({ batchId: preview.id, address: "I2" });
+    expect(provenance.target.batchId).not.toBe(preview.id);
     const history = await client.productionMonitoringAudit.findMany({ where: { productionMonitoringId: current.id, fieldChanged: "mtd" } });
     expect(history).toContainEqual(expect.objectContaining({ oldValue: "15", newValue: "25", reason: `SMART_IMPORT:${preview.id}` }));
   });
@@ -140,4 +144,59 @@ describe.skipIf(!url)("smart import PostgreSQL persistence", () => {
     const again = await service.stageFile(file, user);
     expect(again.records[0]).toMatchObject({ campaignId, status: "DUPLICATE" });
   });
+  it("retains inaccessible encrypted sources and links authorized decrypted uploads", async () => {
+    const encrypted = new File([new Uint8Array(encryptedFixture())], "BPI PA DASHBOARD SEPTEMBER.xlsx");
+    const blocked = await service.stageFile(encrypted, user);
+    expect(blocked.status).toBe("PASSWORD_REQUIRED");
+    expect(blocked.reconciliation?.rawStatus).toBe("PASSWORD_REQUIRED");
+    expect(blocked.records).toHaveLength(0);
+    expect((await client.productionImport.findUniqueOrThrow({ where: { id: blocked.id } })).originalFile).toEqual(Buffer.from(await encrypted.arrayBuffer()));
+    await expect(service.reviewBatch(blocked.id, blocked.options, user)).rejects.toThrow(/no longer/);
+    await expect(service.stageFile(upload(), { id: "not-owner", role: "COLLECTOR" }, blocked.id)).rejects.toThrow(/access/);
+    const resumed = await service.stageFile(upload(47), user, blocked.id);
+    expect(resumed.parentImportId).toBe(blocked.id);
+    expect(resumed.reconciliation?.passed).toBe(true);
+    expect((await client.productionImport.findUniqueOrThrow({ where: { id: blocked.id } })).status).toBe("PASSWORD_REQUIRED");
+  });
+  it("blocks stored source tampering even when cell counts still match", async () => {
+    const preview = await reviewed(upload(48));
+    const row = await client.productionImportRawRow.findFirstOrThrow({ where: { importId: preview.id, sourceSheet: "August", sourceRow: 2 } });
+    const raw = row.rawPayload as { cells: { value: unknown }[] };
+    raw.cells[10].value = "Changed supplemental note";
+    await client.productionImportRawRow.update({ where: { id: row.id }, data: { rawPayload: raw as Prisma.InputJsonValue } });
+    await expect(commit(preview)).rejects.toThrow(/Source capture/);
+    expect((await service.getPreview(preview.id, user)).reconciliation?.passed).toBe(false);
+  });
+  it("reports explicit partial commits accurately and retains every unselected row", async () => {
+    const extra = ["BPI PL", "Separate Count", 100, 1, 2, 3, 4, 5, 10, "August 31, 2026 final", "Not selected"];
+    const preview = await reviewed(upload(49, "August 31, 2026 final", 100, [extra]));
+    const selected = preview.records.find(row => row.goalType === "BOOKED VOLUME")!;
+    const result = await service.commitBatch(preview.id, preview.previewHash, [selected.rowKey], user);
+    expect(result.status).toBe("PARTIALLY_IMPORTED");
+    expect(result.updated).toBe(1);
+    expect(await client.productionMonitoring.count({ where: { metricType: "SEPARATE COUNT" } })).toBe(0);
+    expect((await service.getPreview(preview.id, user)).reconciliation).toMatchObject({ passed: true, committedRecords: 1, parsedRecords: 2 });
+  });
+  it("does not replay an old identical file over a later correction", async () => {
+    const file = upload(51);
+    const first = await reviewed(file);
+    await commit(first);
+    const correction = await reviewed(upload(52));
+    await commit(correction);
+    const replay = await reviewed(file);
+    expect(await commit(replay)).toMatchObject({ updated: 0, inserted: 0, duplicates: 1 });
+    expect((await client.productionMonitoring.findFirstOrThrow({ where: { metricType: "BOOKED VOLUME" } })).mtd).toBe(52);
+  });
+  it("saves immutable mapping versions and enforces template ownership and layout", async () => {
+    const { saveTemplate, applyTemplate } = await import("./templates");
+    const preview = await reviewed(upload(53));
+    const first = await saveTemplate(preview.id, "August layout", user);
+    const second = await saveTemplate(preview.id, "August layout", user);
+    expect([first.version, second.version]).toEqual([1, 2]);
+    const next = await reviewed(upload(54));
+    await applyTemplate(next.id, first.id, user);
+    await expect(applyTemplate(next.id, first.id, { ...user, id: "other", role: "CEO" })).rejects.toThrow(/not found/);
+    expect(await client.importMappingTemplate.count({ where: { ownerId: user.id } })).toBe(2);
+  });
+
 });

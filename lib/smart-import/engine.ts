@@ -1,17 +1,18 @@
 import { createHash } from "crypto";
 import { matchImportCampaign } from "./campaign-mapping";
+import { canonical, sourceDigest } from "./discovery";
 import { calculate } from "./calculation";
 import { cellText, detectPeriod, nonEmpty, normalizeName, normalizeNumber, parseReportDate } from "./normalization";
 import { identifyHeader } from "./headers";
 import { configKey, SKIP_CONFLICT, NUMBER_FIELDS, rowKey, SUMMARY_UNIT, type Candidate, type Config, type Field, type Inspection, type Numbers, type RawCell, type RawRow, type ReviewOptions } from "./types";
 
-export type ExistingRecord = Numbers & { id: string; campaignId: string; businessUnitId: string; reportYear: number; reportMonth: number; metricType: string; dateUpdated: Date | string | null; updatedAt: Date | string; reportStatus?: string | null; metricUnit?: string | null; sourceDateText?: string | null };
+export type ExistingRecord = Numbers & { id: string; campaignId: string; businessUnitId: string; reportYear: number; reportMonth: number; metricType: string; dateUpdated: Date | string | null; updatedAt: Date | string; reportStatus?: string | null; metricUnit?: string | null; sourceDateText?: string | null; sourceProvenance?: unknown; productionImportId?: string | null; sourceSheet?: string | null; sourceRow?: number | null; sourceFile?: string | null };
 export type Context = { campaigns: { id: string; name: string; aliases: string[] }[]; units: { id: string; campaignId: string; normalizedName: string }[]; configs: Config[]; existing: ExistingRecord[] };
-export const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+export const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 export function suggestConfig(campaignId: string, goalType: string, label: string, cells: RawCell[]): Config {
   const percentage = cells.some(cell => /%/.test(cell.formatted ?? "") || /%/.test(cell.numberFormat ?? "") || /%/.test(cellText(cell))) || /(?:rate|quality|service level|achievement)/i.test(label);
   const currency = !percentage && (cells.some(cell => /[₱$€£]|\bPHP\b/i.test(cellText(cell)) || /[₱$€£]/.test(cell.numberFormat ?? "")) || /volume|amount|currency/i.test(label));
-  return { campaignId, goalType, label, unitType: percentage ? "PERCENTAGE" : currency ? "CURRENCY" : "COUNT", calculationMethod: percentage ? "DIRECT_VALUE" : "SUM", aggregationMethod: percentage ? "DIRECT_VALUE" : "SUM", goalDirection: "HIGHER", decimalPrecision: 2, tolerance: 0.01, isPercentage: percentage, isCurrency: currency, isPrimary: false, reviewed: false, version: null, confidence: percentage || currency ? 85 : 55 };
+  return { campaignId, goalType, label, unitType: percentage ? "PERCENTAGE" : currency ? "CURRENCY" : "COUNT", calculationMethod: "DIRECT_VALUE", calculationRules: null, aggregationMethod: "DIRECT_VALUE", goalDirection: "HIGHER", decimalPrecision: 2, tolerance: 0.01, isPercentage: percentage, isCurrency: currency, isPrimary: false, reviewed: false, version: null, confidence: percentage || currency ? 85 : 55 };
 }
 export function defaultOptions(inspection: Inspection): ReviewOptions {
   return { selectedSheets: inspection.sheets.filter(sheet => sheet.detected).map(sheet => sheet.name), headerRows: {}, columnMappings: {}, campaignMappings: {}, conflictSelections: {}, configs: {}, fallbackMonth: inspection.reportingPeriods.length === 1 ? inspection.reportingPeriods[0].month : null, fallbackYear: inspection.reportingPeriods.length === 1 ? inspection.reportingPeriods[0].year : null };
@@ -33,21 +34,28 @@ export function buildCandidates(rawRows: RawRow[], inspection: Inspection, optio
     const sheetRows = rawRows.filter(row => row.sourceSheet === sheet.name);
     const indexed = new Map(sheetRows.map(row => [row.sourceRow, row]));
     const headerCells = indexed.get(headerRow)?.cells ?? [];
-    const columns = new Map<Field, number[]>();
-    sheet.headers.forEach(header => {
-      const override = options.columnMappings[sheet.name]?.[String(header.index)];
-      const field = override === "metadata" ? null : override ?? identifyHeader(cellText(headerCells[header.index]));
+    let columns = new Map<Field, number[]>();
+    const mapColumns = (headers: typeof sheet.headers, regionId?: string) => {
+      columns = new Map<Field, number[]>();
+      headers.forEach(header => {
+      const override = (regionId ? options.regionMappings?.[regionId]?.[String(header.index)] : undefined) ?? options.columnMappings[sheet.name]?.[String(header.index)];
+      const field = override === "metadata" ? null : override ?? header.field ?? identifyHeader(cellText(headerCells[header.index]));
       if (field) columns.set(field, [...(columns.get(field) ?? []), header.index]);
-    });
-    const filePeriod = detectPeriod(`${inspection.fileName} ${sheet.name}`);
+      });
+    };
+    mapColumns(options.headerRows[sheet.name] ? sheet.headers.map(header => ({ ...header, field: identifyHeader(cellText(headerCells[header.index])) })) : sheet.headers);
+    // The filename is a suggestion only; the reviewer confirms any fallback period.
     const sheetDates = sheetRows.filter(row => row.sourceRow < headerRow).flatMap(row => row.cells).filter(cell => cell.type === "d" || /as of/i.test(cellText(cell))).map(parseReportDate).filter(date => date.date);
     const sheetDate = sheetDates.length === 1 ? sheetDates[0] : null;
     for (const raw of sheetRows) {
       if (raw.sourceRow <= headerRow || !raw.cells.some(nonEmpty)) continue;
+      const region = options.headerRows[sheet.name] ? undefined : sheet.regions?.find(region => region.kind === "OPERATIONAL" && raw.sourceRow > region.headerRows[region.headerRows.length - 1] && raw.sourceRow <= region.endRow);
+      if (sheet.regions?.some(region => region.kind === "OPERATIONAL") && !options.headerRows[sheet.name] && !region) continue;
+      if (region) mapColumns(region.headers, region.id);
       const get = (field: Field) => {
         const column = columns.get(field)?.[0];
         if (column == null) return undefined;
-        return ["campaign", "goalType", "dateUpdated"].includes(field) ? resolveCell(raw, column, indexed, sheet.metadata) : raw.cells[column];
+        return ["campaign", "goalType", "dateUpdated", "sourceRemarks"].includes(field) ? resolveCell(raw, column, indexed, sheet.metadata) : raw.cells[column];
       };
       const campaignSource = cellText(get("campaign"));
       const goalLabel = cellText(get("goalType"));
@@ -92,13 +100,16 @@ export function buildCandidates(rawRows: RawRow[], inspection: Inspection, optio
       const date = parseReportDate(get("dateUpdated"));
       const effectiveDate = date.date ? date : !date.text && sheetDate ? sheetDate : date;
       const reportDate = effectiveDate.date;
-      const reportYear = reportDate ? Number(reportDate.slice(0, 4)) : filePeriod.year ?? options.fallbackYear;
-      const reportMonth = reportDate ? Number(reportDate.slice(5, 7)) : filePeriod.month ?? options.fallbackMonth;
+      const reportYear = reportDate ? Number(reportDate.slice(0, 4)) : options.fallbackYear;
+      const reportMonth = reportDate ? Number(reportDate.slice(5, 7)) : options.fallbackMonth;
       if (!reportYear || !reportMonth || reportYear < 2000 || reportYear > 2100 || reportMonth < 1 || reportMonth > 12) issues.push({ code: "INVALID_REPORTING_PERIOD", level: "ERROR", message: "Choose an explicit reporting month and year." });
-      if (date.invalid) issues.push({ code: "INVALID_REPORT_DATE", field: "dateUpdated", level: "ERROR", message: `Invalid report date: ${date.text}. Original value is preserved.` });
+      if (date.invalid) issues.push({ code: get("dateUpdated")?.type === "e" ? "FORMULA_ERROR" : "INVALID_REPORT_DATE", field: "dateUpdated", level: get("dateUpdated")?.type === "e" ? "WARNING" : "ERROR", message: `Invalid report date: ${date.text}. Original value is preserved.` });
       if (!reportDate) issues.push({ code: "MISSING_REPORT_DATE", level: "WARNING", message: "Report date is unavailable. Updates to dated records require review." });
       if (config && !config.reviewed) issues.push({ code: "KPI_CONFIGURATION_REQUIRED", level: "ERROR", message: "Review and confirm the suggested campaign/KPI configuration before importing." });
       if (config && ["WEIGHTED_AVERAGE", "CUSTOM"].includes(config.calculationMethod)) issues.push({ code: "SOURCE_VALUE_REQUIRED", level: "WARNING", message: "Weights/custom formula are unavailable. Only valid source values are used." });
+      if (region?.ambiguous) issues.push({ code: "AMBIGUOUS_REGION", level: "ERROR", message: "Multiple campaign columns occur in this region. Choose an explicit header and one campaign mapping before normalization." });
+      if (config?.calculationRules === null) issues.push({ code: "NOT_CONFIGURED", level: "WARNING", message: "Recalculation rules are not configured. Only reported source figures are used." });
+      for (const cell of raw.cells) if (cell.type === "e" && !issues.some(issue => issue.message.includes(cell.address))) issues.push({ code: "EXCEL_SOURCE_ERROR", level: "WARNING", message: `${raw.sourceSheet}!${cell.address}: ${cellText(cell)} remains in raw source data.` });
       const calculation = config ? calculate(source, config) : { values: source, calculated: {}, issues: [] };
       issues.push(...calculation.issues);
       const businessUnitId = campaign ? context.units.find(unit => unit.campaignId === campaign.id && unit.normalizedName === SUMMARY_UNIT)?.id ?? null : null;
@@ -127,7 +138,10 @@ export function buildCandidates(rawRows: RawRow[], inspection: Inspection, optio
         status = "CONFLICT"; action = "BLOCK";
         issues.push({ code: "FINAL_REPORT_CONFLICT", level: "ERROR", message: "A non-final report cannot replace a final record for the same date." });
       }
-      candidates.push({ rowKey: id, sourceSheet: raw.sourceSheet, sourceRow: raw.sourceRow, campaignSource, campaignId: campaign?.id ?? null, campaignName: campaign?.name ?? null, goalType, goalLabel, reportYear, reportMonth, reportDate, reportStatus: effectiveDate.reportStatus, sourceDateText: effectiveDate.text || null, source, calculated: calculation.calculated, values, availability, issues, status, action, changes, existingId: existing?.id ?? null, existingVersion: existing ? new Date(existing.updatedAt).toISOString() : null, config, businessUnitId, key: logicalKey, conflictRows: [], sourceHash: hash({ source, reportDate, reportStatus: effectiveDate.reportStatus, goalType, campaign: normalizedCampaign }) });
+      const mappedIndices = new Set([...columns.values()].flat());
+      const extensions = Object.fromEntries(raw.cells.filter((cell, index) => !mappedIndices.has(index) && nonEmpty(cell)).map(cell => [cell.address, cell]));
+      const sourceFields = Object.fromEntries([...columns].map(([field, indices]) => [field, get(field)?.address ?? raw.cells[indices[0]]?.address]));
+      candidates.push({ sourceRemarks: get("sourceRemarks")?.value ?? null, sourceRegionId: region?.id ?? JSON.stringify([sheet.name, headerRow, "manual"]), sourceFingerprint: sourceDigest([{ sourceSheet: raw.sourceSheet, sourceRow: raw.sourceRow, cells: raw.cells }]), sourceFields, extensions, calculationStatus: config?.calculationRules === null || !config ? "NOT_CONFIGURED" : "CONFIGURED", rowKey: id, sourceSheet: raw.sourceSheet, sourceRow: raw.sourceRow, campaignSource, campaignId: campaign?.id ?? null, campaignName: campaign?.name ?? null, goalType, goalLabel, reportYear, reportMonth, reportDate, reportStatus: effectiveDate.reportStatus, sourceDateText: effectiveDate.text || null, source, calculated: calculation.calculated, values, availability, issues, status, action, changes, existingId: existing?.id ?? null, existingVersion: existing ? new Date(existing.updatedAt).toISOString() : null, config, businessUnitId, key: logicalKey, conflictRows: [], sourceHash: hash({ source, reportDate, reportStatus: effectiveDate.reportStatus, goalType, campaign: normalizedCampaign }) });
     }
   }
   const groups = new Map<string, Candidate[]>();

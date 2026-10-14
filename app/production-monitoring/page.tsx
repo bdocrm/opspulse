@@ -9,6 +9,7 @@ import { AlertTriangle, ArrowDown, ArrowUp, Building2, FileClock, Gauge, Search,
 import type { LucideIcon } from "lucide-react";
 import { PageTitle } from "@/components/layout/page-title";
 import { ProductionImportDialog } from "@/components/production-monitoring/import-dialog";
+import { SourceValue } from "@/components/production-monitoring/source-value";
 import { ProductionStatusBadge } from "@/components/production-monitoring/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -56,6 +57,9 @@ export default function ProductionMonitoringPage() {
   const [metricType, setMetricType] = useState("all");
   const [status, setStatus] = useState("ALL");
   const [search, setSearch] = useState("");
+  const [importBatchId, setImportBatchId] = useState("");
+  const [sourceType, setSourceType] = useState("ALL");
+  const [asOfDate, setAsOfDate] = useState("");
   const [page, setPage] = useState(1);
   const [sortBy, setSortBy] = useState("campaign");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
@@ -65,7 +69,7 @@ export default function ProductionMonitoringPage() {
     if (latest) { setYear(latest.reportYear); setMonth(latest.reportMonth); }
   }, [options?.periods]);
   useEffect(() => { setPage(1); setBusinessUnitId("ALL"); }, [campaignId]);
-  useEffect(() => setPage(1), [year, month, businessUnitId, metricType, status, search, sortBy, sortDirection]);
+  useEffect(() => setPage(1), [year, month, businessUnitId, metricType, status, search, sortBy, sortDirection, importBatchId, sourceType, asOfDate]);
   const businessUnits = options?.businessUnits.filter((unit) => campaignId === "ALL" || unit.campaignId === campaignId) ?? [];
   const query = useMemo(() => {
     const params = new URLSearchParams({ month: String(month), year: String(year), page: String(page), limit: "25", sortBy, sortDirection });
@@ -74,8 +78,11 @@ export default function ProductionMonitoringPage() {
     if (metricType !== "all") params.set("metricType", metricType);
     if (status !== "ALL") params.set("status", status);
     if (search.trim()) params.set("search", search.trim());
+    if (importBatchId.trim()) params.set("importBatchId", importBatchId.trim());
+    if (sourceType !== "ALL") params.set("sourceType", sourceType);
+    if (asOfDate) params.set("asOfDate", asOfDate);
     return params.toString();
-  }, [businessUnitId, campaignId, metricType, month, page, search, sortBy, sortDirection, status, year]);
+  }, [businessUnitId, campaignId, metricType, month, page, search, sortBy, sortDirection, status, year, importBatchId, sourceType, asOfDate]);
   const { data, error, isLoading, mutate } = useSWR<DashboardData>(`/api/production-monitoring?${query}`, fetcher, { keepPreviousData: true });
   const refresh = () => { mutate(); mutateOptions(); };
   const selectPeriod = (value: string) => { const [nextYear, nextMonth] = value.split("-").map(Number); setYear(nextYear); setMonth(nextMonth); };
@@ -104,6 +111,9 @@ export default function ProductionMonitoringPage() {
       <label className="text-xs font-medium text-muted-foreground">Metric type<select className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm" value={metricType} onChange={(event) => setMetricType(event.target.value)}><option value="all">All metrics</option>{options?.metricTypes.map((metric) => <option key={metric.metricType} value={metric.metricType}>{metric.label}</option>)}</select></label>
       <label className="text-xs font-medium text-muted-foreground">Performance status<select className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm" value={status} onChange={(event) => setStatus(event.target.value)}>{statusOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       <label className="text-xs font-medium text-muted-foreground">Search<div className="relative mt-1"><Search className="absolute left-3 top-3 h-4 w-4" /><Input className="pl-9" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Campaign or unit" /></div></label>
+      <label className="text-xs font-medium text-muted-foreground">Data source<select aria-label="Data source" className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm" value={sourceType} onChange={event => setSourceType(event.target.value)}><option value="ALL">All sources</option><option value="SMART_IMPORT">Smart Bulk Import</option><option value="EXCEL">Excel import</option></select></label>
+      <label className="text-xs font-medium text-muted-foreground">Import batch<Input aria-label="Import batch" className="mt-1" value={importBatchId} onChange={event => setImportBatchId(event.target.value)} placeholder="All batches" /></label>
+      <label className="text-xs font-medium text-muted-foreground">As-of date<Input aria-label="As-of date" className="mt-1" type="date" value={asOfDate} onChange={event => setAsOfDate(event.target.value)} /></label>
     </CardContent></Card>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
       {isLoading && !data ? Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-28" />) : <>
@@ -114,7 +124,7 @@ export default function ProductionMonitoringPage() {
     <Card className="overflow-hidden"><CardHeader className="flex-row items-center justify-between"><CardTitle className="text-base">Performance by business unit</CardTitle><span className="text-xs text-muted-foreground">{data?.pagination.total ?? 0} records</span></CardHeader><CardContent className="p-0">
       {optionsLoading || isLoading && !data ? <div className="space-y-2 p-5">{Array.from({ length: 7 }, (_, index) => <Skeleton key={index} className="h-12" />)}</div> : optionsError || error ? <div className="p-10 text-center"><p className="font-medium text-red-700">{(optionsError || error)?.message}</p><Button className="mt-3" variant="outline" onClick={refresh}>Try again</Button></div> : !data?.records.length ? <div className="p-12 text-center"><p className="font-medium">No production data found for {new Date(Date.UTC(year, month - 1)).toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })}.</p><p className="mt-1 text-sm text-muted-foreground">Change the filters{options?.canAdmin ? " or import a production workbook" : ""}.</p></div> : <div className="overflow-x-auto"><Table><TableHeader className="sticky top-0 bg-muted"><TableRow>
         {[['campaign','Campaign'], ['businessUnit','Business Unit']].map(([field, label]) => <TableHead key={field}><button className="flex items-center gap-1" onClick={() => sort(field)}>{label}<SortIcon field={field} /></button></TableHead>)}<TableHead>Metric</TableHead>{[["target","Target"],["week1","Week 1"],["week2","Week 2"],["week3","Week 3"],["week4","Week 4"],["week5","Week 5"],["mtd","MTD"],["achievement","Achievement"],["runRate","Run Rate"]].map(([field,label]) => <TableHead key={field}>{["target","mtd","achievement","runRate"].includes(field) ? <button className="flex items-center gap-1" onClick={() => sort(field)}>{label}<SortIcon field={field} /></button> : label}</TableHead>)}<TableHead>Status</TableHead><TableHead><button className="flex items-center gap-1" onClick={() => sort("dateUpdated")}>Last Updated<SortIcon field="dateUpdated" /></button></TableHead>
-      </TableRow></TableHeader><TableBody>{data.records.map((record) => <TableRow key={record.id}><TableCell><Link className="font-medium text-primary hover:underline" href={`/production-monitoring/campaigns/${record.campaignId}?month=${month}&year=${year}`}>{record.campaignName}</Link></TableCell><TableCell><Link className="font-medium hover:text-primary hover:underline" href={`/production-monitoring/business-units/${record.businessUnitId}?metricType=${record.metricType}`}>{record.businessUnitName}</Link></TableCell><TableCell className="capitalize">{record.metricType}<p className="text-xs text-muted-foreground">{record.metricUnit}</p></TableCell>{[record.target, record.week1, record.week2, record.week3, record.week4, record.week5, record.mtd].map((value, index) => <TableCell key={index} className="tabular-nums">{formatProductionMetric(value, record.metricType, record.metricUnit)}</TableCell>)}<TableCell className="font-medium tabular-nums">{formatAchievement(record.achievement)}</TableCell><TableCell className="tabular-nums">{formatProductionMetric(record.runRate, record.metricType, record.metricUnit)}</TableCell><TableCell><ProductionStatusBadge status={record.status} /></TableCell><TableCell className="whitespace-nowrap text-sm">{record.dateUpdated ? new Date(record.dateUpdated).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }) : "—"}</TableCell></TableRow>)}</TableBody></Table></div>}
+      </TableRow></TableHeader><TableBody>{data.records.map((record) => <TableRow key={record.id}><TableCell><Link className="font-medium text-primary hover:underline" href={`/production-monitoring/campaigns/${record.campaignId}?month=${month}&year=${year}`}>{record.campaignName}</Link></TableCell><TableCell><Link className="font-medium hover:text-primary hover:underline" href={`/production-monitoring/business-units/${record.businessUnitId}?metricType=${record.metricType}`}>{record.businessUnitName}</Link></TableCell><TableCell className="capitalize">{record.metricType}<p className="text-xs text-muted-foreground">{record.metricUnit}</p></TableCell>{[record.target, record.week1, record.week2, record.week3, record.week4, record.week5, record.mtd].map((value, index) => <TableCell key={index} className="tabular-nums">{<SourceValue label={formatProductionMetric(value, record.metricType, record.metricUnit)} field={["target", "week1", "week2", "week3", "week4", "week5", "mtd"][index]} provenance={record.source?.provenance?.[["target", "week1", "week2", "week3", "week4", "week5", "mtd"][index]]} />}</TableCell>)}<TableCell className="font-medium tabular-nums"><SourceValue label={formatAchievement(record.achievement)} field="achievement" provenance={record.source?.provenance?.achievement} /></TableCell><TableCell className="tabular-nums"><SourceValue label={formatProductionMetric(record.runRate, record.metricType, record.metricUnit)} field="runRate" provenance={record.source?.provenance?.runRate} /></TableCell><TableCell><ProductionStatusBadge status={record.status} /></TableCell><TableCell className="whitespace-nowrap text-sm">{record.dateUpdated ? new Date(record.dateUpdated).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }) : "—"}</TableCell></TableRow>)}</TableBody></Table></div>}
       {data && data.pagination.totalPages > 1 && <div className="flex items-center justify-between border-t p-4 text-sm"><span>Page {data.pagination.page} of {data.pagination.totalPages}</span><div className="flex gap-2"><Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><Button variant="outline" size="sm" disabled={page >= data.pagination.totalPages} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>}
     </CardContent></Card>
   </div>;

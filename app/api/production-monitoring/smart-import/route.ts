@@ -15,7 +15,9 @@ export async function POST(request: NextRequest) {
     const form = await request.formData();
     const file = form.get("file");
     if (!(file instanceof File)) throw new ImportError("Choose an Excel or CSV file.");
-    try { return NextResponse.json(await stageFile(file, user), { status: 201 }); }
+    const parent = form.get("parentImportId");
+    if (parent != null && (typeof parent !== "string" || parent.length > 100)) throw new ImportError("Invalid encrypted source reference.");
+    try { return NextResponse.json(await stageFile(file, user, parent || undefined), { status: 201 }); }
     catch (error) {
       if (error instanceof ImportError) throw error;
       if (error instanceof Error && /(?:file|workbook|supported|column|truncated|coverage|MIME|extension|inspection)/i.test(error.message)) throw new ImportError(error.message, 422);

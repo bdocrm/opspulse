@@ -14,8 +14,8 @@ export async function importUser() {
 }
 export function apiError(error: unknown) {
   if (error instanceof ImportError) return NextResponse.json({ error: error.message }, { status: error.status });
-  console.error("Smart import operation failed", error instanceof Error ? error.message : "Unknown error");
-  return NextResponse.json({ error: "The import operation failed. Your staged source data is retained; no partial production commit was made." }, { status: 500 });
+  console.error("Smart import operation failed");
+  return NextResponse.json({ error: "The import operation failed. No partial production commit was made. Check import history for retained source data." }, { status: 500 });
 }
 export function sameOrigin(request: Request) {
   const origin = request.headers.get("origin");

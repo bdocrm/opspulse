@@ -2,6 +2,7 @@ import type { Field } from "./types";
 import { normalizeName } from "./normalization";
 
 const aliases: Record<string, Field> = {
+  REMARKS: "sourceRemarks", STATUS: "sourceRemarks", "SOURCE REMARKS": "sourceRemarks", "SPECIAL REMARKS": "sourceRemarks",
   CAMPAIGN: "campaign", "CAMPAIGN NAME": "campaign", ACCOUNT: "campaign", PROGRAM: "campaign",
   "GOAL TYPE": "goalType", KPI: "goalType", "KPI TYPE": "goalType", METRIC: "goalType", "METRIC TYPE": "goalType",
   SEAT: "seat", SEATS: "seat", "SEAT COUNT": "seat", "DECLARED SEAT": "seat",

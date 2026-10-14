@@ -14,7 +14,11 @@ export function validateConfig(value: unknown, campaignIds: Set<string>): Config
   const precision = Number(input.decimalPrecision);
   const tolerance = Number(input.tolerance);
   if (!Number.isInteger(precision) || precision < 0 || precision > 8 || !Number.isFinite(tolerance) || tolerance < 0 || tolerance > 1e9) throw new Error("Invalid decimal precision or reconciliation tolerance.");
-  return { campaignId: String(input.campaignId), goalType: normalizeName(input.goalType), label: input.label, unitType: input.unitType as Config["unitType"], calculationMethod: input.calculationMethod as Config["calculationMethod"], aggregationMethod: input.aggregationMethod as Config["aggregationMethod"], goalDirection: input.goalDirection as Config["goalDirection"], decimalPrecision: precision, tolerance, isPercentage: input.unitType === "PERCENTAGE", isCurrency: input.unitType === "CURRENCY", isPrimary: input.isPrimary === true, reviewed: input.reviewed === true, version: typeof input.version === "string" ? input.version : null };
+  const rulesInput = object(input.calculationRules);
+  const rules = input.calculationRules == null ? null : { weeklySemantics: String(rulesInput.weeklySemantics) as NonNullable<Config["calculationRules"]>["weeklySemantics"], achievement: rulesInput.achievement === true, runRate: rulesInput.runRate === true };
+  if (rules && !["INCREMENTAL", "CUMULATIVE", "OBSERVATIONS", "UNKNOWN"].includes(rules.weeklySemantics)) throw new Error("Choose valid weekly semantics.");
+  if (rules?.runRate && (input.calculationMethod !== "SUM" || !["COUNT", "CURRENCY"].includes(String(input.unitType)))) throw new Error("Run rate requires an approved additive count or monetary KPI.");
+  return { calculationRules: rules, campaignId: String(input.campaignId), goalType: normalizeName(input.goalType), label: input.label, unitType: input.unitType as Config["unitType"], calculationMethod: input.calculationMethod as Config["calculationMethod"], aggregationMethod: input.aggregationMethod as Config["aggregationMethod"], goalDirection: input.goalDirection as Config["goalDirection"], decimalPrecision: precision, tolerance, isPercentage: input.unitType === "PERCENTAGE", isCurrency: input.unitType === "CURRENCY", isPrimary: input.isPrimary === true, reviewed: input.reviewed === true, version: typeof input.version === "string" ? input.version : null };
 }
 export function validateOptions(value: unknown, inspection: Inspection, campaignIds: Set<string>): ReviewOptions {
   const input = object(value);
@@ -33,6 +37,17 @@ export function validateOptions(value: unknown, inspection: Inspection, campaign
       columnMappings[sheet.name][column] = mapping as typeof FIELDS[number] | "metadata";
     }
   }
+  const regionMappings: NonNullable<ReviewOptions["regionMappings"]> = {};
+  const regions = inspection.sheets.flatMap(sheet => sheet.regions ?? []);
+  for (const [id, value] of Object.entries(object(input.regionMappings))) {
+    const region = regions.find(region => region.id === id);
+    if (!region) throw new Error("Invalid source region mapping.");
+    regionMappings[id] = {};
+    for (const [column, mapping] of Object.entries(object(value))) {
+      if (!/^\d+$/.test(column) || Number(column) >= region.endColumn || (mapping !== "metadata" && !FIELDS.includes(mapping as typeof FIELDS[number]))) throw new Error("Invalid region column mapping.");
+      regionMappings[id][column] = mapping as typeof FIELDS[number] | "metadata";
+    }
+  }
   const campaignMappings = strings(input.campaignMappings);
   for (const id of Object.values(campaignMappings)) if (!campaignIds.has(id)) throw new Error("Campaign mapping is outside your authorized scope.");
   const configs: ReviewOptions["configs"] = {};
@@ -46,5 +61,5 @@ export function validateOptions(value: unknown, inspection: Inspection, campaign
   const month = input.fallbackMonth == null ? null : Number(input.fallbackMonth);
   const year = input.fallbackYear == null ? null : Number(input.fallbackYear);
   if ((month != null && (!Number.isInteger(month) || month < 1 || month > 12)) || (year != null && (!Number.isInteger(year) || year < 2000 || year > 2100))) throw new Error("Choose a valid reporting month/year.");
-  return { selectedSheets: [...new Set(input.selectedSheets as string[])], headerRows, columnMappings, campaignMappings, conflictSelections: strings(input.conflictSelections), configs, fallbackMonth: month, fallbackYear: year };
+  return { regionMappings, selectedSheets: [...new Set(input.selectedSheets as string[])], headerRows, columnMappings, campaignMappings, conflictSelections: strings(input.conflictSelections), configs, fallbackMonth: month, fallbackYear: year };
 }

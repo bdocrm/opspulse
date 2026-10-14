@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
   const campaignId = params.get("campaignId")?.trim() || null;
   if (campaignId && !hasProductionCampaignAccess(user, campaignId)) return NextResponse.json({ error: "You do not have access to that campaign." }, { status: 403 });
   const businessUnitId = params.get("businessUnitId")?.trim() || null;
-  const metricType = params.get("metricType")?.trim().toLowerCase() || null;
+  const metricType = params.get("metricType")?.trim() || null;
   const search = params.get("search")?.trim().slice(0, 100) || null;
   const page = Math.max(1, Number(params.get("page")) || 1);
   const pageSize = Math.min(100, Math.max(10, Number(params.get("limit")) || 25));
@@ -58,6 +58,15 @@ export async function GET(request: NextRequest) {
   if (campaignId) and.push({ campaignId });
   if (businessUnitId) and.push({ businessUnitId });
   if (metricType && metricType !== "all") and.push({ metricType });
+  const batchId = params.get("importBatchId")?.trim();
+  const sourceType = params.get("sourceType")?.trim();
+  const asOf = params.get("asOfDate")?.trim();
+  if (batchId) and.push({ productionImportId: batchId });
+  if (sourceType) and.push({ sourceType });
+  if (asOf) {
+    if (!/^20\d{2}-\d{2}-\d{2}$/.test(asOf) || !Number.isFinite(new Date(`${asOf}T00:00:00Z`).getTime())) return NextResponse.json({ error: "Choose a valid as-of date." }, { status: 400 });
+    and.push({ dateUpdated: new Date(`${asOf}T00:00:00Z`) });
+  }
   if (search) and.push({ OR: [
     { campaign: { campaignName: { contains: search, mode: "insensitive" } } },
     { businessUnit: { businessUnitName: { contains: search, mode: "insensitive" } } },
@@ -87,8 +96,8 @@ export async function GET(request: NextRequest) {
     return {
       metricType: type,
       recordCount: rows.length,
-      target: rows.length === 1 ? rows[0].target : rate ? average(targets) : additive ? total(targets) : null,
-      mtd: rows.length === 1 ? rows[0].mtd : rate ? average(mtdValues) : additive ? total(mtdValues) : null,
+      target: rows.length === 1 ? rows[0].target : rate ? rows.every(row => (row.metricConfigSnapshot as { aggregationMethod?: string } | null)?.aggregationMethod === "AVERAGE") ? average(targets) : null : additive ? total(targets) : null,
+      mtd: rows.length === 1 ? rows[0].mtd : rate ? rows.every(row => (row.metricConfigSnapshot as { aggregationMethod?: string } | null)?.aggregationMethod === "AVERAGE") ? average(mtdValues) : null : additive ? total(mtdValues) : null,
       averageAchievement: average(achievements),
     };
   });
@@ -117,6 +126,7 @@ export async function GET(request: NextRequest) {
       workingDays: record.workingDays,
       daysLapse: record.daysLapse,
       dateUpdated: record.dateUpdated?.toISOString() ?? null,
+      source: { batchId: record.productionImportId, type: record.sourceType, file: record.sourceFile, sheet: record.sourceSheet, row: record.sourceRow, provenance: record.sourceProvenance, originalValues: record.sourceValues, calculatedValues: record.calculatedValues },
       status: getProductionStatus(record.achievement),
     })),
     summary: {

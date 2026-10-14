@@ -1,0 +1,92 @@
+import { test, expect, type BrowserContext } from "@playwright/test";
+import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcryptjs";
+import * as XLSX from "xlsx";
+import { augustFixture, encryptedFixture } from "../lib/smart-import/fixtures";
+
+const url = process.env.SMART_IMPORT_TEST_DATABASE_URL!;
+const client = new PrismaClient({ datasources: { db: { url } } });
+const endpoint = "/api/production-monitoring/smart-import";
+async function login(context: BrowserContext, email = "browser-import@example.invalid") {
+  const csrf = await (await context.request.get("/api/auth/csrf")).json();
+  await context.request.post("/api/auth/callback/credentials", { form: { csrfToken: csrf.csrfToken, email, password: "isolated-browser-test", callbackUrl: "/production-monitoring/smart-import", json: "true" } });
+  expect((await (await context.request.get("/api/auth/session")).json()).user?.email).toBe(email);
+}
+test.beforeAll(async () => {
+  const password = await bcrypt.hash("isolated-browser-test", 4);
+  await client.user.createMany({ data: [{ email: "browser-import@example.invalid", name: "Import browser test", password, role: "CEO" }, { email: "browser-collector@example.invalid", name: "Unassigned collector", password, role: "COLLECTOR" }], skipDuplicates: true });
+  for (const name of ["RBSC", ...Array.from({ length: 29 }, (_, index) => `Campaign ${index + 3}`)]) await client.campaign.upsert({ where: { normalizedName: name.toUpperCase() }, update: {}, create: { campaignName: name, normalizedName: name.toUpperCase(), goalType: "sales", monthlyGoal: 0, kpiMetric: "count" } });
+});
+test.afterAll(async () => { await client.$disconnect(); });
+
+test("rejects unauthenticated uploads and shows login for the protected page", async ({ page }) => {
+  const response = await page.request.post(endpoint, { maxRedirects: 0, multipart: { file: { name: "fixture.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: augustFixture() } } });
+  expect([401, 302, 307]).toContain(response.status());
+  expect(await client.productionImport.count()).toBe(0);
+  await page.goto("/production-monitoring/smart-import");
+  await expect(page).toHaveURL(/\/login/);
+});
+test("browser discovers all August rows and exposes audit, mapping and raw remarks", async ({ page, context }) => {
+  await login(context);
+  await page.goto("/production-monitoring/smart-import");
+  await page.getByLabel("Productivity file").setInputFiles({ name: "AUGUST PROD(1).xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: augustFixture() });
+  await page.getByRole("button", { name: "Inspect file", exact: true }).click();
+  await expect(page.getByText("Raw extraction:")).toContainText("VERIFIED");
+  await expect(page.getByText("Detail records: 31", { exact: true })).toBeVisible();
+  await expect(page.getByText("Source cells: 514", { exact: true })).toBeVisible();
+  await expect(page.getByText("Stored cells: 514", { exact: true })).toBeVisible();
+  await page.getByText("Inspect any captured source row", { exact: true }).click();
+  await page.getByLabel("Source row", { exact: true }).fill("4");
+  await page.getByRole("button", { name: "View source", exact: true }).click();
+  await expect(page.locator("pre").filter({ hasText: '"Q4"' })).toContainText("FINAL");
+  await page.getByRole("button", { name: "Confirm KPI configurations & revalidate" }).click();
+  await expect(page.getByRole("button", { name: "Import selected records (31)" })).toBeEnabled();
+  await page.getByRole("button", { name: "Import selected records (31)" }).click();
+  await page.getByRole("button", { name: "Confirm import", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Import Completed", exact: true })).toBeVisible();
+  const id = new URL(page.url()).searchParams.get("batch");
+  const report = await (await page.request.get(`${endpoint}/${id}?format=report`)).json();
+  expect(report.reconciliation).toMatchObject({ passed: true, committedRecords: 31, sourceNonEmptyCells: 514, persistedRawNonEmptyCells: 514 });
+  const production = await (await page.request.get(`/api/production-monitoring?month=8&year=2026&importBatchId=${id}&limit=100`)).json();
+  expect(production.records).toHaveLength(31);
+  expect(production.records.every((row: { source: { batchId: string; sheet: string; row: number } }) => row.source.batchId === id && row.source.sheet === "Sheet1" && row.source.row >= 4)).toBe(true);
+  await page.goto("/production-monitoring");
+  await page.getByLabel("Import batch", { exact: true }).fill(id!);
+  await page.getByLabel("Data source", { exact: true }).selectOption("SMART_IMPORT");
+  await page.getByRole("button", { name: "Inspect mtd source", exact: true }).first().click();
+  await expect(page.getByRole("dialog")).toContainText("AUGUST PROD(1).xlsx");
+  await expect(page.getByRole("dialog")).toContainText("Sheet1");
+  await expect(page.getByRole("dialog")).toContainText(id!);
+  const again = await (await page.request.post(endpoint, { multipart: { file: { name: "AUGUST PROD(1).xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: augustFixture() } } })).json();
+  const repeated = await page.request.post(`${endpoint}/${again.id}`, { data: { action: "commit", previewHash: again.previewHash, selectedRows: [] } });
+  expect(repeated.status()).toBe(200);
+  expect(await repeated.json()).toMatchObject({ inserted: 0, updated: 0, duplicates: 31 });
+});
+test("encrypted upload requires authorized decrypted copy and retains the original", async ({ page, context }) => {
+  await login(context);
+  await page.goto("/production-monitoring/smart-import");
+  await page.getByLabel("Productivity file").setInputFiles({ name: "BPI PA DASHBOARD SEPTEMBER.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: encryptedFixture() });
+  await page.getByRole("button", { name: "Inspect file", exact: true }).click();
+  await expect(page.getByLabel("Authorized decrypted workbook")).toBeVisible();
+  const parent = new URL(page.url()).searchParams.get("batch");
+  const before = await (await page.request.get(`${endpoint}/${parent}`)).json();
+  expect(before.status).toBe("PASSWORD_REQUIRED");
+  expect(before.records).toHaveLength(0);
+  await page.getByLabel("Authorized decrypted workbook").setInputFiles({ name: "authorized-copy.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: augustFixture() });
+  await expect(page.getByText("View retained encrypted original")).toBeVisible();
+  const resumed = await (await page.request.get(`${endpoint}/${new URL(page.url()).searchParams.get("batch")}`)).json();
+  expect(resumed.parentImportId).toBe(parent);
+  expect(resumed.reconciliation.passed).toBe(true);
+});
+test("unassigned collector retains source but cannot normalize inaccessible campaigns", async ({ page, context }) => {
+  await login(context, "browser-collector@example.invalid");
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["Campaign", "Goal Type", "MTD", "DATE"], ["RBSC", "Count", 1, "September 1, 2026"]]), "Data");
+  const response = await page.request.post(endpoint, { multipart: { file: { name: "restricted.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: XLSX.write(book, { type: "buffer", bookType: "xlsx" }) } } });
+  const preview = await response.json();
+  expect(response.status()).toBe(201);
+  expect(preview.records[0].campaignId).toBeNull();
+  const commit = await page.request.post(`${endpoint}/${preview.id}`, { data: { action: "commit", previewHash: preview.previewHash, selectedRows: [preview.records[0].rowKey] } });
+  expect(commit.status()).toBe(422);
+  expect((await (await page.request.get(`${endpoint}/${preview.id}`)).json()).reconciliation.passed).toBe(true);
+});
