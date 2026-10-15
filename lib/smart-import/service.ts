@@ -13,6 +13,7 @@ import { sourceHasher } from "./discovery";
 import { compressRawRow, unpackRawRow } from "./raw-storage";
 import { validateOptions } from "./review";
 import { compatibleLayout, mappingSignature, reuseLayout } from "./automatic-mappings";
+import { importAccuracy } from "./accuracy";
 import { configKey, NUMBER_FIELDS, SUMMARY_UNIT, type Candidate, type Config, type Inspection, type Preview, type RawRow, type ReviewOptions, type Reconciliation } from "./types";
 
 export const ENGINE = "SMART_V1";
@@ -97,7 +98,7 @@ export async function getPreview(id: string, user: ProductionSessionUser, verifi
   const stages = { access: String(inspection.metadata?.accessStatus ?? "NOT_ENCRYPTED"), extraction: String(inspection.metadata?.extractionStatus ?? (inspection.coveragePassed ? "EXTRACTION_COMPLETED" : "PENDING")), business: completed(batch.status) ? "IMPORT_COMPLETED" : batch.status === "READY" ? !records.length || records.some(row => row.action === "BLOCK") ? "READY_FOR_VALIDATION" : "READY_FOR_IMPORT" : "NOT_IMPORTED" };
   const eventRows = await prisma.productionImportIssue.findMany({ where: { importId: id, code: { in: ["UNLOCK_ATTEMPT", "INVALID_PASSWORD", "DECRYPTED", "EXTRACTING", "EXTRACTION_COMPLETED", "EXTRACTION_FAILED", "UNSUPPORTED_ENCRYPTION", "PROCESSING_TIMEOUT", "REQUEST_INTERRUPTED", "CORRUPTED_WORKBOOK"] } }, orderBy: { createdAt: "asc" }, take: 100 });
   const events = eventRows.map(event => ({ code: event.code, message: event.message, createdAt: event.createdAt.toISOString(), actorId: (event.rawData as { actorId?: string } | null)?.actorId ?? null }));
-  return { events, stages, reconciliation, parentImportId: batch.parentImportId, id, status: batch.status, inspection: batch.inspection as unknown as Inspection, options: batch.reviewOptions as unknown as ReviewOptions, records, configs: Object.fromEntries(records.filter(row => row.config && row.campaignId).map(row => [configKey(row.campaignId!, row.goalType), row.config!])), campaigns: context.campaigns.map(row => ({ id: row.id, name: row.name })), summary: summary(records), previewHash: batch.previewHash ?? "", previousImports: await previousImports(batch, user), result: completed(batch.status) ? result(batch) : null, lastError: batch.lastError };
+  return { accuracy: importAccuracy(inspection, reconciliation), events, stages, reconciliation, parentImportId: batch.parentImportId, id, status: batch.status, inspection: batch.inspection as unknown as Inspection, options: batch.reviewOptions as unknown as ReviewOptions, records, configs: Object.fromEntries(records.filter(row => row.config && row.campaignId).map(row => [configKey(row.campaignId!, row.goalType), row.config!])), campaigns: context.campaigns.map(row => ({ id: row.id, name: row.name })), summary: summary(records), previewHash: batch.previewHash ?? "", previousImports: await previousImports(batch, user), result: completed(batch.status) ? result(batch) : null, lastError: batch.lastError };
 }
 export async function stageFile(file: File, user: ProductionSessionUser, parentImportId?: string) {
   const upload = await readUpload(file);

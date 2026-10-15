@@ -70,6 +70,7 @@ test("in-app password unlock validates errors, preserves the encrypted source, a
   await page.getByLabel("Productivity file").setInputFiles({ name: "encrypted-fixture.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: source });
   await page.getByRole("button", { name: "Inspect file", exact: true }).click();
   await expect(page.getByLabel("Workbook password", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Import accuracy", { exact: true })).toContainText("Pending verification");
   await expect(page.getByText("Worksheets, rows, columns, and source-cell counts: Pending until extraction succeeds.")).toBeVisible();
   const id = new URL(page.url()).searchParams.get("batch");
   await page.getByLabel("Workbook password", { exact: true }).fill("incorrect-fixture-password");
@@ -175,6 +176,9 @@ test("imports a workbook without mapping and reopens all source labels and value
   const table = page.getByRole("table", { name: "Extracted worksheet rows" });
   await expect(table).toContainText("LINE 1");
   await expect(table).toContainText("25.00%");
+  const accuracy = page.getByLabel("Import accuracy", { exact: true });
+  await expect(accuracy).toContainText("100% - Verified");
+  await expect(accuracy).toContainText("Worksheets verified: 2 / 2");
   await expect(page.getByRole("button", { name: "Use worksheet row 1 as header", exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Bulk Import Preview", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Import all worksheets as shown", exact: true }).click();
@@ -193,4 +197,7 @@ test("imports a workbook without mapping and reopens all source labels and value
   await page.reload();
   await expect(page.getByRole("heading", { name: "Import Completed", exact: true })).toBeVisible();
   expect(await client.productionMonitoring.count()).toBe(before);
+  await expect(accuracy).toContainText("100% - Verified");
+  const report = await (await page.request.get(`${endpoint}/${id}?format=report`)).json();
+  expect(report.accuracy).toMatchObject({ status: "VERIFIED", percent: 100, verifiedSheets: 2, totalSheets: 2 });
 });
