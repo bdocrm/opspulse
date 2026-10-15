@@ -6,6 +6,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getAssignedCampaignIds } from "@/lib/user-campaigns";
 import { ensureCampaignGoalTable } from "@/lib/campaign-goals";
+import { databaseQuotaError } from "@/lib/database-availability";
 import {
   calculateCampaignAchievement,
   resolveCampaignGoal,
@@ -1802,6 +1803,8 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (error: any) {
+    const quota = databaseQuotaError(error);
+    if (quota) return NextResponse.json(quota, { status: 503 });
     console.error("Collector dashboard API error:", error);
     return NextResponse.json(
       { error: error?.message || "Failed to load dashboard" },

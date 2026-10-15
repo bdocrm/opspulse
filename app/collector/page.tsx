@@ -626,7 +626,12 @@ export default function CollectorDashboard() {
 
   const fetcher = async (url: string) => {
     const response = await fetch(url, { cache: 'no-store' });
-    if (!response.ok) throw new Error('Unable to load campaign performance');
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      const failure = new Error(body.code === 'DATABASE_QUOTA_EXCEEDED' ? body.error : 'Unable to load campaign performance') as Error & { code?: string };
+      failure.code = body.code;
+      throw failure;
+    }
     return response.json();
   };
 
@@ -638,7 +643,7 @@ export default function CollectorDashboard() {
       ? `/api/collectors/dashboard?year=${selectedYear}&months=${selectedMonths.join(',')}&attendanceDate=${today}`
       : null,
     fetcher,
-    { refreshInterval: 30000 }
+    { refreshInterval: 30000, refreshWhenHidden: false, shouldRetryOnError: false }
   );
 
   const allCampaigns: CampaignBlock[] = useMemo(
@@ -1276,7 +1281,7 @@ export default function CollectorDashboard() {
       {selectedMonths.length === 0 && (
         <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" /><p>Select at least one month to load dashboard performance.</p></div>
       )}
-      {selectedMonths.length > 0 && !loadingDashboard && !selectedPeriodHasData && (
+      {selectedMonths.length > 0 && !loadingDashboard && !dashboardError && !selectedPeriodHasData && (
         <div className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-3 text-sm"><Database className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" /><p>No production data available for {selectedMonths.map((month) => monthName(month)).join(', ')} {selectedYear}. Missing reports are not treated as zero production.</p></div>
       )}
 
@@ -1350,7 +1355,7 @@ export default function CollectorDashboard() {
       )}
 
       {dashboardError && (
-        <Card className="border-rose-500/30"><CardContent className="flex flex-col items-center py-8 text-center"><AlertCircle className="h-8 w-8 text-rose-500" /><p className="mt-3 font-semibold">Unable to load campaign performance</p><p className="mt-1 text-sm text-muted-foreground">Your existing data has not been changed.</p><Button variant="outline" className="mt-4" onClick={() => mutateDashboard()}><RefreshCw className="mr-2 h-4 w-4" />Try Again</Button></CardContent></Card>
+        <Card className="border-rose-500/30"><CardContent className="flex flex-col items-center py-8 text-center"><AlertCircle className="h-8 w-8 text-rose-500" /><p className="mt-3 font-semibold">{dashboardError.code === "DATABASE_QUOTA_EXCEEDED" ? "Database temporarily unavailable" : "Unable to load campaign performance"}</p><p className="mt-1 text-sm text-muted-foreground">{dashboardError.message}</p><p className="mt-1 text-sm text-muted-foreground">{dashboardData ? "Previously loaded figures may be out of date. The latest imported workbook could not be verified." : "The latest imported workbook could not be verified."}</p><Button variant="outline" className="mt-4" onClick={() => mutateDashboard()}><RefreshCw className="mr-2 h-4 w-4" />Try Again</Button></CardContent></Card>
       )}
 
       {/* KPI Cards */}
@@ -1367,13 +1372,13 @@ export default function CollectorDashboard() {
         <CollectorKpiCard label="Total Agents" value={kpis.totalAgents.toLocaleString()} support={`${kpis.presentCount} present · ${kpis.absentCount} absent`} icon={Users} loading={loadingDashboard} />
         <CollectorKpiCard
           label={kpis.mixedKpis ? 'Imported Volume' : `Total ${kpiLabel(kpis.primaryKpi)}`}
-          value={!selectedPeriodHasData ? 'No data' : kpis.mixedKpis ? formatKpiValue('volume', kpis.totalVolume) : formatKpiValue(kpis.primaryKpi, kpis.allAcq ? kpis.totalNtb : kpis.kpiValue)}
-          support={!selectedPeriodHasData ? 'No production data available for this period.' : kpis.mixedKpis ? 'Mixed campaign KPIs remain separate below.' : 'Production in the selected months'}
+          value={dashboardError ? 'Unavailable' : !selectedPeriodHasData ? 'No data' : kpis.mixedKpis ? formatKpiValue('volume', kpis.totalVolume) : formatKpiValue(kpis.primaryKpi, kpis.allAcq ? kpis.totalNtb : kpis.kpiValue)}
+          support={dashboardError ? 'Campaign performance could not be verified.' : !selectedPeriodHasData ? 'No production data available for this period.' : kpis.mixedKpis ? 'Mixed campaign KPIs remain separate below.' : 'Production in the selected months'}
           icon={TrendingUp}
           loading={loadingDashboard}
         />
-        <CollectorKpiCard label="Records in Selected Months" value={selectedPeriodHasData ? kpis.entriesCount.toLocaleString() : 'No data'} support={selectedPeriodLabel} icon={ClipboardList} loading={loadingDashboard} />
-        <CollectorKpiCard label="Overall Achievement" value={campaignAchievementSummary.overall == null ? 'Unavailable' : `${campaignAchievementSummary.overall.toFixed(1)}%`} support={campaignAchievementSummary.overall == null ? 'Valid targets are required.' : `${campaignHealth['on-track']} of ${campaigns.length} campaigns on target`} icon={BarChart3} loading={loadingDashboard} />
+        <CollectorKpiCard label="Records in Selected Months" value={dashboardError ? 'Unavailable' : selectedPeriodHasData ? kpis.entriesCount.toLocaleString() : 'No data'} support={selectedPeriodLabel} icon={ClipboardList} loading={loadingDashboard} />
+        <CollectorKpiCard label="Overall Achievement" value={dashboardError || campaignAchievementSummary.overall == null ? 'Unavailable' : `${campaignAchievementSummary.overall.toFixed(1)}%`} support={campaignAchievementSummary.overall == null ? 'Valid targets are required.' : `${campaignHealth['on-track']} of ${campaigns.length} campaigns on target`} icon={BarChart3} loading={loadingDashboard} />
       </div>
       {/* Collector Focus */}
       {(dashboardData?.importWarnings ?? []).filter((warning: { campaignIds: string[] }) => selectedCampaignId === ALL_CAMPAIGNS || warning.campaignIds.includes(selectedCampaignId)).map((warning: { id: string; fileName: string; pendingTransactions: number }) => <div key={warning.id} className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm"><p>{warning.fileName}: {warning.pendingTransactions.toLocaleString()} source transactions in this period await a confirmed campaign assignment. Displayed totals exclude those transactions.</p><Link className="underline" href={`/production-monitoring/smart-import?batch=${warning.id}`}>Review pending import assignments</Link></div>)}
