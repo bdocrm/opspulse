@@ -29,7 +29,8 @@ export function discoverRegions(rows: RawRow[], columns: number, sheetName: stri
   for (let index = 0; index < rows.length; index++) {
     const direct = Array.from({ length: columns }, (_, column) => getText(index, column));
     // Only combine adjacent header bands if the previous row contains a merged header.
-    const multi = index > 0 && merges.some(range => range.s.r === index - 1 && range.e.r >= index);
+    const multi = index > 0 && merges.some(range => range.s.r === index - 1 && range.e.r >= index)
+      || index > 0 && direct.some((label, column) => !identifyHeader(label) && identifyHeader([getText(index - 1, column), label].filter(Boolean).join(" ")) !== null && Boolean(label));
     const labels = multi ? direct.map((label, column) => identifyHeader(label) ? label : [getText(index - 1, column), label].filter(Boolean).join(" ")) : direct;
     const fields = labels.map(identifyHeader);
     if (!fields.includes("campaign") || new Set(fields.filter(Boolean)).size < 2) continue;

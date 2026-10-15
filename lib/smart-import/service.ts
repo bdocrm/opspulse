@@ -12,6 +12,7 @@ import { reconcile } from "./reconciliation";
 import { sourceHasher } from "./discovery";
 import { compressRawRow, unpackRawRow } from "./raw-storage";
 import { validateOptions } from "./review";
+import { compatibleLayout, mappingSignature, reuseLayout } from "./automatic-mappings";
 import { configKey, NUMBER_FIELDS, SUMMARY_UNIT, type Candidate, type Config, type Inspection, type Preview, type RawRow, type ReviewOptions, type Reconciliation } from "./types";
 
 export const ENGINE = "SMART_V1";
@@ -77,7 +78,11 @@ async function storedReconciliation(id: string, inspection: Inspection, db: Db =
   const storedCount = await db.productionImportRawRow.count({ where: { importId: id } });
   return { ...report, passed: inspection.coveragePassed && sheets.every(sheet => sheet.passed) && totalRows === storedCount && pending.size === 0, rawStatus: sheets.every(sheet => sheet.passed) && totalRows === storedCount && pending.size === 0 ? "VERIFIED" : "FAILED", persistedRows: totalRows, persistedRawNonEmptyCells: totalCells, sheets };
 }
-function result(batch: ProductionImport) { return { inserted: batch.recordsImported, updated: batch.recordsUpdated, duplicates: batch.recordsUnchanged, skipped: batch.recordsSkipped, pending: batch.pendingCount, warnings: batch.warningCount, conflicts: batch.conflictCount, invalid: batch.invalidCount }; }
+function result(batch: ProductionImport) {
+  const inspection = batch.inspection as unknown as Inspection;
+  const source: Record<string, number> = inspection.metadata?.workbookImported ? { sourceRows: inspection.sheets.reduce((sum, sheet) => sum + sheet.rows, 0), sourceCells: inspection.nonEmptyCells, worksheets: inspection.sheets.length } : {};
+  return { inserted: batch.recordsImported, updated: batch.recordsUpdated, duplicates: batch.recordsUnchanged, skipped: batch.recordsSkipped, pending: batch.pendingCount, warnings: batch.warningCount, conflicts: batch.conflictCount, invalid: batch.invalidCount, ...source };
+}
 async function previousImports(batch: ProductionImport, user: ProductionSessionUser) {
   const rows = await prisma.productionImport.findMany({ where: { engine: ENGINE, id: { not: batch.id }, fileHash: batch.fileHash, ...(user.role === "CEO" ? {} : { importedById: batch.importedById }), status: { in: ["COMPLETED", "COMPLETED_WITH_WARNINGS", "PARTIALLY_IMPORTED"] } }, select: { id: true, fileName: true, createdAt: true, importedBy: { select: { name: true } }, status: true }, orderBy: { createdAt: "desc" }, take: 5 });
   return rows.map(row => ({ ...row, createdAt: row.createdAt.toISOString() }));
@@ -122,7 +127,25 @@ export async function extractBatch(id: string, buffer: Buffer, user: ProductionS
   parsed.inspection.fileHash = batch.fileHash!;
   parsed.inspection.fileSize = batch.originalFile?.length ?? buffer.length;
   parsed.inspection.metadata = { ...parsed.inspection.metadata, ...(original.metadata ?? {}), largeWorkbook: large, accessStatus: lease ? "DECRYPTED" : "NOT_ENCRYPTED", extractionStatus: "EXTRACTION_COMPLETED", unlockLease: null };
-  const options = defaultOptions(parsed.inspection);
+  let options = defaultOptions(parsed.inspection);
+  const [context, template, previous] = await Promise.all([
+    loadContext(user),
+    prisma.importMappingTemplate.findFirst({ where: { ownerId: user.id!, signature: mappingSignature(parsed.inspection) }, orderBy: { createdAt: "desc" } }),
+    prisma.productionImport.findMany({ where: { importedById: user.id!, engine: ENGINE, status: { in: ["READY", "COMPLETED", "COMPLETED_WITH_WARNINGS", "PARTIALLY_IMPORTED"] }, id: { not: id } }, orderBy: { createdAt: "desc" }, take: 50, select: { id: true, inspection: true, reviewOptions: true } }),
+  ]);
+  // Prefer the most recently reviewed matching upload, then a saved template.
+  const learned = previous.find(batch => compatibleLayout(parsed.inspection, batch.inspection as unknown as Inspection, batch.reviewOptions as unknown as ReviewOptions));
+  const templateOptions = template?.options as unknown as ReviewOptions | undefined;
+  const safeTemplate = templateOptions?.selectedSheets.length && templateOptions.selectedSheets.every(name => {
+    const sheet = parsed.inspection.sheets.find(sheet => sheet.name === name);
+    return sheet?.headerRow != null && (!templateOptions.headerRows[name] || templateOptions.headerRows[name] === sheet.headerRow);
+  });
+  const saved = learned?.reviewOptions ?? (safeTemplate ? template?.options : undefined);
+  if (saved) {
+    const authorized = new Set(context.campaigns.map(campaign => campaign.id));
+    options = validateOptions(reuseLayout(options, saved as unknown as ReviewOptions, parsed.inspection, authorized), parsed.inspection, authorized);
+    parsed.inspection.metadata.automaticMapping = { source: learned ? "PREVIOUS_IMPORT" : "SAVED_TEMPLATE", id: learned?.id ?? template?.id };
+  }
   const verifiedSource = await prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT "id" FROM ${batchTable} WHERE "id" = ${id} FOR UPDATE`;
     const current = await accessibleBatch(id, user, tx);
@@ -295,4 +318,29 @@ export async function cancelBatch(id: string, user: ProductionSessionUser) {
   await accessibleBatch(id, user);
   const changed = await prisma.productionImport.updateMany({ where: { id, status: { in: ["READY", "STAGED", "FAILED", "PASSWORD_REQUIRED", "INVALID_PASSWORD", "UNSUPPORTED_ENCRYPTION", "DECRYPTING", "EXTRACTION_FAILED"] } }, data: { status: "CANCELLED" } });
   if (!changed.count) throw new ImportError("A completed/importing batch cannot be cancelled.", 409);
+}
+
+// A workbook can be imported exactly as supplied without assigning its cells
+// to campaign metrics. All source sheets remain queryable through the same
+// access checks; derived dashboards are never counted again as production.
+export async function importSourceWorkbook(id: string, expectedHash: string, user: ProductionSessionUser) {
+  await accessibleBatch(id, user);
+  if (!expectedHash) throw new ImportError("Inspect the workbook before importing.", 409);
+  const saved = await prisma.$transaction(async tx => {
+    await tx.$queryRaw`SELECT "id" FROM ${batchTable} WHERE "id" = ${id} FOR UPDATE`;
+    const batch = await accessibleBatch(id, user, tx);
+    const inspection = batch.inspection as unknown as Inspection;
+    if (completed(batch.status) && inspection.metadata?.workbookImported) return batch;
+    if (!["READY", "STAGED", "FAILED"].includes(batch.status) || batch.previewHash !== expectedHash) throw new ImportError("Workbook changed. Reload the current preview before importing.", 409);
+    const report = await storedReconciliation(id, inspection, tx);
+    if (!report.passed || !batch.originalFile) throw new ImportError("Source capture is incomplete. Workbook import blocked.", 422);
+    const importedAt = new Date();
+    await tx.productionImportIssue.create({ data: { importId: id, level: "INFO", code: "SOURCE_WORKBOOK_IMPORTED", message: "All worksheets imported with their original source labels and values.", rawData: json({ actorId: user.id, importedAt: importedAt.toISOString() }) } });
+    return tx.productionImport.update({ where: { id }, data: {
+      status: "COMPLETED", confirmedAt: importedAt, completedAt: importedAt, lastError: null,
+      inspection: json({ ...inspection, metadata: { ...inspection.metadata, workbookImported: { actorId: user.id, importedAt: importedAt.toISOString() } } }),
+      reconciliation: json({ ...report, businessStatus: "SOURCE_WORKBOOK_IMPORTED", committedRecords: 0 }),
+    } });
+  }, { timeout: 180000, maxWait: 10000 });
+  return { id, status: saved.status, ...result(saved) };
 }

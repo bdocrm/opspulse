@@ -200,6 +200,66 @@ describe.skipIf(!url)("smart import PostgreSQL persistence", () => {
     expect(await client.importMappingTemplate.count({ where: { ownerId: user.id } })).toBe(2);
   });
 
+  it("automatically reuses this user's reviewed worksheet, header and column mappings", async () => {
+    function customUpload(value: number) {
+      const book = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["Report"], ["Portfolio", "Measure", "Result", "Reported on"], ["BPI PL", "Booked Volume", value, "August 31, 2026 final"]]), "Custom layout");
+      return new File([new Uint8Array(XLSX.write(book, { type: "buffer", bookType: "xlsx" }))], "custom.xlsx");
+    }
+    const first = await service.stageFile(customUpload(61), user);
+    expect(first.records).toHaveLength(0);
+    await service.reviewBatch(first.id, { ...first.options, selectedSheets: ["Custom layout"], headerRows: { "Custom layout": 2 }, columnMappings: { "Custom layout": { "0": "campaign", "1": "goalType", "2": "mtd", "3": "dateUpdated" } } }, user);
+    const next = await service.stageFile(customUpload(62), user);
+    expect(next.options).toMatchObject({ selectedSheets: ["Custom layout"], headerRows: { "Custom layout": 2 }, columnMappings: { "Custom layout": { "0": "campaign", "1": "goalType", "2": "mtd", "3": "dateUpdated" } } });
+    expect(next.records).toHaveLength(1);
+    expect(next.records[0].source.mtd).toBe(62);
+    expect(next.inspection.metadata?.automaticMapping).toMatchObject({ source: "PREVIOUS_IMPORT", id: first.id });
+    const other = await client.user.create({ data: { email: "other-import-test@example.invalid", name: "Other importer", password: "unusable", role: "CEO" } });
+    const isolated = await service.stageFile(customUpload(63), { id: other.id, role: "CEO" });
+    expect(isolated.records).toHaveLength(0);
+    expect(isolated.inspection.metadata?.automaticMapping).toBeUndefined();
+  });
+
+  it("imports every original worksheet without campaign mapping and reopens the exact saved values", async () => {
+    const book = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet([["LINE", "BC", "CTC", "BT", "Achievement"], ["LINE 1", 12, null, 0, 0.25], ["LINE 2", 8, 4, 2, 0.5]]);
+    sheet.E2.z = "0.00%";
+    sheet.E3 = { t: "e", v: 7, w: "#DIV/0!", f: "1/0" };
+    XLSX.utils.book_append_sheet(book, sheet, "Dashboard");
+    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["Source note", "Keep as supplied"]]), "Hidden notes");
+    book.Workbook = { Sheets: [{ name: "Dashboard", Hidden: 0 }, { name: "Hidden notes", Hidden: 1 }] };
+    const file = new File([new Uint8Array(XLSX.write(book, { type: "buffer", bookType: "xlsx" }))], "source-workbook.xlsx");
+    const preview = await service.stageFile(file, user);
+    const before = await client.productionMonitoring.count();
+    const saved = await service.importSourceWorkbook(preview.id, preview.previewHash, user);
+    expect(saved).toMatchObject({ status: "COMPLETED", worksheets: 2, sourceRows: 4, inserted: 0, updated: 0 });
+    expect(await service.importSourceWorkbook(preview.id, preview.previewHash, user)).toEqual(saved);
+    expect(await client.productionMonitoring.count()).toBe(before);
+    const reopened = await service.getPreview(preview.id, user);
+    expect(reopened.result).toMatchObject({ worksheets: 2, sourceRows: 4 });
+    expect(reopened.inspection.metadata?.workbookImported).toMatchObject({ actorId: user.id });
+    expect(reopened.inspection.sheets[1].visibility).toBe("HIDDEN");
+    const row = await client.productionImportRawRow.findUniqueOrThrow({ where: { importId_sourceSheet_sourceRow: { importId: preview.id, sourceSheet: "Dashboard", sourceRow: 2 } } });
+    const source = unpackRawRow(row.rawPayload);
+    expect(source.cells.map(cell => cell.value)).toEqual(["LINE 1", 12, null, 0, 0.25]);
+    expect(source.cells[4].formatted).toBe("25.00%");
+    const stored = await client.productionImport.findUniqueOrThrow({ where: { id: preview.id } });
+    expect(Buffer.from(stored.originalFile!).equals(Buffer.from(await file.arrayBuffer()))).toBe(true);
+    await expect(service.reviewBatch(preview.id, preview.options, user)).rejects.toThrow(/no longer be edited/);
+    await expect(service.importSourceWorkbook(preview.id, preview.previewHash, { id: "unrelated-user", role: "COLLECTOR" })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("blocks source workbook import when source cells or the confirmed preview changed", async () => {
+    const preview = await service.stageFile(upload(73), user);
+    await expect(service.importSourceWorkbook(preview.id, "stale-preview", user)).rejects.toMatchObject({ status: 409 });
+    const row = await client.productionImportRawRow.findFirstOrThrow({ where: { importId: preview.id, sourceSheet: "August", sourceRow: 2 } });
+    const payload = unpackRawRow(row.rawPayload);
+    payload.cells[0].value = "Changed source";
+    await client.productionImportRawRow.update({ where: { id: row.id }, data: { rawPayload: JSON.parse(JSON.stringify(payload)) } });
+    await expect(service.importSourceWorkbook(preview.id, preview.previewHash, user)).rejects.toMatchObject({ status: 422 });
+    expect((await client.productionImport.findUniqueOrThrow({ where: { id: preview.id } })).status).toBe("READY");
+  });
+
   it("unlocks in place, reconciles full source, and never persists the password or decrypted archive", async () => {
     const { unlockBatch } = await import("./unlock");
     const secret = "unique-fixture-password-2026";

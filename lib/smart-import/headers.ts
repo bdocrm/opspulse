@@ -14,9 +14,16 @@ const aliases: Record<string, Field> = {
   WDAYS: "workingDays", "WORKING DAYS": "workingDays", "WORK DAYS": "workingDays",
   "DAYS LAPSED": "daysLapse", "DAYS LAPSE": "daysLapse", "ELAPSED DAYS": "daysLapse",
   DATE: "dateUpdated", "REPORT DATE": "dateUpdated", "DATE UPDATED": "dateUpdated", "AS OF": "dateUpdated",
+  "ACCOUNT NAME": "campaign", "PROGRAM NAME": "campaign", "CAMPAIGNS": "campaign",
+  "KPI NAME": "goalType", "METRIC NAME": "goalType", "KEY PERFORMANCE INDICATOR": "goalType", "GOALTYPE": "goalType",
+  "NO OF SEATS": "seat", "NUMBER OF SEATS": "seat", "HEADCOUNT": "seat",
+  "MTD ACTUAL": "mtd", "MTD PRODUCTION": "mtd", "MONTH TO DATE ACTUAL": "mtd",
+  "ACHIEVEMENT PERCENTAGE": "achievement", "ACHIEVEMENT PERCENT": "achievement", "ACH": "achievement",
+  "RR ACH": "rrAchievement", "RR ACHIEVEMENT PERCENTAGE": "rrAchievement", "RUN RATE ACHIEVEMENT PERCENTAGE": "rrAchievement",
+  "TOTAL WORKING DAYS": "workingDays", "DAYS ELAPSED": "daysLapse", "LAST UPDATED": "dateUpdated",
 };
 export function identifyHeader(header: unknown): Field | null {
-  const text = normalizeName(header);
-  const week = text.match(/^(?:W|WK|WEEK)\s*0?([1-5])$/);
+  const text = normalizeName(header).replace(/^(?:W|WK|WEEK)\s+(?:NO|NUMBER)\s+/, "WEEK ");
+  const week = text.match(/^(?:W|WK|WEEK)\s*0?([1-5])(?:\s+(?:ACTUAL|PRODUCTION))?$/);
   return week ? `week${week[1]}` as Field : aliases[text] ?? null;
 }

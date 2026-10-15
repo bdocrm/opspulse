@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { apiError, importUser, sameOrigin } from "@/lib/smart-import/api";
 import { ENGINE, ImportError, stageFile } from "@/lib/smart-import/service";
+import type { Inspection } from "@/lib/smart-import/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,6 +35,9 @@ export async function GET(request: NextRequest) {
       prisma.productionImport.count({ where }),
       prisma.productionImport.findMany({ where, select: { id: true, fileName: true, fileType: true, reportingPeriods: true, status: true, createdAt: true, completedAt: true, recordsDetected: true, recordsImported: true, recordsUpdated: true, recordsUnchanged: true, pendingCount: true, warningCount: true, conflictCount: true, invalidCount: true, lastError: true, inspection: true, importedBy: { select: { name: true } } }, orderBy: { createdAt: "desc" }, skip: (page - 1) * 25, take: 25 }),
     ]);
-    return NextResponse.json({ batches: batches.map(({ inspection, ...batch }) => ({ ...batch, recordsDetected: (inspection as { coveragePassed?: boolean } | null)?.coveragePassed ? batch.recordsDetected : null })), total, page, totalPages: Math.max(1, Math.ceil(total / 25)) });
+    return NextResponse.json({ batches: batches.map(({ inspection, ...batch }) => {
+      const source = inspection as unknown as Inspection;
+      return { ...batch, recordsDetected: source?.coveragePassed ? batch.recordsDetected : null, sourceRows: source?.coveragePassed ? source.sheets.reduce((sum, sheet) => sum + sheet.rows, 0) : null, worksheets: source?.coveragePassed ? source.sheets.length : null, workbookImported: Boolean(source?.metadata?.workbookImported) };
+    }), total, page, totalPages: Math.max(1, Math.ceil(total / 25)) });
   } catch (error) { return apiError(error); }
 }

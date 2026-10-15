@@ -74,6 +74,9 @@ export function parseFile(buffer: Buffer, fileName: string, fileType: string): {
     let count = 0;
     let headerIndex: number | null = null;
     let score = 0;
+    let suggestedHeader: number | null = null;
+    let suggestionScore = 0;
+    const importHeaderRows: Record<string, string[]> = {};
     for (let row = 0; row < rowCount; row++) {
       const cells = Array.from({ length: columnCount }, (_, column) => rawCell(sheet, row, column));
       for (const cell of cells) {
@@ -84,23 +87,33 @@ export function parseFile(buffer: Buffer, fileName: string, fileType: string): {
       const fields = new Set(cells.map(cell => identifyHeader(cellText(cell))).filter(Boolean));
       const candidateScore = fields.size;
       if (fields.has("campaign") && candidateScore >= 2 && candidateScore > score) { headerIndex = row; score = candidateScore; }
+      // Retain actual labels even for unfamiliar layouts, so reviewed mappings
+      // can be matched on the next upload rather than matching blank headers.
+      const populated = cells.filter(nonEmpty);
+      const textOnly = populated.length >= 2 && populated.every(cell => cell.type === "s" && !cell.formula && !/^[-+]?\d/.test(cellText(cell)));
+      const rank = candidateScore * 1000 + populated.length;
+      if (row < 100 && textOnly) importHeaderRows[row + 1] = cells.map(cellText);
+      if (row < 100 && textOnly && rank > suggestionScore) { suggestedHeader = row; suggestionScore = rank; }
       for (const cell of cells) {
         const date = cell.type === "d" || /[dy]/i.test(cell.numberFormat ?? "") || /\bas of\b|\b20\d{2}\b/i.test(cellText(cell)) ? parseReportDate(cell) : null;
         if (date?.date) reportingPeriods.set(date.date.slice(0, 7), { year: Number(date.date.slice(0, 4)), month: Number(date.date.slice(5, 7)) });
       }
       sheetRows.push({ sourceSheet: name, sourceRow: row + 1, cells });
     }
+    headerIndex ??= suggestedHeader;
     const headers = Array.from({ length: columnCount }, (_, index) => {
       const header = headerIndex == null ? "" : cellText(sheetRows[headerIndex].cells[index]);
       return { index, letter: XLSX.utils.encode_col(index), header: header || `Unnamed ${XLSX.utils.encode_col(index)}`, field: headerIndex == null ? null : identifyHeader(header), populatedRows: sheetRows.filter(row => (headerIndex == null || row.sourceRow > headerIndex + 1) && nonEmpty(row.cells[index])).length };
     });
     const metadata: Record<string, unknown> = {};
+    metadata.importHeaderRows = importHeaderRows;
     for (const [key, value] of Object.entries(sheet)) if (key.startsWith("!")) metadata[key] = value;
     const warnings = headerIndex == null ? ["No recognizable campaign header. All cells are preserved; map columns to process this sheet."] : [];
     const duplicateFields = headers.filter(header => header.field && headers.filter(other => other.field === header.field).length > 1);
     if (duplicateFields.length) warnings.push("Multiple columns map to the same field. Review column mappings before importing.");
     const regions = discoverRegions(sheetRows, columnCount, name, sheet["!merges"]);
     const first = regions.find(region => region.kind === "OPERATIONAL");
+    if (!first && headerIndex != null) warnings.push("Header row suggested from source labels. Review unfamiliar columns; matching reviewed layouts are reused automatically.");
     if (regions.some(region => region.ambiguous && region.kind === "OPERATIONAL")) warnings.push("Side-by-side campaign tables are ambiguous. Preserve raw cells and review a single table mapping before normalization.");
     metadata.date1904 = Boolean(workbook.Workbook?.WBProps?.date1904);
     const visibility = workbook.Workbook?.Sheets?.[sheetIndex]?.Hidden ?? 0;

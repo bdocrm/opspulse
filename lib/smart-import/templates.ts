@@ -1,10 +1,9 @@
 import { prisma } from "../prisma";
 import type { ProductionSessionUser } from "../production-access";
-import { hash } from "./engine";
+import { mappingSignature as signature } from "./automatic-mappings";
 import { accessibleBatch, ImportError, json, reviewBatch } from "./service";
 import type { Inspection, ReviewOptions } from "./types";
 
-const signature = (inspection: Inspection) => hash(inspection.sheets.map(sheet => ({ name: sheet.name, columns: sheet.columns, headers: sheet.headers, regions: sheet.regions?.map(region => ({ id: region.id, headers: region.headers.map(header => ({ index: header.index, header: header.header })) })) })).map(sheet => ({ ...sheet, headers: sheet.headers.map(header => ({ index: header.index, header: header.header })) })));
 export async function saveTemplate(batchId: string, name: unknown, user: ProductionSessionUser) {
   if (typeof name !== "string" || !name.trim() || name.length > 100) throw new ImportError("Choose a template name up to 100 characters.");
   const batch = await accessibleBatch(batchId, user);
