@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Prisma, PrismaClient } from "@prisma/client";
 import * as XLSX from "xlsx";
-import { encryptedFixture } from "./fixtures";
+import { encryptedFixture, paTransactionFixture, paHistoryFixture } from "./fixtures";
 import { compressRawRow, unpackRawRow } from "./raw-storage";
 import { configKey, type Preview } from "./types";
 
@@ -258,6 +258,42 @@ describe.skipIf(!url)("smart import PostgreSQL persistence", () => {
     await client.productionImportRawRow.update({ where: { id: row.id }, data: { rawPayload: JSON.parse(JSON.stringify(payload)) } });
     await expect(service.importSourceWorkbook(preview.id, preview.previewHash, user)).rejects.toMatchObject({ status: 422 });
     expect((await client.productionImport.findUniqueOrThrow({ where: { id: preview.id } })).status).toBe("READY");
+  });
+
+  it("connects a dated PA workbook to the selected campaign and prevents duplicate dashboard writes", async () => {
+    const campaign = await client.campaign.create({ data: { campaignName: "BPI PA OUTBOUND", normalizedName: "BPI PA OUTBOUND", goalType: "sales", monthlyGoal: 1000, kpiMetric: "volume" } });
+    const file = new File([new Uint8Array(paTransactionFixture())], "BPI PA DASHBOARD SEPTEMBER.xlsx");
+    const preview = await service.stageFile(file, user);
+    expect(preview.workbookDashboard).toMatchObject({ family: "BPI_PA_TRANSACTIONS_V1", sourceSheet: "(D)dashboard", campaignId: null });
+    await expect(service.importSourceWorkbook(preview.id, preview.previewHash, user)).rejects.toThrow(/Choose the campaign/);
+    const result = await service.importSourceWorkbook(preview.id, preview.previewHash, user, campaign.id);
+    expect(result).toMatchObject({ inserted: 2 });
+    const rows = await client.dashboardImportRecord.findMany({ where: { campaignId: campaign.id, year: 2026, month: 9 }, orderBy: { entityName: "asc" } });
+    expect(rows.map(row => [row.entityName, row.actual])).toEqual([["Agent A", 300.3], ["Agent B", 0]]);
+    expect(rows.every(row => row.sourceFile === file.name && row.metric === "PA Performance")).toBe(true);
+    expect(JSON.parse(rows[0].remark!)).toMatchObject({ smartImportId: preview.id, sourceMetric: "TRANSMITTAL VOLUME", sourceRows: [2, 3], lines: ["LINE 1", "LINE 2"] });
+    await service.importSourceWorkbook(preview.id, preview.previewHash, user, campaign.id);
+    expect(await client.dashboardImportRecord.count({ where: { campaignId: campaign.id } })).toBe(2);
+    expect((await service.getPreview(preview.id, user)).inspection.metadata?.dashboardProjection).toMatchObject({ records: 2, actual: 300.3, campaignId: campaign.id });
+  });
+
+  it("connects all January-September history to confirmed agent campaigns and leaves unknown or ambiguous entries pending", async () => {
+    const outbound = await client.campaign.findFirstOrThrow({ where: { campaignName: "BPI PA OUTBOUND" } });
+    const inbound = await client.campaign.create({ data: { campaignName: "BPI PA INBOUND", normalizedName: "BPI PA INBOUND", goalType: "sales", monthlyGoal: 1000, kpiMetric: "volume" } });
+    for (const [index, name, campaign] of [[0, "History Out", outbound], [1, "History In", inbound], [2, "History Ambiguous", outbound], [3, "History Ambiguous", inbound]] as const) await client.user.create({ data: { name, email: `history-${index}@example.invalid`, password: "unused", role: "AGENT", campaignId: campaign.id } });
+    const preview = await service.stageFile(new File([new Uint8Array(paHistoryFixture())], "BPI PA history.xlsx"), user);
+    expect(preview.workbookDashboard).toMatchObject({ automaticCampaigns: true });
+    const result = await service.importSourceWorkbook(preview.id, preview.previewHash, user);
+    expect(result.inserted).toBe(18);
+    const rows = await client.dashboardImportRecord.findMany({ where: { sourceFile: "BPI PA history.xlsx" } });
+    expect(rows.filter(row => row.campaignId === outbound.id)).toHaveLength(9);
+    expect(rows.filter(row => row.campaignId === inbound.id)).toHaveLength(9);
+    expect(rows.every(row => row.actual === (row.campaignId === outbound.id ? 100.1 : 200.2))).toBe(true);
+    expect(new Set(rows.map(row => row.month)).size).toBe(9);
+    const reopened = await service.getPreview(preview.id, user);
+    expect(reopened.inspection.metadata?.dashboardProjection).toMatchObject({ records: 18, state: "PARTIAL", periods: Array.from({ length: 9 }, (_, index) => `2026-${String(index + 1).padStart(2, "0")}`), pending: expect.arrayContaining([expect.objectContaining({ name: "History Unknown", reason: "No confirmed agent campaign" }), expect.objectContaining({ name: "History Ambiguous", reason: "Ambiguous agent campaign" })]) });
+    await service.importSourceWorkbook(preview.id, preview.previewHash, user);
+    expect(await client.dashboardImportRecord.count({ where: { sourceFile: "BPI PA history.xlsx" } })).toBe(18);
   });
 
   it("unlocks in place, reconciles full source, and never persists the password or decrypted archive", async () => {

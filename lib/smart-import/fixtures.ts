@@ -17,3 +17,22 @@ export function encryptedFixture(password = "fixture-only-password", source = au
   const officeCrypto = require("officecrypto-tool") as typeof import("officecrypto-tool");
   return officeCrypto.encrypt(source, { password, ...(type ? { type } : {}) });
 }
+
+const paTransactionHeaders = ["APPROVAL DATE", "APPROVED AMOUNT", "AGENT NAME", "LINE", "TEAM", null, "DATE SENT", "AMOUNT", "AGENT ID", "LINE", "TEAM"];
+export function paTransactionFixture() {
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([paTransactionHeaders,
+    ["September 1, 2026", 120, "Agent A", "LINE 1", "Team", null, "September 1, 2026", 200.10, "Agent A", "LINE 1", "Team"],
+    ["September 8, 2026", 80, "Agent A", "LINE 2", "Team", null, "September 8, 2026", 100.20, "Agent A", "LINE 2", "Team"],
+    ["September 30, 2026", 0, "Agent B", "LINE 1", "Team", null, "September 30, 2026", 0, "Agent B", "LINE 1", "Team"],
+  ]), "(D)dashboard");
+  return XLSX.write(book, { type: "buffer", bookType: "xlsx" }) as Buffer;
+}
+
+export function paHistoryFixture() {
+  const book = XLSX.utils.book_new();
+  const rows: unknown[][] = [["MONTH", "APPROVAL DATE", "AGENT NAME", "LOAN AMOUNT", "APPROVED AMOUNT", "PRODUCT", "PRODUCT2"]];
+  for (let month = 1; month <= 9; month++) for (const [agent, amount] of [["History Out", 100.10], ["History In", 200.20], ["History Unknown", 30], ["History Ambiguous", 40]] as const) rows.push([month, `2026-${String(month).padStart(2, "0")}-08`, agent, amount, amount, "Source product", "BC"]);
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), "(M)mom");
+  return XLSX.write(book, { type: "buffer", bookType: "xlsx" }) as Buffer;
+}

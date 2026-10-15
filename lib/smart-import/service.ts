@@ -14,6 +14,7 @@ import { compressRawRow, unpackRawRow } from "./raw-storage";
 import { validateOptions } from "./review";
 import { compatibleLayout, mappingSignature, reuseLayout } from "./automatic-mappings";
 import { importAccuracy } from "./accuracy";
+import { detectWorkbookDashboard, projectWorkbookDashboard } from "./workbook-dashboard";
 import { configKey, NUMBER_FIELDS, SUMMARY_UNIT, type Candidate, type Config, type Inspection, type Preview, type RawRow, type ReviewOptions, type Reconciliation } from "./types";
 
 export const ENGINE = "SMART_V1";
@@ -98,7 +99,7 @@ export async function getPreview(id: string, user: ProductionSessionUser, verifi
   const stages = { access: String(inspection.metadata?.accessStatus ?? "NOT_ENCRYPTED"), extraction: String(inspection.metadata?.extractionStatus ?? (inspection.coveragePassed ? "EXTRACTION_COMPLETED" : "PENDING")), business: completed(batch.status) ? "IMPORT_COMPLETED" : batch.status === "READY" ? !records.length || records.some(row => row.action === "BLOCK") ? "READY_FOR_VALIDATION" : "READY_FOR_IMPORT" : "NOT_IMPORTED" };
   const eventRows = await prisma.productionImportIssue.findMany({ where: { importId: id, code: { in: ["UNLOCK_ATTEMPT", "INVALID_PASSWORD", "DECRYPTED", "EXTRACTING", "EXTRACTION_COMPLETED", "EXTRACTION_FAILED", "UNSUPPORTED_ENCRYPTION", "PROCESSING_TIMEOUT", "REQUEST_INTERRUPTED", "CORRUPTED_WORKBOOK"] } }, orderBy: { createdAt: "asc" }, take: 100 });
   const events = eventRows.map(event => ({ code: event.code, message: event.message, createdAt: event.createdAt.toISOString(), actorId: (event.rawData as { actorId?: string } | null)?.actorId ?? null }));
-  return { accuracy: importAccuracy(inspection, reconciliation), events, stages, reconciliation, parentImportId: batch.parentImportId, id, status: batch.status, inspection: batch.inspection as unknown as Inspection, options: batch.reviewOptions as unknown as ReviewOptions, records, configs: Object.fromEntries(records.filter(row => row.config && row.campaignId).map(row => [configKey(row.campaignId!, row.goalType), row.config!])), campaigns: context.campaigns.map(row => ({ id: row.id, name: row.name })), summary: summary(records), previewHash: batch.previewHash ?? "", previousImports: await previousImports(batch, user), result: completed(batch.status) ? result(batch) : null, lastError: batch.lastError };
+  return { workbookDashboard: await detectWorkbookDashboard(id, inspection, prisma), accuracy: importAccuracy(inspection, reconciliation), events, stages, reconciliation, parentImportId: batch.parentImportId, id, status: batch.status, inspection: batch.inspection as unknown as Inspection, options: batch.reviewOptions as unknown as ReviewOptions, records, configs: Object.fromEntries(records.filter(row => row.config && row.campaignId).map(row => [configKey(row.campaignId!, row.goalType), row.config!])), campaigns: context.campaigns.map(row => ({ id: row.id, name: row.name })), summary: summary(records), previewHash: batch.previewHash ?? "", previousImports: await previousImports(batch, user), result: completed(batch.status) ? result(batch) : null, lastError: batch.lastError };
 }
 export async function stageFile(file: File, user: ProductionSessionUser, parentImportId?: string) {
   const upload = await readUpload(file);
@@ -324,24 +325,31 @@ export async function cancelBatch(id: string, user: ProductionSessionUser) {
 // A workbook can be imported exactly as supplied without assigning its cells
 // to campaign metrics. All source sheets remain queryable through the same
 // access checks; derived dashboards are never counted again as production.
-export async function importSourceWorkbook(id: string, expectedHash: string, user: ProductionSessionUser) {
+export async function importSourceWorkbook(id: string, expectedHash: string, user: ProductionSessionUser, campaignId?: string) {
   await accessibleBatch(id, user);
   if (!expectedHash) throw new ImportError("Inspect the workbook before importing.", 409);
   const saved = await prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT "id" FROM ${batchTable} WHERE "id" = ${id} FOR UPDATE`;
     const batch = await accessibleBatch(id, user, tx);
     const inspection = batch.inspection as unknown as Inspection;
-    if (completed(batch.status) && inspection.metadata?.workbookImported) return batch;
-    if (!["READY", "STAGED", "FAILED"].includes(batch.status) || batch.previewHash !== expectedHash) throw new ImportError("Workbook changed. Reload the current preview before importing.", 409);
+    const sourceCompleted = completed(batch.status) && Boolean(inspection.metadata?.workbookImported);
+    const previousProjection = inspection.metadata?.dashboardProjection as { dashboardBatchId?: string } | undefined;
+    if (sourceCompleted && (previousProjection?.dashboardBatchId || !await detectWorkbookDashboard(id, inspection, tx))) return batch;
+    if ((!sourceCompleted && !["READY", "STAGED", "FAILED"].includes(batch.status)) || batch.previewHash !== expectedHash) throw new ImportError("Workbook changed. Reload the current preview before importing.", 409);
     const report = await storedReconciliation(id, inspection, tx);
     if (!report.passed || !batch.originalFile) throw new ImportError("Source capture is incomplete. Workbook import blocked.", 422);
+    let projection;
+    try { projection = await projectWorkbookDashboard(id, inspection, batch.fileName, user, campaignId, tx); }
+    catch (error) { throw new ImportError((error as Error).message, /authorized scope/.test((error as Error).message) ? 403 : 422); }
     const importedAt = new Date();
     await tx.productionImportIssue.create({ data: { importId: id, level: "INFO", code: "SOURCE_WORKBOOK_IMPORTED", message: "All worksheets imported with their original source labels and values.", rawData: json({ actorId: user.id, importedAt: importedAt.toISOString() }) } });
     return tx.productionImport.update({ where: { id }, data: {
       status: "COMPLETED", confirmedAt: importedAt, completedAt: importedAt, lastError: null,
-      inspection: json({ ...inspection, metadata: { ...inspection.metadata, workbookImported: { actorId: user.id, importedAt: importedAt.toISOString() } } }),
-      reconciliation: json({ ...report, businessStatus: "SOURCE_WORKBOOK_IMPORTED", committedRecords: 0 }),
+      inspection: json({ ...inspection, metadata: { ...inspection.metadata, workbookImported: inspection.metadata?.workbookImported ?? { actorId: user.id, importedAt: importedAt.toISOString() }, ...(projection ? { dashboardProjection: projection } : {}) } }),
+      ...(projection ? { recordsDetected: projection.records + (("pending" in projection ? projection.pending?.length : 0) ?? 0), recordsImported: projection.records, pendingCount: ("pending" in projection ? projection.pending?.length : 0) ?? 0 } : {}),
+      reconciliation: json({ ...report, businessStatus: projection ? ("state" in projection && projection.state === "PARTIAL" ? "DASHBOARD_PARTIAL" : "DASHBOARD_IMPORTED") : "SOURCE_WORKBOOK_IMPORTED", committedRecords: projection?.records ?? 0 }),
     } });
   }, { timeout: 180000, maxWait: 10000 });
+  cacheClear();
   return { id, status: saved.status, ...result(saved) };
 }

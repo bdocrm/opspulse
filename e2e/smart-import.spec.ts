@@ -2,7 +2,7 @@ import { test, expect, type BrowserContext } from "@playwright/test";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import * as XLSX from "xlsx";
-import { augustFixture, encryptedFixture } from "../lib/smart-import/fixtures";
+import { augustFixture, encryptedFixture, paTransactionFixture, paHistoryFixture } from "../lib/smart-import/fixtures";
 
 const url = process.env.SMART_IMPORT_TEST_DATABASE_URL!;
 const client = new PrismaClient({ datasources: { db: { url } } });
@@ -200,4 +200,55 @@ test("imports a workbook without mapping and reopens all source labels and value
   await expect(accuracy).toContainText("100% - Verified");
   const report = await (await page.request.get(`${endpoint}/${id}?format=report`)).json();
   expect(report.accuracy).toMatchObject({ status: "VERIFIED", percent: 100, verifiedSheets: 2, totalSheets: 2 });
+});
+
+test("September transaction import populates the Collector Dashboard instead of only archiving the file", async ({ page, context }) => {
+  const campaign = await client.campaign.create({ data: { campaignName: "BPI PA OUTBOUND", normalizedName: "BPI PA OUTBOUND", goalType: "sales", monthlyGoal: 1000, kpiMetric: "volume" } });
+  const password = await bcrypt.hash("isolated-browser-test", 4);
+  await client.user.create({ data: { email: "pa-dashboard-collector@example.invalid", name: "PA collector", password, role: "COLLECTOR", campaignId: campaign.id } });
+  await login(context, "pa-dashboard-collector@example.invalid");
+  await page.goto("/production-monitoring/smart-import");
+  await page.getByLabel("Productivity file").setInputFiles({ name: "BPI PA DASHBOARD SEPTEMBER.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: paTransactionFixture() });
+  await page.getByRole("button", { name: "Inspect file", exact: true }).click();
+  await page.getByLabel("Dashboard campaign", { exact: true }).selectOption(campaign.id);
+  await page.getByRole("button", { name: "Import all worksheets as shown", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm workbook import", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Import Completed", exact: true })).toBeVisible();
+  const response = await page.request.get(`/api/collectors/dashboard?year=2026&months=9&campaignId=${campaign.id}`);
+  expect(response.status()).toBe(200);
+  const dashboard = await response.json();
+  expect(dashboard.availability.months).toContain(9);
+  expect(dashboard.campaigns).toHaveLength(1);
+  expect(dashboard.campaigns[0].campaignProduction).toBeCloseTo(300.3, 2);
+  expect(dashboard.campaigns[0].recordCount).toBeGreaterThan(0);
+  expect(dashboard.campaigns[0].dataStatus).toBe("complete");
+});
+
+test("connects January-September to both PA campaigns, preserves old targets, and warns about pending assignments", async ({ page, context }) => {
+  const outbound = await client.campaign.findFirstOrThrow({ where: { campaignName: "BPI PA OUTBOUND" } });
+  const inbound = await client.campaign.create({ data: { campaignName: "BPI PA INBOUND", normalizedName: "BPI PA INBOUND", goalType: "sales", monthlyGoal: 1000, kpiMetric: "volume" } });
+  const password = await bcrypt.hash("isolated-browser-test", 4);
+  const collector = await client.user.create({ data: { email: "history-collector@example.invalid", name: "History collector", password, role: "COLLECTOR", campaignId: outbound.id, campaignAssignments: { create: { campaignId: inbound.id } } } });
+  for (const [name, campaign] of [["History Out", outbound], ["History In", inbound]] as const) await client.user.create({ data: { email: `${campaign.id}@example.invalid`, name, role: "AGENT", password, campaignId: campaign.id } });
+  const batch = await client.dashboardImportBatch.create({ data: { campaignId: outbound.id, importedById: collector.id, fileName: "old.xlsx", importMode: "test", duplicateMode: "skip", status: "COMPLETED", reportDate: new Date("2026-09-01"), reportPeriodType: "monthly", totalWorksheets: 1, insertedCount: 1 } });
+  await client.dashboardImportRecord.create({ data: { batchId: batch.id, campaignId: outbound.id, importedById: collector.id, sourceFile: "old.xlsx", reportDate: new Date("2026-09-01"), sourceRow: 2, worksheetSource: "Old", recordKind: "agent_monitoring", monitoringType: "PA_AGENT", metric: "PA Performance", entityName: "History Out", year: 2026, month: 9, reportPeriodType: "monthly", actual: 999, target: 1000 } });
+  await client.dashboardImportRecord.create({ data: { batchId: batch.id, campaignId: inbound.id, importedById: collector.id, sourceFile: "old.xlsx", reportDate: new Date("2026-09-01"), sourceRow: 3, worksheetSource: "Old", recordKind: "agent_monitoring", monitoringType: "PA_INBOUND_PRODUCTIVITY", metric: "Booked Volume", entityName: "History In", year: 2026, month: 9, reportPeriodType: "monthly", actual: 888, target: 2000 } });
+  await login(context, "history-collector@example.invalid");
+  await page.goto("/production-monitoring/smart-import");
+  await page.getByLabel("Productivity file").setInputFiles({ name: "PA January September.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: paHistoryFixture() });
+  await page.getByRole("button", { name: "Inspect file", exact: true }).click();
+  await expect(page.getByLabel("Dashboard campaign", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Import all worksheets as shown", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm workbook import", exact: true }).click();
+  await expect(page.getByText("Dashboard connected with pending assignments", { exact: true })).toBeVisible();
+  for (const month of [1, 9]) {
+    const response = await page.request.get(`/api/collectors/dashboard?year=2026&months=${month}`);
+    expect(response.status()).toBe(200);
+    const dashboard = await response.json();
+    expect(dashboard.availability.months).toEqual(expect.arrayContaining([1,2,3,4,5,6,7,8,9]));
+    expect(dashboard.campaigns.find((row: any) => row.id === outbound.id).campaignProduction).toBeCloseTo(month === 9 ? 400.4 : 100.1, 2);
+    expect(dashboard.campaigns.find((row: any) => row.id === inbound.id).campaignProduction).toBeCloseTo(200.2, 2);
+    expect(dashboard.importWarnings[0].pendingTransactions).toBe(2);
+  }
+  expect((await client.dashboardImportRecord.findFirstOrThrow({ where: { batchId: batch.id, entityName: "History Out" } })).actual).toBe(999);
 });

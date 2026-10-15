@@ -196,7 +196,7 @@ export async function GET(req: NextRequest) {
     await ensureCampaignGoalTable();
 
     // Pull everything in a few batched queries scoped to the assigned set.
-    const [campaigns, agents, rawDetails, rawEntries, monthlyGoalRows, dashboardAgentRecords, rawMetricRecords, rawMonitoringRecords, rawKpiRecords] = await Promise.all([
+    const [campaigns, agents, rawDetails, rawEntries, monthlyGoalRows, dashboardAgentRecords, rawMetricRecords, rawMonitoringRecords, rawKpiRecords, sourceWorkbooks] = await Promise.all([
       prisma.campaign.findMany({
         where: { id: { in: assignedIds } },
         select: {
@@ -407,6 +407,7 @@ export async function GET(req: NextRequest) {
         },
         orderBy: [{ year: "asc" }, { month: "asc" }, { sourceRow: "asc" }],
       }).catch(() => []),
+      prisma.productionImport.findMany({ where: { engine: "SMART_V1", importedById: user.id, status: "COMPLETED", inspection: { path: ["metadata", "dashboardProjection", "state"], equals: "PARTIAL" } }, select: { id: true, fileName: true, inspection: true } }),
     ]);
 
     if (hasExplicitMonthSelection) {
@@ -580,9 +581,15 @@ export async function GET(req: NextRequest) {
       : [];
 
     const campaignNameById = new Map(campaigns.map((campaign) => [campaign.id, campaign.campaignName]));
+    const sourceBookedKeys = new Set(dashboardAgentRecords.filter(record => record.monitoringType === "PA_SOURCE_BOOKED").map(record => `${record.campaignId}|${normalizeImportedAgentName(record.entityName)}|${record.year}|${record.month}`));
     const usableDashboardAgentRecords = dashboardAgentRecords.filter(
       (record) => !isImportedClassificationRow(record)
-    );
+    ).map(record => {
+      const key = `${record.campaignId}|${normalizeImportedAgentName(record.entityName)}|${record.year}|${record.month}`;
+      // Keep saved targets, but use the newly imported source actual once.
+      if (record.recordKind === "agent_monitoring" && record.monitoringType !== "PA_SOURCE_BOOKED" && sourceBookedKeys.has(key) && isPrimaryImportedPerformanceRecord(record, campaignNameById.get(record.campaignId) || "")) return { ...record, actual: null, achievement: null };
+      return record;
+    });
     const monitoringRecords = rawMonitoringRecords.filter((record) =>
       periodSelected(record.reportYear, record.reportMonth)
     );
@@ -1017,9 +1024,10 @@ export async function GET(req: NextRequest) {
       const normalizedName = normalizeImportedAgentName(entityName);
       const key = `${record.campaignId}|${normalizedName}|${record.year}|${record.month || 0}|${record.metric}`;
       const existing = allPreferredDashboardRecords.get(key);
-      const priority = record.monitoringType?.endsWith("_AGENT") ? 2 : 1;
-      const existingPriority = existing?.monitoringType?.endsWith("_AGENT") ? 2 : existing ? 1 : 0;
-      if (priority > existingPriority) allPreferredDashboardRecords.set(key, record);
+      const priority = record.monitoringType === "PA_SOURCE_BOOKED" ? 3 : record.monitoringType?.endsWith("_AGENT") ? 2 : 1;
+      const existingPriority = existing?.monitoringType === "PA_SOURCE_BOOKED" ? 3 : existing?.monitoringType?.endsWith("_AGENT") ? 2 : existing ? 1 : 0;
+      if (priority > existingPriority) allPreferredDashboardRecords.set(key, record.monitoringType === "PA_SOURCE_BOOKED" ? { ...record, target: record.target ?? existing?.target ?? null } : record);
+      else if (existing?.monitoringType === "PA_SOURCE_BOOKED" && existing.target == null && record.target != null) allPreferredDashboardRecords.set(key, { ...existing, target: record.target });
     }
 
     const preferredDashboardRecords = new Map<string, (typeof dashboardAgentRecords)[number]>();
@@ -1751,7 +1759,14 @@ export async function GET(req: NextRequest) {
         dataStatus: campaign.dataStatus,
       }))
     );
+    const importWarnings = sourceWorkbooks.flatMap(batch => {
+      const projection = (batch.inspection as any)?.metadata?.dashboardProjection;
+      const campaignIds = (projection?.campaignIds ?? []).filter((id: string) => assignedIds.includes(id));
+      const pending = (projection?.pending ?? []).filter((row: { year: number; month: number }) => periodSelected(row.year, row.month));
+      return campaignIds.length && pending.length ? [{ id: batch.id, fileName: batch.fileName, campaignIds, pendingEntries: pending.length, pendingTransactions: pending.reduce((sum: number, row: { transactions: number }) => sum + row.transactions, 0) }] : [];
+    });
     return NextResponse.json({
+      importWarnings,
       filters: {
         campaign: requestedCampaignId || "all",
         month: selectedEndPeriod.month,

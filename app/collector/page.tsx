@@ -1376,6 +1376,8 @@ export default function CollectorDashboard() {
         <CollectorKpiCard label="Overall Achievement" value={campaignAchievementSummary.overall == null ? 'Unavailable' : `${campaignAchievementSummary.overall.toFixed(1)}%`} support={campaignAchievementSummary.overall == null ? 'Valid targets are required.' : `${campaignHealth['on-track']} of ${campaigns.length} campaigns on target`} icon={BarChart3} loading={loadingDashboard} />
       </div>
       {/* Collector Focus */}
+      {(dashboardData?.importWarnings ?? []).filter((warning: { campaignIds: string[] }) => selectedCampaignId === ALL_CAMPAIGNS || warning.campaignIds.includes(selectedCampaignId)).map((warning: { id: string; fileName: string; pendingTransactions: number }) => <div key={warning.id} className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm"><p>{warning.fileName}: {warning.pendingTransactions.toLocaleString()} source transactions in this period await a confirmed campaign assignment. Displayed totals exclude those transactions.</p><Link className="underline" href={`/production-monitoring/smart-import?batch=${warning.id}`}>Review pending import assignments</Link></div>)}
+
       <Card className="border-amber-500/20"><CardHeader className="pb-3"><div className="flex items-center gap-2"><AlertTriangle className="h-5 w-5 text-amber-500" /><CardTitle className="text-base">Needs Attention</CardTitle></div><CardDescription>Validated operational items from the currently loaded campaigns.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
           { label: 'Critical campaigns', value: campaignHealth.critical, detail: 'Confirmed zero or below 50% achievement', status: 'critical' as CampaignStatus },

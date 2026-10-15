@@ -65,7 +65,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       return NextResponse.json(await getPreview(params.id, user));
     }
     if (body.action === "commit") return NextResponse.json(await commitBatch(params.id, body.previewHash, body.selectedRows, user));
-    if (body.action === "import-workbook") return NextResponse.json(await importSourceWorkbook(params.id, body.previewHash, user));
+    if (body.action === "import-workbook") return NextResponse.json(await importSourceWorkbook(params.id, body.previewHash, user, body.campaignId));
     if (body.action === "cancel") { await cancelBatch(params.id, user); return NextResponse.json({ status: "CANCELLED" }); }
     throw new ImportError("Choose a valid import action.");
   } catch (error) { return apiError(error); }
