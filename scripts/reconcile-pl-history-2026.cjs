@@ -15,6 +15,18 @@ const operation = 'PL_APR_AUG_SOURCE_RECONCILIATION_20261103';
 const output = path.join(process.env.TEMP, 'opsview-pl-history-reconciliation-2026');
 const hash = value => crypto.createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)).digest('hex');
 const json = value => JSON.parse(JSON.stringify(value));
+async function requireProductionRelease() {
+  const release = process.argv.find(value=>value.startsWith('--release='))?.slice(10);
+  assert(release && /^[0-9a-f]{40}$/.test(release), 'Pass --release=<full deployed commit SHA>; never apply against the old production reader');
+  const {execFileSync}=require('child_process');
+  let token;
+  try { const credential=execFileSync('git',['credential','fill'],{input:'protocol=https\nhost=github.com\n\n',encoding:'utf8',stdio:['pipe','pipe','pipe']}); token=credential.split('\n').find(line=>line.startsWith('password='))?.slice(9); } catch { /* Public repository reads can work without a credential. */ }
+  const headers={'User-Agent':'OpsView-source-reconciliation',Accept:'application/vnd.github+json',...(token?{Authorization:'Bearer '+token}:{})};
+  const response=await fetch(`https://api.github.com/repos/bdocrm/opspulse/commits/${release}/status`,{headers});
+  assert(response.ok,'Cannot verify production release');
+  const status=await response.json();
+  assert(status.statuses.some(row=>row.context==='Vercel'&&row.state==='success'),'Vercel release has not succeeded. Source reconciliation is blocked to prevent double counting.');
+}
 const nameKey = value => value.normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
 async function existingState(db) {
   return {
@@ -78,11 +90,13 @@ async function main() {
   }
   assert.equal(await p.dashboardImportRecord.count({where:{campaignId,monitoringType:{in:['PL_SOURCE_BOOKED_AGENT','PL_SOURCE_TOTAL']}}}),0);
   const preview = {operation,fileHash,periods,beforeHash:hash(before),newRows:periods.reduce((s,r)=>s+r.agents.length+1,0),legacyRowsRetained:before.records.length,goalsUnchanged:before.goals.length};
+  if(process.argv.includes('--snapshot')) fs.writeFileSync(path.join(output,'reviewed-backup.json'),JSON.stringify({...before,createdAt:new Date(),beforeHash:hash(before)}));
   fs.writeFileSync(path.join(output,'preview.json'),JSON.stringify(preview,null,2));
   console.log(JSON.stringify({...preview,periods:periods.map(r=>({month:r.month,total:r.total,agents:r.agents.length,unattributed:r.unattributedTotal,legacyRowsRetained:r.legacyRowsRetained,changedAgents:r.agents.filter(a=>a.changed).length})),mode:process.argv.includes('--apply')?'APPLY':'PREVIEW',output}));
   if(!process.argv.includes('--apply'))return;
   const expected=process.argv.find(s=>s.startsWith('--expected='))?.slice(11);
   assert.equal(expected,hash(before),'Live data differs from approved preview; run preview and review again');
+  await requireProductionRelease();
   const backup={...before,recordIds:before.records.map(r=>r.id),recordsHash:hash(before.records),goalsHash:hash(before.goals),campaignsHash:hash(before.campaigns)};
   fs.writeFileSync(path.join(output,'before.json'),JSON.stringify(backup));
   const parsed=parseFile(bytes,fileName,'xlsx');assert(reconcile(parsed.inspection,parsed.rows).passed);
