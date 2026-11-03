@@ -45,6 +45,10 @@ export default function GoalsManagement() {
 
   const now = new Date();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const alphabeticalCampaigns = useMemo(
+    () => [...campaigns].sort((a, b) => a.campaignName.localeCompare(b.campaignName, 'en', { sensitivity: 'base', numeric: true }) || a.id.localeCompare(b.id)),
+    [campaigns],
+  );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
@@ -937,7 +941,7 @@ export default function GoalsManagement() {
         >
           <div className="min-h-0 overflow-hidden">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-          {campaigns.map((campaign) => (
+          {alphabeticalCampaigns.map((campaign) => (
             <button
               key={campaign.id}
               onClick={() => handleCampaignChange(campaign)}
