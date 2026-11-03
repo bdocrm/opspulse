@@ -76,7 +76,6 @@ async function main() {
     { name: "CBC ACQUI", goal: 0, metric: "transmittals" },
     { name: "CBC PA", goal: 0, metric: "transmittals" },
     { name: "CBC CCC", goal: 0, metric: "transmittals" },
-    { name: "BO", goal: 0, metric: "transmittals" },
   ];
 
   const campaigns = await Promise.all(
