@@ -95,7 +95,12 @@ const currencyFmt = new Intl.NumberFormat("en-PH", { style: "currency", currency
 
 async function fetcher(url: string) {
   const response = await fetch(url, { credentials: "include", cache: "no-store", headers: { "Cache-Control": "no-cache" } });
-  if (!response.ok) throw new Error(`Dashboard request failed (${response.status})`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const failure = new Error(`Dashboard request failed (${response.status})`) as Error & { code?: string };
+    if (body.code === "DATABASE_QUOTA_EXCEEDED") failure.code = body.code;
+    throw failure;
+  }
   return response.json();
 }
 const formatPct = (value: number | null | undefined) => value == null ? "Not available" : `${pctFmt.format(value)}%`;
@@ -289,7 +294,7 @@ export default function DashboardPage() {
   };
 
   if (sessionStatus === "loading") return <div className="space-y-4 p-2"><Skeleton className="h-10 w-72" /><Skeleton className="h-48 w-full" /></div>;
-  if (error && !data) return <div className="flex min-h-[55vh] items-center justify-center"><Card className="w-full max-w-lg"><CardContent className="flex flex-col items-center p-8 text-center"><AlertCircle className="h-9 w-9 text-rose-400" /><h1 className="mt-4 text-lg font-semibold">Unable to load dashboard data</h1><p className="mt-2 text-sm text-muted-foreground">Please try refreshing the page. Technical details have been withheld.</p><Button className="mt-5" onClick={() => mutate()}><RefreshCw className="mr-2 h-4 w-4" />Retry</Button></CardContent></Card></div>;
+  if (error && !data) return <div className="flex min-h-[55vh] items-center justify-center"><Card className="w-full max-w-lg"><CardContent className="flex flex-col items-center p-8 text-center"><AlertCircle className="h-9 w-9 text-rose-400" /><h1 className="mt-4 text-lg font-semibold">{error.code === "DATABASE_QUOTA_EXCEEDED" ? "Database temporarily unavailable" : "Unable to load dashboard data"}</h1><p className="mt-2 text-sm text-muted-foreground">{error.code === "DATABASE_QUOTA_EXCEEDED" ? "The database provider quota has been exceeded. Ask your administrator to restore database access, then retry. Campaign performance cannot be verified until access is restored." : "Please try refreshing the page. Technical details have been withheld."}</p><Button className="mt-5" onClick={() => mutate()}><RefreshCw className="mr-2 h-4 w-4" />Retry</Button></CardContent></Card></div>;
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-6">

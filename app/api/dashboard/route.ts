@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { summarizeSmartDashboard } from "@/lib/smart-import/dashboard";
 import { databaseTable, prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
+import { databaseQuotaError } from "@/lib/database-availability";
 import {
   aggregateRunRateMetrics,
   calculateRunRateMetrics,
@@ -495,6 +496,8 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (error) {
+    const quota = databaseQuotaError(error);
+    if (quota) return NextResponse.json(quota, { status: 503 });
     console.error("Dashboard API error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
