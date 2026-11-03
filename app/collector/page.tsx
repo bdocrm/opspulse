@@ -131,6 +131,10 @@ interface CampaignBlock {
   agentDataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
   lastUpdated?: string | null;
   sourceQuality?: { code: string; message: string }[];
+  unitType?: 'COUNT' | 'CURRENCY' | 'PERCENT_POINTS';
+  statisticLabel?: string;
+  breakdownComplete?: boolean;
+  sourcePeriods?: {year:number;month:number;actual:number;goal:number|null;source:string;sourceGoal:number|null;configuredGoal:number|null}[];
 }
 
 function campaignDataPeriodLabel(period?: CampaignBlock['dataPeriod']): string | null {
@@ -224,11 +228,18 @@ function kpiLabel(metric: string): string {
   }
 }
 
-function formatKpiValue(metric: string, value: number): string {
+function formatKpiValue(metric: string, value: number, unitType?: CampaignBlock['unitType']): string {
+  if (unitType === 'COUNT') return Number(value).toLocaleString('en-PH');
+  if (unitType === 'PERCENT_POINTS') return `${Number(value).toLocaleString('en-PH')}%`;
+  if (unitType === 'CURRENCY') return new Intl.NumberFormat('en-PH', {style:'currency',currency:'PHP',maximumFractionDigits:2}).format(Number(value));
   if (metric === 'percentage') return new Intl.NumberFormat('en-PH', { style: 'percent', maximumFractionDigits: 2 }).format(Number(value));
   if (metric === 'currency') return new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 2 }).format(Number(value));
   const formatted = Number(value).toLocaleString();
   return metric === 'volume' ? `₱${formatted}` : formatted;
+}
+
+function campaignMetricLabel(campaign: CampaignBlock) {
+  return campaign.statisticLabel ?? (campaign.unitType === 'COUNT' ? 'Units' : kpiLabel(campaign.kpiMetric));
 }
 
 function mbPaTransactionTotal(prod: Production) {
@@ -763,7 +774,7 @@ export default function CollectorDashboard() {
     const allAcq = campaigns.length > 0 && campaigns.every((c) => isAcqCampaign(c.campaignName));
     const allBdoSgm = campaigns.length > 0 && campaigns.every((c) => isBdoSgmCampaign(c.campaignName));
     const latestImportView = campaigns.length > 0 && campaigns.every((c) => c.dataPeriod?.source === 'latest_import');
-    const campaignKpis = new Set(campaigns.map((campaign) => campaign.kpiMetric || 'booked'));
+    const campaignKpis = new Set(campaigns.map((campaign) => `${campaign.unitType??''}:${campaign.kpiMetric || 'booked'}`));
     const mixedKpis = !allAcq && campaignKpis.size > 1;
     const primaryKpi = allAcq ? 'ntb' : (campaigns[0]?.kpiMetric || 'booked');
 
@@ -814,7 +825,7 @@ export default function CollectorDashboard() {
       average: valid.length
         ? valid.reduce((sum, row) => sum + Number(row.achievement), 0) / valid.length
         : null,
-      overall: totalGoal > 0 ? (totalProduction / totalGoal) * 100 : null,
+      overall: totalGoal > 0 && new Set(rows.map(row=>row.campaign.unitType??row.campaign.kpiMetric)).size===1 ? (totalProduction / totalGoal) * 100 : null,
     };
   }, [campaigns]);
 
@@ -1364,8 +1375,8 @@ export default function CollectorDashboard() {
       {/* KPI Cards */}
       <div className="motion-stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <CollectorKpiCard
-          label={campaigns.length === 1 ? `${kpiLabel(campaigns[0].kpiMetric)} Goal` : 'Campaign Overview'}
-          value={campaigns.length === 1 ? (campaigns[0].goal == null ? 'Target unavailable' : formatKpiValue(campaigns[0].kpiMetric, campaigns[0].goal)) : `${campaigns.length} Assigned`}
+          label={campaigns.length === 1 ? `${campaignMetricLabel(campaigns[0])} Goal` : 'Campaign Overview'}
+          value={campaigns.length === 1 ? (campaigns[0].goal == null ? 'Target unavailable' : formatKpiValue(campaigns[0].kpiMetric, campaigns[0].goal, campaigns[0].unitType)) : `${campaigns.length} Assigned`}
           support={campaigns.length === 1
             ? `${campaignViews[0]?.statusLabel ?? 'No data'} · ${campaignViews[0]?.achievement == null ? 'Achievement unavailable' : `${campaignViews[0].achievement.toFixed(1)}% achievement`}`
             : <span>{campaignHealth['on-track']} on track · {campaignHealth['needs-attention']} attention · {campaignHealth.critical} critical</span>}
@@ -1374,8 +1385,8 @@ export default function CollectorDashboard() {
         />
         <CollectorKpiCard label="Total Agents" value={kpis.totalAgents.toLocaleString()} support={`${kpis.presentCount} present · ${kpis.absentCount} absent`} icon={Users} loading={loadingDashboard} />
         <CollectorKpiCard
-          label={kpis.mixedKpis ? 'Imported Volume' : `Total ${kpiLabel(kpis.primaryKpi)}`}
-          value={dashboardError ? 'Unavailable' : !selectedPeriodHasData ? 'No data' : kpis.mixedKpis ? formatKpiValue('volume', kpis.totalVolume) : formatKpiValue(kpis.primaryKpi, kpis.allAcq ? kpis.totalNtb : kpis.kpiValue)}
+          label={kpis.mixedKpis ? 'Campaign Production' : `Total ${campaigns.length===1?campaignMetricLabel(campaigns[0]):kpiLabel(kpis.primaryKpi)}`}
+          value={dashboardError ? 'Unavailable' : !selectedPeriodHasData ? 'No data' : kpis.mixedKpis ? 'See campaigns' : formatKpiValue(kpis.primaryKpi, kpis.allAcq ? kpis.totalNtb : kpis.kpiValue, campaigns[0]?.unitType)}
           support={dashboardError ? 'Campaign performance could not be verified.' : !selectedPeriodHasData ? 'No production data available for this period.' : kpis.mixedKpis ? 'Mixed campaign KPIs remain separate below.' : 'Production in the selected months'}
           icon={TrendingUp}
           loading={loadingDashboard}
@@ -1586,7 +1597,7 @@ export default function CollectorDashboard() {
                 return sum + kpiValueFor(campaignKpi, prod);
               }, 0);
               const totalKpiValue = campaign.campaignProduction ?? campaign.actual ?? agentKpiValue;
-              const metricLabel = kpiLabel(campaignKpi);
+              const metricLabel = campaignMetricLabel(campaign);
               const goalProgress = campaignGoal > 0 ? ((totalKpiValue / campaignGoal) * 100).toFixed(1) : '0';
               const acq = isAcqCampaign(campaign.campaignName);
               const bdoSgm = isBdoSgmCampaign(campaign.campaignName);
@@ -1663,12 +1674,12 @@ export default function CollectorDashboard() {
                         <div className="flex items-baseline justify-between">
                           <span className="text-xs text-muted-foreground uppercase tracking-wide">Actual / {acq ? 'NTB Goal' : 'Goal'}</span>
                           <span className="text-lg font-bold text-foreground">
-                            {formatKpiValue(campaignKpi, totalKpiValue)} <span className="font-normal text-muted-foreground">/</span>{' '}
+                            {formatKpiValue(campaignKpi, totalKpiValue, campaign.unitType)} <span className="font-normal text-muted-foreground">/</span>{' '}
                             {campaign.goalStatus === 'missing'
                               ? 'Goal unavailable'
                               : acq
                                 ? Number(ntbGoal).toLocaleString()
-                                : formatKpiValue(campaignKpi, campaignGoal)}
+                                : formatKpiValue(campaignKpi, campaignGoal, campaign.unitType)}
                           </span>
                         </div>
                         <div className="flex items-center gap-2">
@@ -1690,7 +1701,7 @@ export default function CollectorDashboard() {
                       </div>
 
                       {/* Stats Grid */}
-                      {bdoSgm ? (
+                      {bdoSgm && campaign.breakdownComplete !== false ? (
                         <div className="grid grid-cols-3 gap-3 pt-2 border-t">
                           <div className="text-center">
                             <p className="text-2xl font-bold text-foreground">{campaignAgents.length}</p>
@@ -1734,7 +1745,7 @@ export default function CollectorDashboard() {
                             <p className="text-xs text-muted-foreground mt-1">Agents</p>
                           </div>
                           <div className="text-center">
-                            <p className="text-2xl font-bold text-purple-600">{formatKpiValue(campaignKpi, totalKpiValue)}</p>
+                            <p className="text-2xl font-bold text-purple-600">{formatKpiValue(campaignKpi, totalKpiValue, campaign.unitType)}</p>
                             <p className="text-xs text-muted-foreground mt-1">{metricLabel}</p>
                           </div>
                         </div>
@@ -1747,7 +1758,7 @@ export default function CollectorDashboard() {
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-sm font-medium text-foreground truncate">{topPerformer.name}</span>
                             <span className="text-sm font-bold text-yellow-600">
-                              {mbpl ? `${topKpiValue.toFixed(1)}%` : formatKpiValue(campaignKpi, topKpiValue)}
+                              {mbpl ? `${topKpiValue.toFixed(1)}%` : formatKpiValue(campaignKpi, topKpiValue, campaign.unitType)}
                             </span>
                           </div>
                         </div>
@@ -1760,6 +1771,7 @@ export default function CollectorDashboard() {
                           <span className="text-sm font-semibold text-orange-500">{campaign.recordCount ?? campaign.entriesCount}</span>
                         </div>
                         {(campaign.sourceQuality ?? []).map(item => <p key={item.code} className="mt-2 text-xs text-amber-500">{item.message}</p>)}
+                        {!!campaign.sourcePeriods?.length && <details className="mt-3 text-xs"><summary className="cursor-pointer text-muted-foreground">Monthly source breakdown</summary><div className="mt-2 overflow-x-auto"><table className="w-full text-left"><thead><tr><th>Month / source</th><th className="text-right">Actual</th><th className="text-right">Target</th></tr></thead><tbody>{campaign.sourcePeriods.map(period=><tr key={`${period.year}-${period.month}`}><td className="py-1">{monthName(period.month,true)} {period.year}<br/><span className="text-muted-foreground">{period.source}</span>{period.configuredGoal!=null&&period.sourceGoal!=null&&period.configuredGoal!==period.sourceGoal&&<span className="block text-amber-500">Saved target overrides source {formatKpiValue(campaignKpi,period.sourceGoal,campaign.unitType)}</span>}</td><td className="text-right">{formatKpiValue(campaignKpi,period.actual,campaign.unitType)}</td><td className="text-right">{period.goal==null?'Unavailable':formatKpiValue(campaignKpi,period.goal,campaign.unitType)}</td></tr>)}</tbody></table></div></details>}
                         <div className="mt-2 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{relativeUpdate(campaign.lastUpdated)}</span><Button type="button" variant="ghost" size="sm" className="h-8 px-2" onClick={() => { setSelectedCampaignId(campaign.id); window.setTimeout(() => document.getElementById('production-leaderboard')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0); }}>View Details <ArrowRight className="ml-1 h-3.5 w-3.5" /></Button></div>
                       </div>
                     </div>
@@ -1769,7 +1781,7 @@ export default function CollectorDashboard() {
             })}
           </div>
           {campaignViewMode === 'table' && filteredCampaignViews.length > 0 && (
-            <Card><CardContent className="p-0"><div className="max-h-[560px] overflow-auto"><Table><TableHeader className="sticky top-0 z-10 bg-card"><TableRow><TableHead>Campaign</TableHead><TableHead>Status</TableHead><TableHead>Goal Type</TableHead><TableHead className="text-right">Goal</TableHead><TableHead className="text-right">Actual</TableHead><TableHead className="text-right">Achievement</TableHead><TableHead className="text-right">Agents</TableHead><TableHead className="text-right">Records</TableHead><TableHead>Last Updated</TableHead><TableHead><span className="sr-only">Action</span></TableHead></TableRow></TableHeader><TableBody>{filteredCampaignViews.map((item) => <TableRow key={item.campaign.id}><TableCell className="font-medium">{item.campaign.campaignName}</TableCell><TableCell><CampaignStatusBadge status={item.status} label={item.statusLabel} /></TableCell><TableCell>{kpiLabel(item.campaign.kpiMetric)}</TableCell><TableCell className="text-right">{item.goal == null ? 'Unavailable' : formatKpiValue(item.campaign.kpiMetric, item.goal)}</TableCell><TableCell className="text-right">{formatKpiValue(item.campaign.kpiMetric, item.actual)}</TableCell><TableCell className="text-right font-semibold">{item.achievement == null ? 'Unavailable' : `${item.achievement.toFixed(1)}%`}</TableCell><TableCell className="text-right">{item.agentCount}</TableCell><TableCell className="text-right">{item.recordCount}</TableCell><TableCell className="whitespace-nowrap text-xs text-muted-foreground">{relativeUpdate(item.campaign.lastUpdated)}</TableCell><TableCell><Button variant="ghost" size="sm" onClick={() => { setSelectedCampaignId(item.campaign.id); window.setTimeout(() => document.getElementById('production-leaderboard')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0); }}>View</Button></TableCell></TableRow>)}</TableBody></Table></div></CardContent></Card>
+            <Card><CardContent className="p-0"><div className="max-h-[560px] overflow-auto"><Table><TableHeader className="sticky top-0 z-10 bg-card"><TableRow><TableHead>Campaign</TableHead><TableHead>Status</TableHead><TableHead>Goal Type</TableHead><TableHead className="text-right">Goal</TableHead><TableHead className="text-right">Actual</TableHead><TableHead className="text-right">Achievement</TableHead><TableHead className="text-right">Agents</TableHead><TableHead className="text-right">Records</TableHead><TableHead>Last Updated</TableHead><TableHead><span className="sr-only">Action</span></TableHead></TableRow></TableHeader><TableBody>{filteredCampaignViews.map((item) => <TableRow key={item.campaign.id}><TableCell className="font-medium">{item.campaign.campaignName}</TableCell><TableCell><CampaignStatusBadge status={item.status} label={item.statusLabel} /></TableCell><TableCell>{campaignMetricLabel(item.campaign)}</TableCell><TableCell className="text-right">{item.goal == null ? 'Unavailable' : formatKpiValue(item.campaign.kpiMetric, item.goal, item.campaign.unitType)}</TableCell><TableCell className="text-right">{formatKpiValue(item.campaign.kpiMetric, item.actual, item.campaign.unitType)}</TableCell><TableCell className="text-right font-semibold">{item.achievement == null ? 'Unavailable' : `${item.achievement.toFixed(1)}%`}</TableCell><TableCell className="text-right">{item.agentCount}</TableCell><TableCell className="text-right">{item.recordCount}</TableCell><TableCell className="whitespace-nowrap text-xs text-muted-foreground">{relativeUpdate(item.campaign.lastUpdated)}</TableCell><TableCell><Button variant="ghost" size="sm" onClick={() => { setSelectedCampaignId(item.campaign.id); window.setTimeout(() => document.getElementById('production-leaderboard')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0); }}>View</Button></TableCell></TableRow>)}</TableBody></Table></div></CardContent></Card>
           )}
         </div>
       )}
@@ -2076,7 +2088,7 @@ export default function CollectorDashboard() {
                                     <TableCell className="text-right font-semibold text-sky-600">{Number(prod.firstCardWholeYearTotal ?? prod.firstCardTransmittals ?? 0).toLocaleString()}</TableCell>
                                     <TableCell className="text-right font-semibold text-purple-600">{Number(prod.bundleCardWholeYearTotal ?? prod.bundleCardTransmittals ?? 0).toLocaleString()}</TableCell>
                                     <TableCell className="text-right font-semibold">{prod.cardLevelRanking ?? '-'}</TableCell>
-                                    <TableCell className="text-right font-semibold text-slate-600 dark:text-slate-300">{formatKpiValue(block.kpiMetric, Number(agent.monthlyTarget || 0))}</TableCell>
+                                    <TableCell className="text-right font-semibold text-slate-600 dark:text-slate-300">{formatKpiValue(block.kpiMetric, Number(agent.monthlyTarget || 0), block.unitType)}</TableCell>
                                   </>
                                 ) : bdo || hasImportedDashboardPerformance ? (
                                   <>
@@ -2098,8 +2110,8 @@ export default function CollectorDashboard() {
                                         </button>
                                       )}
                                     </TableCell>
-                                    <TableCell className="text-right font-semibold text-blue-600">{formatKpiValue(block.kpiMetric, importedMetrics.goal)}</TableCell>
-                                    <TableCell className="text-right font-semibold text-purple-600">{formatKpiValue(block.kpiMetric, importedMetrics.actual)}</TableCell>
+                                    <TableCell className="text-right font-semibold text-blue-600">{formatKpiValue(block.kpiMetric, importedMetrics.goal, block.unitType)}</TableCell>
+                                    <TableCell className="text-right font-semibold text-purple-600">{formatKpiValue(block.kpiMetric, importedMetrics.actual, block.unitType)}</TableCell>
                                     <TableCell className="text-center font-semibold text-emerald-600">{importedMetrics.achievement.toFixed(1)}%</TableCell>
                                   </>
                                 ) : (
@@ -2122,7 +2134,7 @@ export default function CollectorDashboard() {
                                         </button>
                                       )}
                                     </TableCell>
-                                    <TableCell className="text-right font-semibold text-blue-600">{formatKpiValue(block.kpiMetric, Number(agent.monthlyTarget || 0))}</TableCell>
+                                    <TableCell className="text-right font-semibold text-blue-600">{formatKpiValue(block.kpiMetric, Number(agent.monthlyTarget || 0), block.unitType)}</TableCell>
                                     <TableCell className="text-center">{prod.transmittals}</TableCell>
                                     <TableCell className="text-center">{prod.approvals}</TableCell>
                                     <TableCell className="text-center">{prod.activations}</TableCell>

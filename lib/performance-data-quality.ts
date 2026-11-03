@@ -12,6 +12,6 @@ export function excludePlaceholderMetricPeriods<T extends MetricRow>(rows: T[]):
 }
 
 export type PerformanceSourceQuality = {
-  code: 'PARTIAL_PERIOD' | 'DEFAULT_GOAL' | 'UNATTRIBUTED_AMOUNT' | 'CAMPAIGN_MAPPING_REVIEW' | 'FRACTIONAL_COUNT' | 'PLACEHOLDER_ONLY';
+  code: 'PARTIAL_PERIOD' | 'DEFAULT_GOAL' | 'UNATTRIBUTED_AMOUNT' | 'CAMPAIGN_MAPPING_REVIEW' | 'FRACTIONAL_COUNT' | 'PLACEHOLDER_ONLY' | 'TARGET_OVERRIDE' | 'SOURCE_SCOPE' | 'MAPPING_ALIAS' | 'INCOMPATIBLE_GOAL';
   message: string;
 };

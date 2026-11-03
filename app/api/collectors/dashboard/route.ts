@@ -1,5 +1,6 @@
 import { selectVerifiedSourceRecords, verifiedSourceTotal } from "@/lib/verified-source-records";
 import { excludePlaceholderMetricPeriods, type PerformanceSourceQuality } from "@/lib/performance-data-quality";
+import { resolveBdoPeriodPerformance } from '@/lib/bdo-period-performance';
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from "next/server";
@@ -1644,7 +1645,15 @@ export async function GET(req: NextRequest) {
       // Otherwise use one goal per unique agent and reporting period; the
       // maps above are keyed by agent and metric so transaction rows cannot
       // multiply the same target.
-      const resolvedGoal = resolveCampaignGoal({
+      const bdoPeriodPerformance = isBdoCampaign && !smartSummaries.has(c.id) ? resolveBdoPeriodPerformance({
+        campaignId:c.id, campaignName:c.campaignName, defaultGoal:Number(c.monthlyGoal),
+        periods:hasExplicitMonthSelection ? selectedMonths.map(month=>({year:selectedYear,month})) : Array.from({length:selectedEndPeriodIndex-selectedStartPeriodIndex+1},(_,index)=>({year:Math.floor((selectedStartPeriodIndex+index-1)/12),month:(selectedStartPeriodIndex+index-1)%12+1})),
+        goals:monthlyGoalRows.map(row=>({campaignId:String(row.campaignId),year:Number(row.year),month:Number(row.month),monthlyGoal:Number(row.monthlyGoal)})),
+        dashboard:usableDashboardAgentRecords.filter(row=>row.month!=null).map(row=>({...row,month:row.month!})), monitoring:monitoringRecords,
+        metrics:rawDetails.filter(row=>row.campaignId===c.id&&['FIRST_CARD','BUNDLE_CARD'].includes(row.cardLevel??'')).map(row=>{const [year,month]=businessMonthKey(row.productionEntry.date).split('-').map(Number);return {campaignId:row.campaignId,reportYear:year,reportMonth:month,metricType:'transmittals',count:row.transmittals,actual:null};}),
+        kpis:rawKpiRecords,
+      }) : null;
+      const resolvedGoal = bdoPeriodPerformance?.periods.length ? bdoPeriodPerformance.goal : resolveCampaignGoal({
         configuredGoal: savedGoal?.monthlyGoal,
         monitoringGoal: monitoringSummary?.goal,
         importedCampaignGoal,
@@ -1658,7 +1667,7 @@ export async function GET(req: NextRequest) {
       }
       const sourceTotal = verifiedSourceTotal(usableDashboardAgentRecords.filter(record => record.campaignId === c.id && isImportedRecordInSelectedRange(record)));
       const verifiedAgentActual = usableDashboardAgentRecords.filter(record => record.campaignId === c.id && isImportedRecordInSelectedRange(record) && record.monitoringType === 'PL_SOURCE_BOOKED_AGENT').reduce((sum, record) => sum + Number(record.actual ?? 0), 0);
-      const resolvedActual = sourceTotal != null
+      const resolvedActual = bdoPeriodPerformance?.periods.length ? bdoPeriodPerformance.actual : sourceTotal != null
         ? bdoActualFromAgents + sourceTotal - verifiedAgentActual
         : monitoringSummary?.actual != null
         ? monitoringSummary.actual
@@ -1723,13 +1732,18 @@ export async function GET(req: NextRequest) {
       });
 
       const sourceQuality: PerformanceSourceQuality[] = [];
+      if (bdoPeriodPerformance?.periods.some(period=>period.configuredGoal!=null&&period.sourceGoal!=null&&period.configuredGoal!==period.sourceGoal)) sourceQuality.push({code:'TARGET_OVERRIDE',message:'Saved month-specific target overrides the Excel target. Both source and configured targets are retained in the monthly source breakdown.'});
+      if (bdoPeriodPerformance?.periods.some(period=>period.fallbackGoal)) sourceQuality.push({code:'DEFAULT_GOAL',message:'Some observed months use a campaign default because no month-specific or source target was found.'});
+      if (bdoPeriodPerformance?.periods.length && !bdoPeriodPerformance.breakdownComplete && !isBdoCccCampaign) sourceQuality.push({code:'SOURCE_SCOPE',message:'Campaign totals use each month’s Excel summary or monitoring control. Agent/card-level detail is a separate source scope and may not explain the full total.'});
+      if (isBdoCccCampaign && bdoPeriodPerformance?.periods.length) sourceQuality.push({code:'INCOMPATIBLE_GOAL',message:'This value is maximum ACVT percentage, not transmittal count. No compatible approved percentage-point goal is available; attainment is unavailable.'});
+      if (/^BDO SUPPLE INVI$/i.test(c.campaignName) && !recordCount && usableDashboardAgentRecords.some(row=>row.campaignId!==c.id&&/SUPPLE INVI/i.test(row.metric))) sourceQuality.push({code:'MAPPING_ALIAS',message:'SUPPLE INVI source is intentionally mapped to BDO SUPPLE. Its figures appear there; no duplicate production is copied into this campaign.'});
       const selectedSourceRows = usableDashboardAgentRecords.filter(record => record.campaignId === c.id && isImportedRecordInSelectedRange(record));
       const partialSources = monitoringRecords.filter(record => record.campaignId === c.id && record.workingDays != null && record.daysLapse != null && record.daysLapse < record.workingDays);
       if (partialSources.length) {
         const cutoffs = [...new Set(partialSources.map(record => record.dateUpdated ? businessDateKey(record.dateUpdated) : `${record.reportYear}-${String(record.reportMonth).padStart(2, '0')} (${record.daysLapse}/${record.workingDays} days)`))];
         sourceQuality.push({ code: 'PARTIAL_PERIOD', message: `Partial reporting period. Source cutoff: ${cutoffs.join(', ')}. Attainment is not a final month-end result.` });
       }
-      if (resolvedGoal != null && !Number(savedGoal?.monthlyGoal) && !Number(monitoringSummary?.goal) && !importedCampaignGoal) sourceQuality.push({ code: 'DEFAULT_GOAL', message: 'Target uses a campaign/default fallback. No month-specific campaign target was found in the selected source.' });
+      if (!bdoPeriodPerformance && resolvedGoal != null && !Number(savedGoal?.monthlyGoal) && !Number(monitoringSummary?.goal) && !importedCampaignGoal) sourceQuality.push({ code: 'DEFAULT_GOAL', message: 'Target uses a campaign/default fallback. No month-specific campaign target was found in the selected source.' });
       let unattributedAmount = 0;
       for (const record of selectedSourceRows.filter(record => record.monitoringType === 'PL_SOURCE_TOTAL')) {
         try { unattributedAmount += Number(JSON.parse(record.remark || '{}').unattributedActual || 0); } catch { /* Optional provenance; never infer a source amount. */ }
@@ -1751,6 +1765,10 @@ export async function GET(req: NextRequest) {
         goalStatus: campaignAchievement.goalStatus,
         dataStatus: campaignAchievement.dataStatus,
         sourceQuality,
+        unitType:bdoPeriodPerformance?.unitType,
+        statisticLabel:isBdoCccCampaign?'Maximum ACVT':undefined,
+        sourcePeriods:bdoPeriodPerformance?.periods,
+        breakdownComplete:bdoPeriodPerformance?.breakdownComplete,
         agentCount: campaignAchievement.agentCount,
         recordCount: campaignAchievement.recordCount,
         supplementaryGoal: hasCampaignAgentImport && isAcqCampaign
