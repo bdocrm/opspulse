@@ -277,11 +277,11 @@ describe.skipIf(!url)("smart import PostgreSQL persistence", () => {
     expect((await service.getPreview(preview.id, user)).inspection.metadata?.dashboardProjection).toMatchObject({ records: 2, actual: 300.3, campaignId: campaign.id });
   });
 
-  it("connects all January-September history to confirmed agent campaigns and leaves unknown or ambiguous entries pending", async () => {
+  it("connects January-September history only to explicit source campaign labels", async () => {
     const outbound = await client.campaign.findFirstOrThrow({ where: { campaignName: "BPI PA OUTBOUND" } });
     const inbound = await client.campaign.create({ data: { campaignName: "BPI PA INBOUND", normalizedName: "BPI PA INBOUND", goalType: "sales", monthlyGoal: 1000, kpiMetric: "volume" } });
     for (const [index, name, campaign] of [[0, "History Out", outbound], [1, "History In", inbound], [2, "History Ambiguous", outbound], [3, "History Ambiguous", inbound]] as const) await client.user.create({ data: { name, email: `history-${index}@example.invalid`, password: "unused", role: "AGENT", campaignId: campaign.id } });
-    const preview = await service.stageFile(new File([new Uint8Array(paHistoryFixture())], "BPI PA history.xlsx"), user);
+    const preview = await service.stageFile(new File([new Uint8Array(paHistoryFixture(true))], "BPI PA history.xlsx"), user);
     expect(preview.workbookDashboard).toMatchObject({ automaticCampaigns: true });
     const result = await service.importSourceWorkbook(preview.id, preview.previewHash, user);
     expect(result.inserted).toBe(18);
@@ -291,7 +291,7 @@ describe.skipIf(!url)("smart import PostgreSQL persistence", () => {
     expect(rows.every(row => row.actual === (row.campaignId === outbound.id ? 100.1 : 200.2))).toBe(true);
     expect(new Set(rows.map(row => row.month)).size).toBe(9);
     const reopened = await service.getPreview(preview.id, user);
-    expect(reopened.inspection.metadata?.dashboardProjection).toMatchObject({ records: 18, state: "PARTIAL", periods: Array.from({ length: 9 }, (_, index) => `2026-${String(index + 1).padStart(2, "0")}`), pending: expect.arrayContaining([expect.objectContaining({ name: "History Unknown", reason: "No confirmed agent campaign" }), expect.objectContaining({ name: "History Ambiguous", reason: "Ambiguous agent campaign" })]) });
+    expect(reopened.inspection.metadata?.dashboardProjection).toMatchObject({ records: 18, state: "PARTIAL", periods: Array.from({ length: 9 }, (_, index) => `2026-${String(index + 1).padStart(2, "0")}`), pending: expect.arrayContaining([expect.objectContaining({ name: "History Unknown", reason: "No explicit source campaign label" }), expect.objectContaining({ name: "History Ambiguous", reason: "Unrecognized source campaign label" })]) });
     await service.importSourceWorkbook(preview.id, preview.previewHash, user);
     expect(await client.dashboardImportRecord.count({ where: { sourceFile: "BPI PA history.xlsx" } })).toBe(18);
   });

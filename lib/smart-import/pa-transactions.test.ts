@@ -1,10 +1,33 @@
 import { describe, expect, it } from "vitest";
 import { parseFile } from "./parser";
-import { aggregatePaTransactions, paTransactionTables } from "./pa-transactions";
+import { aggregatePaTransactions, paTransactionTables, paHistoryTables, PA_HISTORY_FAMILY } from "./pa-transactions";
+import { projectPaHistory } from './workbook-dashboard';
 
-import { paTransactionFixture } from "./fixtures";
+import { paTransactionFixture, paHistoryFixture } from "./fixtures";
 
 describe("BPI PA dated transaction dashboard", () => {
+  it('leaves unlabeled history pending even if old agent assignments would match', async () => {
+    const parsed = parseFile(paHistoryFixture(), 'history.xlsx', 'xlsx');
+    const db = {
+      campaign: { findMany: async () => [{ id:'out', campaignName:'BPI PA OUTBOUND' },{ id:'in', campaignName:'BPI PA INBOUND' }] },
+      user: { findMany: () => { throw new Error('Old assignments must not be consulted'); } },
+      dashboardImportRecord: { findMany: () => { throw new Error('Prior imports must not be consulted'); } },
+      productionImportRawRow: {
+        findUniqueOrThrow: async () => ({ rawPayload: parsed.rows[0] }),
+        findMany: async ({ where }: { where: { sourceRow: { gt: number } } }) => parsed.rows.filter(row=>row.sourceRow>where.sourceRow.gt).map(row=>({ sourceRow:row.sourceRow,rawPayload:row })),
+      },
+    };
+    const result = await projectPaHistory('source',parsed.inspection,'history.xlsx',{id:'actor',role:'CEO'},{family:PA_HISTORY_FAMILY,sourceSheet:'(M)mom',campaignId:null},db as never,true);
+    expect(result.records).toBe(0);
+    expect(result.pending).toHaveLength(36);
+    expect(result.pending.every(row=>row.reason==='No explicit source campaign label')).toBe(true);
+  });
+  it('preserves explicit campaign evidence separately from product codes', () => {
+    const parsed=parseFile(paHistoryFixture(true),'history.xlsx','xlsx');
+    const result=aggregatePaTransactions(parsed.rows,paHistoryTables(parsed.rows[0]));
+    expect([...result.totals.values()].find(row=>row.name==='History Out')).toMatchObject({campaignLabel:'OUTBOUND',lines:['BC']});
+    expect([...result.totals.values()].find(row=>row.name==='History Ambiguous')).toMatchObject({campaignLabel:'LINE 1'});
+  });
   it("keeps transmittal volume separate from booked volume and preserves source line labels", () => {
     const parsed = parseFile(paTransactionFixture(), "BPI PA DASHBOARD SEPTEMBER.xlsx", "xlsx");
     const tables = paTransactionTables(parsed.rows[0]);

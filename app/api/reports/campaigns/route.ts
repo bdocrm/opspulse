@@ -1,3 +1,4 @@
+import { selectVerifiedSourceRecords, excludeMirroredPlScorecards } from "@/lib/verified-source-records";
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -196,7 +197,7 @@ export async function GET(req: NextRequest) {
             numericValue: true,
           },
           orderBy: [{ reportDate: 'asc' }, { sourceRow: 'asc' }],
-        }).catch(() => [])
+        }).then(selectVerifiedSourceRecords).then(excludeMirroredPlScorecards).catch(() => [])
       : [];
 
     const campaignIds = Array.from(new Set([
@@ -327,7 +328,7 @@ export async function GET(req: NextRequest) {
 
     const bpiCurrencyCampaigns = new Set(
       usableDashboardRows
-        .filter((row) => Number(row.target || 0) >= 1_000_000
+        .filter((row) => (Number(row.target || 0) >= 1_000_000 || normalizeImportedMetric(row.metric) === 'booked volume')
           && /^BPI\b/i.test(campaignById.get(row.campaignId)?.campaignName || ''))
         .map((row) => row.campaignId)
     );
@@ -441,7 +442,10 @@ export async function GET(req: NextRequest) {
       const selectedYtdRows = latestYtdPeriod == null
         ? ytdRows
         : ytdRows.filter((row) => row.year * 12 + Number(row.month || 0) === latestYtdPeriod);
-      const selectedRows = selectedYtdRows.length > 0 ? selectedYtdRows : rows.filter((row) => row.recordKind !== 'ytd');
+      const sourcePeriods = new Set(rows.filter(row => row.monitoringType === 'PL_SOURCE_TOTAL').map(row => `${row.year}|${row.month}`));
+      const selectedRows = sourcePeriods.size
+        ? rows.filter(row => row.monitoringType === 'PL_SOURCE_TOTAL' || !sourcePeriods.has(`${row.year}|${row.month}`))
+        : selectedYtdRows.length > 0 ? selectedYtdRows : rows.filter((row) => row.recordKind !== 'ytd');
       if (selectedRows.length === 0) continue;
       importedKpiByCampaign.set(campaignId, {
         metric: selectedRows[0].effectiveMetric,

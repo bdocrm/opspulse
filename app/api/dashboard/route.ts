@@ -1,3 +1,4 @@
+import { selectVerifiedSourceRecords, excludeMirroredPlScorecards } from "@/lib/verified-source-records";
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from "next/server";
@@ -183,7 +184,7 @@ export async function GET(req: NextRequest) {
       },
       select: { campaignId: true, recordKind: true, worksheetSource: true, entityName: true, monitoringType: true, metric: true, year: true, month: true, reportDate: true, target: true, actual: true, achievement: true, updatedAt: true },
       orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
-    }).catch(() => []);
+    }).then(selectVerifiedSourceRecords).then(excludeMirroredPlScorecards).catch(() => []);
     const campaignById = new Map(campaigns.map((campaign) => [campaign.id, campaign]));
     const usableDashboardRows = dashboardRows.filter((row) =>
       !isImportedClassificationRow(row)
@@ -307,8 +308,9 @@ export async function GET(req: NextRequest) {
           ? null
           : ytdSummary.length
             ? ytdSummary.reduce((sum, row) => sum + row.value, 0)
-            : periodDetails.reduce((sum, detail) => sum + metricValue(c.campaignName, detail), 0)
-              + importedDetails.reduce((sum, row) => sum + row.value, 0);
+            : periodImported.length
+              ? importedDetails.reduce((sum, row) => sum + row.value, 0)
+              : periodDetails.reduce((sum, detail) => sum + metricValue(c.campaignName, detail), 0);
         const configuredGoal = campaignGoalByPeriod.get(`${c.id}|${selectedPeriod}`);
         const dashboardGoal = importedGoalByCampaignPeriod.get(`${c.id}|${selectedPeriod}`) || 0;
         const agentGoal = importedAgentGoalTotal(c.id, selectedPeriod);

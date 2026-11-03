@@ -57,16 +57,6 @@ export async function projectPaHistory(id: string, inspection: Inspection, fileN
   const campaigns = allCampaigns.filter(campaign => hasProductionCampaignAccess(user, campaign.id));
   if (!campaigns.length) throw new Error("BPI PA campaigns are outside your authorized scope.");
   const campaignIds = campaigns.map(campaign => campaign.id);
-  const references = await db.dashboardImportRecord.findMany({ where: { campaignId: { in: allCampaigns.map(c => c.id) }, recordKind: "agent_monitoring" }, select: { entityName: true, campaignId: true, year: true, month: true } });
-  const exact = new Map<string, Set<string>>(), historical = new Map<string, Set<string>>();
-  for (const ref of references) {
-    const name = normalizeName(ref.entityName);
-    const periodKey = JSON.stringify([name, ref.year, ref.month]);
-    const period = exact.get(periodKey) ?? new Set<string>(); period.add(ref.campaignId); exact.set(periodKey, period);
-    const all = historical.get(name) ?? new Set<string>(); all.add(ref.campaignId); historical.set(name, all);
-  }
-  const accounts = await db.user.findMany({ where: { role: "AGENT", campaignId: { in: allCampaigns.map(c => c.id) } }, select: { name: true, campaignId: true } });
-  for (const account of accounts) { const name = normalizeName(account.name); const all = historical.get(name) ?? new Set<string>(); all.add(account.campaignId!); historical.set(name, all); }
   const header = await db.productionImportRawRow.findUniqueOrThrow({ where: { importId_sourceSheet_sourceRow: { importId: id, sourceSheet: dashboard.sourceSheet, sourceRow: 1 } }, select: { rawPayload: true } });
   const tables = paHistoryTables(unpackRawRow(header.rawPayload));
   const totals = new Map<string, PaTransactionTotal>();
@@ -81,10 +71,13 @@ export async function projectPaHistory(id: string, inspection: Inspection, fileN
   const pending: { name: string; year: number; month: number; actual: number; transactions: number; reason: string }[] = [];
   const mapped = new Map<string, PaTransactionTotal[]>();
   for (const total of totals.values()) {
-    const name = normalizeName(total.name);
-    const bindings = exact.get(JSON.stringify([name, total.year, total.month])) ?? historical.get(name) ?? new Set<string>();
-    if (bindings.size !== 1 || !campaignIds.includes([...bindings][0])) { pending.push({ name: total.name, year: total.year, month: total.month, actual: total.cents / 100, transactions: total.count, reason: bindings.size > 1 ? "Ambiguous agent campaign" : bindings.size ? "Campaign outside authorized scope" : "No confirmed agent campaign" }); continue; }
-    const campaignId = [...bindings][0]; const rows = mapped.get(campaignId) ?? []; rows.push(total); mapped.set(campaignId, rows);
+    // Agent accounts, prior imports and product/line codes are not evidence of
+    // this source row's INBOUND/OUTBOUND campaign.
+    const label = total.campaignLabel;
+    const campaignName = label === 'INBOUND' || label === 'BPI PA INBOUND' ? 'BPI PA INBOUND' : label === 'OUTBOUND' || label === 'BPI PA OUTBOUND' ? 'BPI PA OUTBOUND' : null;
+    const campaign = allCampaigns.find(row => row.campaignName === campaignName);
+    if (!campaign || !campaignIds.includes(campaign.id)) { pending.push({ name: total.name, year: total.year, month: total.month, actual: total.cents / 100, transactions: total.count, reason: !label ? 'No explicit source campaign label' : !campaign ? 'Unrecognized source campaign label' : 'Campaign outside authorized scope' }); continue; }
+    const campaignId = campaign.id; const rows = mapped.get(campaignId) ?? []; rows.push(total); mapped.set(campaignId, rows);
   }
   if (dryRun) return { state: pending.length ? "PARTIAL" : "COMPLETED", pending, periods: [...new Set([...totals.values()].map(row => `${row.year}-${String(row.month).padStart(2, "0")}`))].sort(), campaigns: [...mapped].map(([campaignId, rows]) => ({ campaignId, records: rows.length, transactions: rows.reduce((sum, row) => sum + row.count, 0), actual: rows.reduce((sum, row) => sum + row.cents, 0) / 100 })), records: [...mapped.values()].reduce((sum, rows) => sum + rows.length, 0), dashboardBatchId: undefined };
   const batches: string[] = [];

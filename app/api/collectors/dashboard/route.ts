@@ -1,3 +1,5 @@
+import { selectVerifiedSourceRecords, verifiedSourceTotal } from "@/lib/verified-source-records";
+import { excludePlaceholderMetricPeriods, type PerformanceSourceQuality } from "@/lib/performance-data-quality";
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from "next/server";
@@ -197,7 +199,7 @@ export async function GET(req: NextRequest) {
     await ensureCampaignGoalTable();
 
     // Pull everything in a few batched queries scoped to the assigned set.
-    const [campaigns, agents, rawDetails, rawEntries, monthlyGoalRows, dashboardAgentRecords, rawMetricRecords, rawMonitoringRecords, rawKpiRecords, sourceWorkbooks] = await Promise.all([
+    const [campaigns, agents, rawDetails, rawEntries, monthlyGoalRows, dashboardAgentRecords, rawMetricRows, rawMonitoringRecords, rawKpiRecords, sourceWorkbooks] = await Promise.all([
       prisma.campaign.findMany({
         where: { id: { in: assignedIds } },
         select: {
@@ -249,6 +251,9 @@ export async function GET(req: NextRequest) {
           approvals: true,
           booked: true,
           volume: true,
+          transmittedVolume: true,
+          approvalsVolume: true,
+          bookedVolume: true,
           ntb: true,
           supplementary: true,
           cardLevel: true,
@@ -339,9 +344,10 @@ export async function GET(req: NextRequest) {
           actual: true,
           achievement: true,
           updatedAt: true,
+          remark: true,
         },
         orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
-      }).catch(() => []),
+      }).then(selectVerifiedSourceRecords).catch(() => []),
       prisma.productionMetricRecord.findMany({
         where: {
           campaignId: { in: assignedIds },
@@ -410,6 +416,18 @@ export async function GET(req: NextRequest) {
       }).catch(() => []),
       prisma.productionImport.findMany({ where: { engine: "SMART_V1", importedById: user.id, status: "COMPLETED", inspection: { path: ["metadata", "dashboardProjection", "state"], equals: "PARTIAL" } }, select: { id: true, fileName: true, inspection: true } }),
     ]);
+
+    const rawMetricRecords = excludePlaceholderMetricPeriods(rawMetricRows);
+    const measuredMetricPeriods = new Set(rawMetricRecords.map(record => `${record.campaignId}|${record.reportYear}-${String(record.reportMonth).padStart(2, '0')}`));
+    const placeholderPeriods = new Set(rawMetricRows.filter(record => record.reportMonth != null && !measuredMetricPeriods.has(`${record.campaignId}|${record.reportYear}-${String(record.reportMonth).padStart(2, '0')}`)).map(record => `${record.campaignId}|${record.reportYear}-${String(record.reportMonth).padStart(2, '0')}`));
+    const productionDetails = rawDetails.filter(detail => {
+      const key = `${detail.campaignId}|${businessMonthKey(detail.productionEntry.date)}`;
+      return !placeholderPeriods.has(key) || !detail.productionEntry.importFileName || detail.monthlyActual != null || [detail.ntb, detail.supplementary, detail.transmittals, detail.activations, detail.approvals, detail.booked, detail.volume, detail.transmittedVolume, detail.approvalsVolume, detail.bookedVolume, detail.grandTotalVol].some(value => Number(value ?? 0) !== 0);
+    });
+    rawDetails.splice(0, rawDetails.length, ...productionDetails);
+    const nonPlaceholderDetailPeriods = new Set(rawDetails.map(detail => `${detail.campaignId}|${businessMonthKey(detail.productionEntry.date)}`));
+    const productionEntries = rawEntries.filter(entry => !entry.importFileName || !placeholderPeriods.has(`${entry.campaignId}|${businessMonthKey(entry.date)}`) || nonPlaceholderDetailPeriods.has(`${entry.campaignId}|${businessMonthKey(entry.date)}`));
+    rawEntries.splice(0, rawEntries.length, ...productionEntries);
 
     if (hasExplicitMonthSelection) {
       const selectedDetails = rawDetails.filter((detail) => {
@@ -507,6 +525,9 @@ export async function GET(req: NextRequest) {
             approvals: true,
             booked: true,
             volume: true,
+          transmittedVolume: true,
+          approvalsVolume: true,
+          bookedVolume: true,
             ntb: true,
             supplementary: true,
             cardLevel: true,
@@ -1337,6 +1358,7 @@ export async function GET(req: NextRequest) {
       availableMonthSets.set(campaignId, months);
     };
     for (const entry of availabilityEntries) {
+      if (placeholderPeriods.has(`${entry.campaignId}|${businessMonthKey(entry.date)}`) && !nonPlaceholderDetailPeriods.has(`${entry.campaignId}|${businessMonthKey(entry.date)}`)) continue;
       const [year, month] = businessMonthKey(entry.date).split("-").map(Number);
       registerAvailableMonth(entry.campaignId, year, month);
     }
@@ -1634,7 +1656,11 @@ export async function GET(req: NextRequest) {
           Object.fromEntries(campaignAgents.map((agent) => [agent.id, agent.monthlyTarget])),
         ));
       }
-      const resolvedActual = monitoringSummary?.actual != null
+      const sourceTotal = verifiedSourceTotal(usableDashboardAgentRecords.filter(record => record.campaignId === c.id && isImportedRecordInSelectedRange(record)));
+      const verifiedAgentActual = usableDashboardAgentRecords.filter(record => record.campaignId === c.id && isImportedRecordInSelectedRange(record) && record.monitoringType === 'PL_SOURCE_BOOKED_AGENT').reduce((sum, record) => sum + Number(record.actual ?? 0), 0);
+      const resolvedActual = sourceTotal != null
+        ? bdoActualFromAgents + sourceTotal - verifiedAgentActual
+        : monitoringSummary?.actual != null
         ? monitoringSummary.actual
         : isBdoCccCampaign && bdoCccActualByCampaign.has(c.id)
         ? bdoCccActualByCampaign.get(c.id)!
@@ -1696,6 +1722,23 @@ export async function GET(req: NextRequest) {
         ),
       });
 
+      const sourceQuality: PerformanceSourceQuality[] = [];
+      const selectedSourceRows = usableDashboardAgentRecords.filter(record => record.campaignId === c.id && isImportedRecordInSelectedRange(record));
+      const partialSources = monitoringRecords.filter(record => record.campaignId === c.id && record.workingDays != null && record.daysLapse != null && record.daysLapse < record.workingDays);
+      if (partialSources.length) {
+        const cutoffs = [...new Set(partialSources.map(record => record.dateUpdated ? businessDateKey(record.dateUpdated) : `${record.reportYear}-${String(record.reportMonth).padStart(2, '0')} (${record.daysLapse}/${record.workingDays} days)`))];
+        sourceQuality.push({ code: 'PARTIAL_PERIOD', message: `Partial reporting period. Source cutoff: ${cutoffs.join(', ')}. Attainment is not a final month-end result.` });
+      }
+      if (resolvedGoal != null && !Number(savedGoal?.monthlyGoal) && !Number(monitoringSummary?.goal) && !importedCampaignGoal) sourceQuality.push({ code: 'DEFAULT_GOAL', message: 'Target uses a campaign/default fallback. No month-specific campaign target was found in the selected source.' });
+      let unattributedAmount = 0;
+      for (const record of selectedSourceRows.filter(record => record.monitoringType === 'PL_SOURCE_TOTAL')) {
+        try { unattributedAmount += Number(JSON.parse(record.remark || '{}').unattributedActual || 0); } catch { /* Optional provenance; never infer a source amount. */ }
+      }
+      if (unattributedAmount) sourceQuality.push({ code: 'UNATTRIBUTED_AMOUNT', message: `${unattributedAmount.toLocaleString('en-PH', { style: 'currency', currency: 'PHP' })} is included in the source campaign total but has no identified agent. Agent totals exclude that amount.` });
+      if (selectedSourceRows.some(record => record.monitoringType === 'PA_SOURCE_BOOKED')) sourceQuality.push({ code: 'CAMPAIGN_MAPPING_REVIEW', message: 'PA history campaign attribution requires explicit INBOUND/OUTBOUND source evidence. Existing figures remain provisional until verified.' });
+      if (rawMetricRecords.some(record => record.campaignId === c.id && record.reportMonth != null && periodSelected(record.reportYear, record.reportMonth) && record.metricType === 'transactions' && ((record.actual != null && !Number.isInteger(record.actual)) || (record.goal != null && !Number.isInteger(record.goal))))) sourceQuality.push({ code: 'FRACTIONAL_COUNT', message: 'Imported transaction counts or targets contain fractions. Verify the source row and metric before using this attainment for ranking.' });
+      if (!recordCount && rawMetricRows.some(record => record.campaignId === c.id && record.reportMonth != null && periodSelected(record.reportYear, record.reportMonth))) sourceQuality.push({ code: 'PLACEHOLDER_ONLY', message: 'Only template/score placeholders were found. Actual production is unavailable; this is not confirmed zero production.' });
+
       return {
         id: c.id,
         campaignName: c.campaignName,
@@ -1707,6 +1750,7 @@ export async function GET(req: NextRequest) {
         achievementPercent: smartSummaries.get(c.id)?.metrics.achievementPercentage ?? campaignAchievement.achievementPercent,
         goalStatus: campaignAchievement.goalStatus,
         dataStatus: campaignAchievement.dataStatus,
+        sourceQuality,
         agentCount: campaignAchievement.agentCount,
         recordCount: campaignAchievement.recordCount,
         supplementaryGoal: hasCampaignAgentImport && isAcqCampaign

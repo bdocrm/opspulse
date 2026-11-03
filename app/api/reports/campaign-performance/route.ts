@@ -1,3 +1,4 @@
+import { selectVerifiedSourceRecords, verifiedSourceTotal, VERIFIED_PL_AGENT } from "@/lib/verified-source-records";
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from "next/server";
@@ -360,7 +361,7 @@ export async function GET(req: NextRequest) {
           month: true,
         },
         orderBy: [{ reportDate: "asc" }, { sourceRow: "asc" }],
-      }).catch(() => []),
+      }).then(selectVerifiedSourceRecords).catch(() => []),
     ]);
 
     const dashboardRecords = rawDashboardRecords.filter((record) =>
@@ -521,7 +522,7 @@ export async function GET(req: NextRequest) {
     const dashboardCurrencyMetric = dashboardRecords.some(
       (record) => Number(record.target ?? 0) >= 1_000_000
     ) || uniqueDashboardAgentRows.some(
-      (record) => normalizeImportedMetric(record.metric).includes("cash installment")
+      (record) => record.monitoringType === VERIFIED_PL_AGENT || (/^BPI\b/i.test(campaign.campaignName) && normalizeImportedMetric(record.metric) === 'booked volume') || normalizeImportedMetric(record.metric).includes("cash installment")
     );
     const availableDashboardMetrics = new Set(
       uniqueDashboardAgentRows.map((record) => normalizeImportedMetric(record.metric))
@@ -679,7 +680,11 @@ export async function GET(req: NextRequest) {
       : importedGoalTotal > 0
         ? importedGoalTotal
         : fallbackCampaignGoal;
-    const totalActual = hasDashboardPerformance && usableYtdRows.length > 0
+    const sourceTotal = verifiedSourceTotal(dashboardRecords);
+    const sourceAgentActual = selectedDashboardRows.filter(record => record.monitoringType === VERIFIED_PL_AGENT).reduce((sum, record) => sum + Number(importedActual(record) ?? 0), 0);
+    const totalActual = sourceTotal != null
+      ? importedActualTotal + sourceTotal - sourceAgentActual
+      : hasDashboardPerformance && usableYtdRows.length > 0
       ? ytdActual
       : hasDashboardPerformance || hasNormalizedPerformance
         ? importedActualTotal
@@ -788,7 +793,9 @@ export async function GET(req: NextRequest) {
         id: campaign.id,
         name: campaign.campaignName,
         kpiMetric: campaignMetric,
-        reportBasis: usableYtdRows.length > 0
+        reportBasis: sourceTotal != null
+          ? 'Reconciled monthly source'
+          : usableYtdRows.length > 0
           ? allMonths ? "Latest YTD" : "YTD"
           : allMonths ? "All Months" : "Monthly",
       },

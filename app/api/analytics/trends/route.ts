@@ -1,3 +1,4 @@
+import { selectVerifiedSourceRecords } from "@/lib/verified-source-records";
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -191,11 +192,11 @@ export async function GET(req: NextRequest) {
       prisma.dashboardImportRecord.findMany({
         where: { ...dashboardWhere, recordKind: 'agent_monitoring', ...(allMonths ? {} : { year, month }) },
         select: dashboardSelect,
-      }).catch(() => []),
+      }).then(selectVerifiedSourceRecords).catch(() => []),
       allMonths ? Promise.resolve([]) : prisma.dashboardImportRecord.findMany({
         where: { ...dashboardWhere, recordKind: 'agent_monitoring', year: prev.year, month: prev.month },
         select: dashboardSelect,
-      }).catch(() => []),
+      }).then(selectVerifiedSourceRecords).catch(() => []),
     ]);
 
     const importedTrends = groupImportedMonthlyRows(importedRows);

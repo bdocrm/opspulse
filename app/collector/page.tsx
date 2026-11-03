@@ -130,6 +130,7 @@ interface CampaignBlock {
   dataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
   agentDataPeriod?: { source: 'selected_range' | 'latest_import'; year?: number; month?: number };
   lastUpdated?: string | null;
+  sourceQuality?: { code: string; message: string }[];
 }
 
 function campaignDataPeriodLabel(period?: CampaignBlock['dataPeriod']): string | null {
@@ -309,6 +310,8 @@ function collectorCampaignStatus(campaign: CampaignBlock, achievement: number | 
   if (campaign.dataStatus === 'no-production-records' || campaign.dataStatus === 'no-imported-data') {
     return { status: 'no-data', statusLabel: 'No Data' };
   }
+  if (campaign.sourceQuality?.some(item => ['CAMPAIGN_MAPPING_REVIEW', 'FRACTIONAL_COUNT'].includes(item.code))) return { status: 'needs-attention', statusLabel: 'Data Review' };
+  if (campaign.sourceQuality?.some(item => item.code === 'PARTIAL_PERIOD')) return { status: 'needs-attention', statusLabel: 'Partial Data' };
   if (campaign.dataStatus === 'zero-production') return { status: 'critical', statusLabel: 'Critical' };
   if (campaign.dataStatus === 'missing-goal' || campaign.goalStatus === 'missing') {
     return { status: 'needs-attention', statusLabel: 'Target Missing' };
@@ -1634,7 +1637,7 @@ export default function CollectorDashboard() {
                   : campaign.dataStatus === 'no-imported-data'
                     ? 'No data'
                     : campaign.dataStatus === 'no-production-records'
-                      ? 'No production'
+                      ? 'No data'
                     : `${displayedProgress ?? '0.0'}%`;
               const fallbackPeriodLabel = campaignDataPeriodLabel(campaign.dataPeriod);
               const campaignView = campaignViews.find((item) => item.campaign.id === campaign.id)!;
@@ -1756,6 +1759,7 @@ export default function CollectorDashboard() {
                           <span className="text-xs text-muted-foreground">{fallbackPeriodLabel ? `Latest Import (${fallbackPeriodLabel})` : 'Records in Range'}</span>
                           <span className="text-sm font-semibold text-orange-500">{campaign.recordCount ?? campaign.entriesCount}</span>
                         </div>
+                        {(campaign.sourceQuality ?? []).map(item => <p key={item.code} className="mt-2 text-xs text-amber-500">{item.message}</p>)}
                         <div className="mt-2 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{relativeUpdate(campaign.lastUpdated)}</span><Button type="button" variant="ghost" size="sm" className="h-8 px-2" onClick={() => { setSelectedCampaignId(campaign.id); window.setTimeout(() => document.getElementById('production-leaderboard')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0); }}>View Details <ArrowRight className="ml-1 h-3.5 w-3.5" /></Button></div>
                       </div>
                     </div>

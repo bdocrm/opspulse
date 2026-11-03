@@ -29,10 +29,10 @@ export function paTransactionFixture() {
   return XLSX.write(book, { type: "buffer", bookType: "xlsx" }) as Buffer;
 }
 
-export function paHistoryFixture() {
+export function paHistoryFixture(explicitCampaigns = false) {
   const book = XLSX.utils.book_new();
-  const rows: unknown[][] = [["MONTH", "APPROVAL DATE", "AGENT NAME", "LOAN AMOUNT", "APPROVED AMOUNT", "PRODUCT", "PRODUCT2"]];
-  for (let month = 1; month <= 9; month++) for (const [agent, amount] of [["History Out", 100.10], ["History In", 200.20], ["History Unknown", 30], ["History Ambiguous", 40]] as const) rows.push([month, `2026-${String(month).padStart(2, "0")}-08`, agent, amount, amount, "Source product", "BC"]);
+  const rows: unknown[][] = [["MONTH", "APPROVAL DATE", "AGENT NAME", "LOAN AMOUNT", "APPROVED AMOUNT", "PRODUCT", "PRODUCT2", ...(explicitCampaigns ? ['CAMPAIGN'] : [])]];
+  for (let month = 1; month <= 9; month++) for (const [agent, amount] of [["History Out", 100.10], ["History In", 200.20], ["History Unknown", 30], ["History Ambiguous", 40]] as const) rows.push([month, `2026-${String(month).padStart(2, "0")}-08`, agent, amount, amount, "Source product", "BC", ...(explicitCampaigns ? [agent === 'History Out' ? 'OUTBOUND' : agent === 'History In' ? 'INBOUND' : agent === 'History Ambiguous' ? 'LINE 1' : ''] : [])]);
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), "(M)mom");
   return XLSX.write(book, { type: "buffer", bookType: "xlsx" }) as Buffer;
 }
